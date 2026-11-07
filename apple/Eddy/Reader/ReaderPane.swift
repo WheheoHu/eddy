@@ -20,6 +20,8 @@ struct ReaderPane: View {
     /// Open at the end of the text instead of the resume point: a previous
     /// chapter, reached by reading backwards.
     var startAtEnd = false
+    /// Esc in the text: focus goes back a column.
+    var onEscape: (() -> Void)?
 
     @State private var document: DocumentView?
     @State private var pdfURL: URL?
@@ -36,6 +38,7 @@ struct ReaderPane: View {
     @State private var lastPosition: (block: String, offset: Int, atEnd: Bool)?
     @State private var cache = ArticleCache()
     @State private var paneHeight: CGFloat = 600
+    @State private var pull: Pull?
 
     @AppStorage("reader.fontSize") private var fontSize = 17.0
     @AppStorage("reader.serif") private var serif = false
@@ -57,6 +60,9 @@ struct ReaderPane: View {
             }
             content
                 .overlay(alignment: .top) { banners }
+                .overlay(alignment: pull?.direction == .previous ? .top : .bottom) {
+                    if let pull, let neighbors { PullIndicator(pull: pull, kind: neighbors.kind) }
+                }
         }
         .clipped()
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { paneHeight = $0 }
@@ -113,7 +119,12 @@ struct ReaderPane: View {
                     onBookLink: { url in
                         guard let target = model.item(forLink: url) else { return }
                         if let openItem { openItem(target) } else { model.currentItemID = target }
-                    }
+                    },
+                    pullTarget: neighbors.map { neighbors in { neighbors.peek($0)?.title } },
+                    onPull: { pull = $0 },
+                    onPullRelease: { neighbors?.go($0, .vertical) },
+                    onStep: neighbors.map { neighbors in { neighbors.go($0, .vertical) } },
+                    onEscape: onEscape
                 )
                 .id(itemID)
                 .background(Color(nsColor: .textBackgroundColor))

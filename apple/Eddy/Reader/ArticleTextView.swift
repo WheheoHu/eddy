@@ -28,6 +28,13 @@ struct ArticleTextView: NSViewRepresentable {
     let onPosition: (_ blockID: String, _ offset: Int, _ atEnd: Bool) -> Void
     /// Links inside an imported book (`epub://`); others open in the browser.
     var onBookLink: (URL) -> Void = { _ in }
+    /// Title of what pulling past an edge opens; nil turns pulls off.
+    var pullTarget: ((Direction) -> String?)?
+    var onPull: (Pull?) -> Void = { _ in }
+    var onPullRelease: (Direction) -> Void = { _ in }
+    /// Cmd+Left and Cmd+Right.
+    var onStep: ((Direction) -> Void)?
+    var onEscape: (() -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -49,8 +56,10 @@ struct ArticleTextView: NSViewRepresentable {
         textView.linkTextAttributes = [.foregroundColor: NSColor.linkColor, .cursor: NSCursor.pointingHand]
         textView.textLayoutManager?.delegate = context.coordinator
         textView.delegate = context.coordinator
+        textView.pulls = context.coordinator.pulls
 
-        let scroll = NSScrollView()
+        let scroll = ReaderScrollView()
+        scroll.pulls = context.coordinator.pulls
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.drawsBackground = true
@@ -66,7 +75,13 @@ struct ArticleTextView: NSViewRepresentable {
         c.onPosition = onPosition
         c.loadImage = loadImage
         c.onBookLink = onBookLink
+        c.pulls.target = pullTarget
+        c.pulls.onChange = onPull
+        c.pulls.onRelease = onPullRelease
         guard let textView = scroll.documentView as? ReaderTextView else { return }
+        textView.onStep = onStep
+        textView.onEscape = onEscape
+        textView.lineStep = style.fontSize * style.lineHeight
         if textView.maxWidth != style.maxWidth {
             textView.maxWidth = style.maxWidth
             textView.updateInsets()
@@ -80,6 +95,11 @@ struct ArticleTextView: NSViewRepresentable {
             c.lastTarget = target
             c.scroll(to: target, animated: animated)
         }
+    }
+
+    static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
+        coordinator.pulls.onChange = nil
+        coordinator.pulls.reset()
     }
 
     /// Versions share their prefix (document hash) when only the reading
@@ -99,6 +119,7 @@ struct ArticleTextView: NSViewRepresentable {
         var onPosition: ((String, Int, Bool) -> Void)?
         var loadImage: ((String) async -> NSImage?)?
         var onBookLink: ((URL) -> Void)?
+        let pulls = PullTracker()
         private var lastReported: (String, Int, Bool)?
         private var reportTask: Task<Void, Never>?
         private var imageTask: Task<Void, Never>?
@@ -277,9 +298,28 @@ struct ArticleTextView: NSViewRepresentable {
     }
 }
 
-/// Keeps the text column at a readable width, centered.
+/// Passes scrolling on to the pull tracker once it has scrolled, so the
+/// system's rubber-band still shows while pulling past an edge.
+final class ReaderScrollView: NSScrollView {
+    weak var pulls: PullTracker?
+
+    override func scrollWheel(with event: NSEvent) {
+        super.scrollWheel(with: event)
+        pulls?.scrollWheel(event, in: self)
+    }
+}
+
+/// Keeps the text column at a readable width, centered. Reads with the
+/// keyboard: Up and Down move a line, Left and Right a page, an arrow held
+/// at the edge it points past pulls to the previous or next item, Cmd+Left
+/// and Cmd+Right go there at once.
 final class ReaderTextView: NSTextView {
     var maxWidth: CGFloat = 700
+    /// One line of text.
+    var lineStep: CGFloat = 24
+    weak var pulls: PullTracker?
+    var onStep: ((Direction) -> Void)?
+    var onEscape: (() -> Void)?
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
@@ -290,5 +330,67 @@ final class ReaderTextView: NSTextView {
         let horizontal = max(28, (bounds.width - maxWidth) / 2)
         let inset = NSSize(width: horizontal, height: 36)
         if textContainerInset != inset { textContainerInset = inset }
+    }
+
+    override func keyDown(with event: NSEvent) {
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        guard let key = event.specialKey, let scroll = enclosingScrollView else {
+            if event.keyCode == 53 { cancelOperation(nil) } else { super.keyDown(with: event) }
+            return
+        }
+        let page = max(scroll.contentView.bounds.height - lineStep, lineStep)
+        if modifiers == .command, key == .leftArrow || key == .rightArrow, let onStep {
+            pulls?.reset()
+            onStep(key == .leftArrow ? .previous : .next)
+        } else if modifiers.isEmpty, key == .downArrow || key == .rightArrow {
+            if scroll.atBottom {
+                pulls?.hold(.next, key: event.keyCode)
+            } else {
+                scrollBy(key == .downArrow ? lineStep : page, animated: key == .rightArrow)
+            }
+        } else if modifiers.isEmpty, key == .upArrow || key == .leftArrow {
+            if scroll.atTop {
+                pulls?.hold(.previous, key: event.keyCode)
+            } else {
+                scrollBy(key == .upArrow ? -lineStep : -page, animated: key == .leftArrow)
+            }
+        } else {
+            super.keyDown(with: event)
+        }
+    }
+
+    override func keyUp(with event: NSEvent) {
+        pulls?.release(key: event.keyCode)
+        super.keyUp(with: event)
+    }
+
+    /// Esc closes the find bar, then cancels a pull, then leaves the text.
+    override func cancelOperation(_ sender: Any?) {
+        if let scroll = enclosingScrollView, scroll.isFindBarVisible {
+            scroll.isFindBarVisible = false
+        } else if pulls?.active == true {
+            pulls?.reset()
+        } else if let onEscape {
+            onEscape()
+        }
+    }
+
+    private func scrollBy(_ dy: CGFloat, animated: Bool) {
+        guard let scroll = enclosingScrollView else { return }
+        let clip = scroll.contentView
+        let top = -scroll.contentInsets.top
+        let bottom = max(top, frame.height - clip.bounds.height + scroll.contentInsets.bottom)
+        let point = NSPoint(x: clip.bounds.minX, y: min(max(clip.bounds.minY + dy, top), bottom))
+        if animated {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.18
+                clip.animator().setBoundsOrigin(point)
+            } completionHandler: {
+                MainActor.assumeIsolated { scroll.reflectScrolledClipView(clip) }
+            }
+        } else {
+            clip.scroll(to: point)
+            scroll.reflectScrolledClipView(clip)
+        }
     }
 }
