@@ -17,6 +17,7 @@ const STARRED: &str = "user/-/state/com.google/starred";
 
 #[derive(Default)]
 struct FreshState {
+    listed: Vec<u64>,
     unread: HashSet<u64>,
     starred: HashSet<u64>,
 }
@@ -25,10 +26,16 @@ struct FreshState {
 async fn stateful_freshrss() -> (MockServer, Arc<Mutex<FreshState>>) {
     let server = MockServer::start().await;
     let state = Arc::new(Mutex::new(FreshState {
+        listed: vec![1, 2, 3],
         unread: [2, 3].into(),
         starred: [1].into(),
     }));
-    let titles = [(1u64, "Old post"), (2, "New post"), (3, "Unread elsewhere")];
+    let titles = [
+        (1u64, "Old post"),
+        (2, "New post"),
+        (3, "Unread elsewhere"),
+        (4, "Read on the web"),
+    ];
 
     let item = move |st: &FreshState, n: u64| {
         let title = titles.iter().find(|(i, _)| *i == n).unwrap().1;
@@ -81,8 +88,8 @@ async fn stateful_freshrss() -> (MockServer, Arc<Mutex<FreshState>>) {
         ))
         .respond_with(move |_: &Request| {
             let s = st.lock().unwrap();
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"items": [it(&s, 1), it(&s, 2), it(&s, 3)]}))
+            let items: Vec<_> = s.listed.iter().map(|n| it(&s, *n)).collect();
+            ResponseTemplate::new(200).set_body_json(json!({ "items": items }))
         })
         .mount(&server)
         .await;
@@ -94,7 +101,7 @@ async fn stateful_freshrss() -> (MockServer, Arc<Mutex<FreshState>>) {
             let items: Vec<_> = url::form_urlencoded::parse(&req.body)
                 .filter(|(k, _)| k == "i")
                 .filter_map(|(_, v)| u64::from_str_radix(v.rsplit('/').next()?, 16).ok())
-                .filter(|n| (1..=3).contains(n))
+                .filter(|n| s.listed.contains(n))
                 .map(|n| item(&s, n))
                 .collect();
             ResponseTemplate::new(200).set_body_json(json!({ "items": items }))
@@ -326,10 +333,16 @@ async fn standalone_client_migrates_and_a_second_device_joins() {
     );
     a.stop_live_sync();
 
+    // An article already read on the FreshRSS web arrives read and is not
+    // announced (or auto-processed) as new.
+    fresh_state.lock().unwrap().listed.push(4);
+    assert_eq!(b.refresh().await.unwrap().new_items, 0);
+    assert!(find(&b, "Read on the web").item.read);
+
     // Disconnecting keeps local data.
     b.disconnect_server().unwrap();
     assert_eq!(b.status().unwrap().mode, Mode::Unconfigured);
-    assert_eq!(b.items(&ItemQuery::default()).unwrap().len(), 4);
+    assert_eq!(b.items(&ItemQuery::default()).unwrap().len(), 5);
 }
 
 #[tokio::test]

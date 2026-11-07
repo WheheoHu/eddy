@@ -222,7 +222,9 @@ impl Upstream for HubUpstream {
                 inner.clock.observe(&op.hlc);
                 let applied = inner.store.apply_remote(op)?;
                 match (op.entity, op.field.as_str()) {
-                    (Entity::Item, fields::CREATE) if applied => {
+                    // Items the server ingested already read (backfilled
+                    // history included) are not new to this device.
+                    (Entity::Item, fields::CREATE) if applied && op.value["read"] != true => {
                         new_item_ids.push(op.entity_id.clone())
                     }
                     (Entity::Item, fields::VERSION) if applied => {
