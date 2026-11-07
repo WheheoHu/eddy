@@ -39,7 +39,7 @@ pub struct Extracted {
 pub fn extract(html: &str, url: &str, rule: Option<&SiteRule>) -> Result<Extracted, ExtractError> {
     let html = preserve_math(html);
     let mut doc = Html::parse_document(&html);
-    let heading = select_text(&doc, "h1");
+    let heading = main_heading(&doc);
     let title = rule
         .and_then(|r| r.title.as_deref())
         .and_then(|sel| select_text(&doc, sel))
@@ -98,11 +98,29 @@ pub fn extract(html: &str, url: &str, rule: Option<&SiteRule>) -> Result<Extract
             if text_len == 0 {
                 return Err(ExtractError::NoContent);
             }
+            // When the page <title> contains the main heading, the heading is
+            // the article's own title (docs sites put the site name in both).
+            // Also when the heading is the site name the <title> ends with.
+            let raw_page_title = page_title(&doc).unwrap_or_default();
+            let confirmed = title
+                .as_deref()
+                .zip(heading.as_deref())
+                .is_some_and(|(t, h)| {
+                    t.eq_ignore_ascii_case(h.trim())
+                        || (t != raw_page_title
+                            && raw_page_title
+                                .to_lowercase()
+                                .ends_with(&h.trim().to_lowercase()))
+                });
+            let readability_title = Some(article.title)
+                .filter(|t| !t.trim().is_empty())
+                .map(|t| clean_title(t, heading.as_deref()));
             Ok(Extracted {
-                title: Some(article.title)
-                    .filter(|t| !t.trim().is_empty())
-                    .map(|t| clean_title(t, heading.as_deref()))
-                    .or(title),
+                title: if confirmed {
+                    title
+                } else {
+                    readability_title.or(title)
+                },
                 byline: article.byline,
                 content_html,
                 text_len,
@@ -157,13 +175,56 @@ pub fn page_title(doc: &Html) -> Option<String> {
     (!t.is_empty()).then_some(t)
 }
 
-/// Drops site names around a title ("Post | Site") when the page's main
-/// heading shows which part is the real title.
-fn clean_title(title: String, heading: Option<&str>) -> String {
-    match heading.map(str::trim) {
-        Some(h) if !h.is_empty() && h.len() < title.len() && title.contains(h) => h.to_string(),
-        _ => title,
+/// The article's main heading. Pages often have several `<h1>`s (a site
+/// name in the header, the article title); the one the `<title>` mentions
+/// earliest wins, else the first.
+fn main_heading(doc: &Html) -> Option<String> {
+    let sel = Selector::parse("h1").unwrap();
+    let headings: Vec<String> = doc
+        .select(&sel)
+        .map(|h| {
+            h.text()
+                .collect::<String>()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .filter(|h| !h.is_empty())
+        .collect();
+    let title = page_title(doc).map(|t| t.to_lowercase());
+    if let Some(title) = &title {
+        if let Some((_, h)) = headings
+            .iter()
+            .filter_map(|h| title.find(&h.to_lowercase()).map(|i| (i, h)))
+            .min_by_key(|(i, _)| *i)
+        {
+            return Some(h.clone());
+        }
     }
+    headings.into_iter().next()
+}
+
+const TITLE_SEPARATORS: &[&str] = &[" | ", " - ", " — ", " – ", " :: ", " · "];
+
+/// Drops site names around a title. When the page's main heading is the
+/// last segment of the title ("Chapter - Book"), it is the site name and the
+/// rest is the title; when the heading appears elsewhere in the title, the
+/// heading is the title.
+fn clean_title(title: String, heading: Option<&str>) -> String {
+    let Some(h) = heading.map(str::trim).filter(|h| !h.is_empty()) else {
+        return title;
+    };
+    for sep in TITLE_SEPARATORS {
+        if let Some((rest, last)) = title.rsplit_once(sep) {
+            if last.trim().eq_ignore_ascii_case(h) && !rest.trim().is_empty() {
+                return rest.trim().to_string();
+            }
+        }
+    }
+    if h.len() < title.len() && title.to_lowercase().contains(&h.to_lowercase()) {
+        return h.to_string();
+    }
+    title
 }
 
 pub fn page_title_of(html: &str) -> Option<String> {
@@ -252,8 +313,23 @@ pub fn preserve_math(html: &str) -> String {
             .into_owned();
     }
     if out.contains("<math") {
+        let source = out.clone();
         out = MATHML
-            .replace_all(&out, |c: &regex::Captures| {
+            .replace_all(&source, |c: &regex::Captures| {
+                // Wikipedia marks display formulas on the wrapper span.
+                let start = c.get(0).map(|m| m.start()).unwrap_or(0);
+                let mut from = start.saturating_sub(8000);
+                while !source.is_char_boundary(from) {
+                    from += 1;
+                }
+                let before = &source[from..start];
+                let wrapper_class = before
+                    .rfind("class=\"mwe-math-element")
+                    .map(|i| &before[i + 7..])
+                    .and_then(|rest| rest.split('"').next())
+                    .unwrap_or("");
+                let display = c[1].contains("display=\"block\"")
+                    || wrapper_class.contains("mwe-math-element-block");
                 // Annotation text is already escaped for an HTML text context.
                 let tex = TEX_ANNOTATION
                     .captures(&c[2])
@@ -271,7 +347,7 @@ pub fn preserve_math(html: &str) -> String {
                         })
                     });
                 match tex.filter(|t| !t.is_empty()) {
-                    Some(tex) => delimit(&tex, c[1].contains("display=\"block\"")),
+                    Some(tex) => delimit(&tex, display),
                     None => c[0].to_string(),
                 }
             })

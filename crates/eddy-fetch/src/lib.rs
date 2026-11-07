@@ -107,13 +107,18 @@ impl Fetcher {
             .and_then(|h| self.rules.rule_for(h))
             .cloned()
             .unwrap_or_default();
-        let mut order: Vec<&str> = vec!["direct"];
-        order.extend(rule.strategies.iter().map(String::as_str));
+        let mut order: Vec<String> = vec!["direct".into()];
+        order.extend(rule.strategies.iter().cloned());
 
         let mut best: Option<Fetched> = None;
+        // Unrendered pages of client-side renderers: used only as a last resort.
+        let mut unrendered: Option<Fetched> = None;
         let mut last_error = None;
-        for strategy in order {
-            let result = match strategy {
+        let mut i = 0;
+        while i < order.len() {
+            let strategy = order[i].clone();
+            i += 1;
+            let result = match strategy.as_str() {
                 "direct" => self.get(&parsed, &HeaderMap::new(), "direct").await,
                 "headers" => {
                     self.get(&parsed, &rule_headers(&rule, false), "headers")
@@ -129,6 +134,14 @@ impl Fetcher {
             };
             match result {
                 Ok(page) => {
+                    if page.strategy != "webview" && needs_js(&page.html) && self.webview.is_some()
+                    {
+                        if !order.iter().any(|s| s == "webview") {
+                            order.push("webview".into());
+                        }
+                        unrendered.get_or_insert(page);
+                        continue;
+                    }
                     if accept(&page) {
                         return Ok(page);
                     }
@@ -139,7 +152,18 @@ impl Fetcher {
                 Err(e) => last_error = Some(e),
             }
         }
-        best.ok_or(last_error.unwrap_or(FetchError::Exhausted))
+        best.or(unrendered)
+            .ok_or(last_error.unwrap_or(FetchError::Exhausted))
+    }
+
+    /// Renders `url` in the platform WebView, if one is installed.
+    pub async fn render(&self, url: &str) -> Option<Fetched> {
+        let parsed = Url::parse(url).ok()?;
+        self.webview(&parsed).await.ok()
+    }
+
+    pub fn has_webview(&self) -> bool {
+        self.webview.is_some()
     }
 
     async fn get(
@@ -245,6 +269,37 @@ impl Fetcher {
             strategy: "webview",
         })
     }
+}
+
+static SCRIPT_OR_STYLE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"(?is)<(script|style|noscript)\b.*?</(script|style|noscript)>").unwrap()
+});
+static TAG: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"(?s)<[^>]*>").unwrap());
+
+/// Pages whose content only exists after JavaScript runs: client-side
+/// document renderers (Markdeep, Docsify) and empty single-page-app shells.
+pub fn needs_js(html: &str) -> bool {
+    let lower_head: String = html
+        .chars()
+        .take(200_000)
+        .collect::<String>()
+        .to_lowercase();
+    if lower_head.contains("markdeep.min.js") || lower_head.contains("window.$docsify") {
+        return true;
+    }
+    let shell = lower_head.contains("<div id=\"root\"></div>")
+        || lower_head.contains("<div id=\"app\"></div>")
+        || lower_head.contains("enable javascript");
+    if !shell {
+        return false;
+    }
+    let visible = TAG
+        .replace_all(&SCRIPT_OR_STYLE.replace_all(html, " "), " ")
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .count();
+    visible < 500
 }
 
 fn rule_headers(rule: &SiteRule, with_cookies: bool) -> HeaderMap {

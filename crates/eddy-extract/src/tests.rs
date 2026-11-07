@@ -79,6 +79,55 @@ fn wikipedia_style_mathml_survives_readability() {
 }
 
 #[test]
+fn titles_drop_site_names() {
+    let body: String = (0..12).map(|i| format!("<p>Ownership paragraph {i} explains moves, borrows and lifetimes in enough words to count.</p>")).collect();
+    let page = format!(
+        "<html><head><title>What is Ownership? - The Rust Programming Language</title></head><body><div class='menu'><h1 class='menu-title'>The Rust Programming Language</h1></div><main><h2>What Is Ownership?</h2>{body}</main></body></html>"
+    );
+    assert_eq!(
+        extract(&page, "https://doc.rust-lang.org/book/ch04-01.html", None)
+            .unwrap()
+            .title
+            .as_deref(),
+        Some("What is Ownership?")
+    );
+    let blog = format!(
+        "<html><head><title>My Post | Some Blog</title></head><body><article><h1>My Post</h1>{body}</article></body></html>"
+    );
+    assert_eq!(
+        extract(&blog, "https://blog.example/p", None)
+            .unwrap()
+            .title
+            .as_deref(),
+        Some("My Post")
+    );
+}
+
+#[test]
+fn wikipedia_block_wrapper_marks_display_math() {
+    let filler: String = (0..10).map(|i| format!("<p>Filler paragraph {i} with enough words to look like an article body for scoring.</p>")).collect();
+    let long_json = "x".repeat(2000);
+    let page = format!(
+        r#"<html><head><title>Eq</title></head><body><div id="content"><h1>Eq</h1>{filler}
+        <p>Inline <span class="mwe-math-element mwe-math-element-inline" data-mw='{{"a":"{long_json}"}}'><span class="mwe-math-mathml-a11y" style="display: none;"><math alttext="{{\displaystyle a}}"><mi>a</mi></math></span></span> here.</p>
+        <dl><dd><span class="mwe-math-element mwe-math-element-block" data-mw='{{"a":"{long_json}"}}'><span class="mwe-math-mathml-a11y" style="display: none;"><math alttext="{{\displaystyle L=\int f}}"><mi>L</mi></math></span></span></dd></dl>
+        </div></body></html>"#
+    );
+    let out = extract(&page, "https://en.wikipedia.org/wiki/Eq", None).unwrap();
+    let doc = html_to_document(&out.content_html, &ConvertOptions::default());
+    assert!(
+        doc.blocks
+            .iter()
+            .any(|b| matches!(&b.kind, eddy_model::BlockKind::Math { tex } if tex == "L=\\int f"))
+    );
+    assert!(
+        doc.blocks
+            .iter()
+            .any(|b| b.plain_text() == "Inline $a$ here.")
+    );
+}
+
+#[test]
 fn site_rules_override_readability() {
     let page = article_page();
     let rule = SiteRule {

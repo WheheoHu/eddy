@@ -253,7 +253,16 @@ impl Engine {
             .fetch(url, |_| true)
             .await
             .map_err(|e| EngineError::Network(e.to_string()))?;
-        Ok(detect_series(&page.html, &page.final_url))
+        if let Some(proposal) = detect_series(&page.html, &page.final_url) {
+            return Ok(Some(proposal));
+        }
+        // Many docs sites build their table of contents with JavaScript.
+        if page.strategy != "webview" {
+            if let Some(rendered) = fetcher.render(url).await {
+                return Ok(detect_series(&rendered.html, &rendered.final_url));
+            }
+        }
+        Ok(None)
     }
 
     /// Creates a series from confirmed chapters. Pages already saved join it;

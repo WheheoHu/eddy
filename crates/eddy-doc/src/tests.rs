@@ -147,6 +147,22 @@ fn formulas_from_katex_mathjax_and_raw_tex() {
 }
 
 #[test]
+fn display_math_inside_text_splits_the_paragraph() {
+    let d = doc(
+        r"<p>The estimator is \[F_N = \frac{1}{N}\sum f(X_i)\], where N is the count.</p><dl><dd>\[L = \int f\],</dd></dl>",
+    );
+    let kinds: Vec<_> = d.blocks.iter().map(|b| b.kind.tag()).collect();
+    assert_eq!(kinds, ["paragraph", "math", "paragraph", "math"]);
+    assert_eq!(d.blocks[0].plain_text(), "The estimator is");
+    assert_eq!(d.blocks[2].plain_text(), ", where N is the count.");
+    assert!(d.blocks.iter().all(|b| {
+        b.kind
+            .runs()
+            .is_none_or(|r| r.iter().all(|r| r.style < (1 << 15)))
+    }));
+}
+
+#[test]
 fn images_figures_tables_and_media() {
     let d = doc(r#"
         <figure><img data-src="/a.png" src="data:image/gif;base64,R0" alt="A" width="640"><figcaption>Caption <em>here</em></figcaption></figure>

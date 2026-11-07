@@ -68,45 +68,120 @@ enum Piece {
 /// `$…$` into math runs, and a paragraph holding only display math into a
 /// math block.
 pub fn split_raw_tex(blocks: Vec<(u8, BlockKind)>) -> Vec<(u8, BlockKind)> {
+    let mut out = Vec::new();
+    for (depth, kind) in blocks {
+        match kind {
+            BlockKind::Paragraph { runs } => {
+                for piece in split_paragraph(runs) {
+                    out.push((depth, piece));
+                }
+            }
+            other => out.extend(split_raw_tex_inline(vec![(depth, other)])),
+        }
+    }
+    out
+}
+
+/// Splits a paragraph around display formulas: text before, a math block,
+/// text after. Pieces holding only punctuation (", " after an equation) go.
+fn split_paragraph(runs: Vec<Run>) -> Vec<BlockKind> {
+    let runs = match split_runs(runs) {
+        Split::Display(tex) => return vec![BlockKind::Math { tex }],
+        Split::Runs(runs) => runs,
+    };
+    // A paragraph holding nothing but one formula is a displayed equation
+    // (e.g. Wikipedia indents them in <dd> as inline math).
+    let maths: Vec<&Run> = runs.iter().filter(|r| r.math).collect();
+    let only_punctuation = runs
+        .iter()
+        .filter(|r| !r.math)
+        .all(|r| !r.text.chars().any(|c| c.is_alphanumeric()));
+    if maths.len() == 1 && only_punctuation {
+        return vec![BlockKind::Math {
+            tex: maths[0].text.clone(),
+        }];
+    }
+    let mut out = Vec::new();
+    let mut current: Vec<Run> = Vec::new();
+    let flush = |current: &mut Vec<Run>, out: &mut Vec<BlockKind>| {
+        let text: String = current
+            .iter()
+            .filter(|r| !r.math)
+            .map(|r| r.text.as_str())
+            .collect();
+        let meaningful =
+            current.iter().any(|r| r.math) || text.chars().any(|c| c.is_alphanumeric());
+        if meaningful {
+            let mut runs = std::mem::take(current);
+            if let Some(first) = runs.iter_mut().find(|r| !r.math) {
+                first.text = first.text.trim_start().to_string();
+            }
+            if let Some(last) = runs.iter_mut().rev().find(|r| !r.math) {
+                last.text = last.text.trim_end().to_string();
+            }
+            runs.retain(|r| r.math || !r.text.is_empty());
+            out.push(BlockKind::Paragraph { runs });
+        } else {
+            current.clear();
+        }
+    };
+    for run in runs {
+        if run.math && run.style & DISPLAY_MARK != 0 {
+            flush(&mut current, &mut out);
+            out.push(BlockKind::Math { tex: run.text });
+        } else {
+            current.push(run);
+        }
+    }
+    flush(&mut current, &mut out);
+    out
+}
+
+/// Temporary marker on math runs that came from display delimiters.
+const DISPLAY_MARK: u16 = 1 << 15;
+
+fn split_raw_tex_inline(blocks: Vec<(u8, BlockKind)>) -> Vec<(u8, BlockKind)> {
     blocks
         .into_iter()
         .map(|(depth, kind)| match kind {
-            BlockKind::Paragraph { runs } => match split_runs(runs) {
-                Split::Display(tex) => (depth, BlockKind::Math { tex }),
-                Split::Runs(runs) => (depth, BlockKind::Paragraph { runs }),
-            },
             BlockKind::ListItem {
                 ordered,
                 depth: d,
                 index,
                 marker,
                 runs,
-            } => {
-                let runs = match split_runs(runs) {
-                    Split::Display(tex) => vec![Run::math(tex)],
-                    Split::Runs(runs) => runs,
-                };
-                (
-                    depth,
-                    BlockKind::ListItem {
-                        ordered,
-                        depth: d,
-                        index,
-                        marker,
-                        runs,
-                    },
-                )
-            }
-            BlockKind::Heading { level, runs } => {
-                let runs = match split_runs(runs) {
-                    Split::Display(tex) => vec![Run::math(tex)],
-                    Split::Runs(runs) => runs,
-                };
-                (depth, BlockKind::Heading { level, runs })
-            }
+            } => (
+                depth,
+                BlockKind::ListItem {
+                    ordered,
+                    depth: d,
+                    index,
+                    marker,
+                    runs: inline_only(runs),
+                },
+            ),
+            BlockKind::Heading { level, runs } => (
+                depth,
+                BlockKind::Heading {
+                    level,
+                    runs: inline_only(runs),
+                },
+            ),
             other => (depth, other),
         })
         .collect()
+}
+
+/// Inside list items and headings display formulas stay inline.
+fn inline_only(runs: Vec<Run>) -> Vec<Run> {
+    let mut runs = match split_runs(runs) {
+        Split::Display(tex) => vec![Run::math(tex)],
+        Split::Runs(runs) => runs,
+    };
+    for r in &mut runs {
+        r.style &= !DISPLAY_MARK;
+    }
+    runs
 }
 
 enum Split {
@@ -140,7 +215,7 @@ fn split_runs(runs: Vec<Run>) -> Split {
                     }
                     out.push(Run {
                         text: tex,
-                        style: 0,
+                        style: if display { DISPLAY_MARK } else { 0 },
                         link: run.link.clone(),
                         math: true,
                     });
@@ -149,10 +224,9 @@ fn split_runs(runs: Vec<Run>) -> Split {
         }
     }
     let only_display = displays.len() == 1
-        && out
-            .iter()
-            .enumerate()
-            .all(|(i, r)| i == displays[0] || (!r.math && r.text.trim().is_empty()));
+        && out.iter().enumerate().all(|(i, r)| {
+            i == displays[0] || (!r.math && !r.text.chars().any(|c| c.is_alphanumeric()))
+        });
     if only_display {
         return Split::Display(out.swap_remove(displays[0]).text);
     }

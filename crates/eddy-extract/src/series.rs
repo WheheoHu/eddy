@@ -26,7 +26,20 @@ const MAX_CHAPTERS: usize = 500;
 pub fn detect_series(html: &str, url: &str) -> Option<SeriesProposal> {
     let base = Url::parse(url).ok()?;
     let doc = Html::parse_document(html);
-    let prefix = section_prefix(&base);
+    // The page's own directory first, then the site section it belongs to.
+    let chapters = section_prefixes(&base)
+        .into_iter()
+        .find_map(|prefix| chapters_under(&doc, &base, &prefix))?;
+    let title =
+        crate::page_title(&doc).unwrap_or_else(|| base.host_str().unwrap_or("Series").to_string());
+    Some(SeriesProposal {
+        title,
+        toc_url: url.to_string(),
+        chapters,
+    })
+}
+
+fn chapters_under(doc: &Html, base: &Url, prefix: &str) -> Option<Vec<ChapterLink>> {
     let candidates = Selector::parse("nav, ol, ul, aside, div, section").unwrap();
     let links = Selector::parse("a[href]").unwrap();
 
@@ -46,7 +59,7 @@ pub fn detect_series(html: &str, url: &str) -> Option<SeriesProposal> {
                 continue;
             };
             target.set_fragment(None);
-            if target.host_str() != base.host_str() || !target.path().starts_with(&prefix) {
+            if target.host_str() != base.host_str() || !target.path().starts_with(prefix) {
                 continue;
             }
             let title = a
@@ -66,7 +79,17 @@ pub fn detect_series(html: &str, url: &str) -> Option<SeriesProposal> {
                 break;
             }
         }
-        let ratio = chapters.len() as f64 / all.len() as f64;
+        // Compare against distinct pages: tables of contents link sections
+        // of the same chapter with #anchors.
+        let distinct: HashSet<String> = all
+            .iter()
+            .filter_map(|a| base.join(a.value().attr("href")?).ok())
+            .map(|mut u| {
+                u.set_fragment(None);
+                u.to_string()
+            })
+            .collect();
+        let ratio = chapters.len() as f64 / distinct.len().max(1) as f64;
         if chapters.len() < MIN_CHAPTERS || ratio < 0.6 {
             continue;
         }
@@ -78,34 +101,28 @@ pub fn detect_series(html: &str, url: &str) -> Option<SeriesProposal> {
             best = Some((score, chapters));
         }
     }
-    let (_, chapters) = best?;
-    let title =
-        crate::page_title(&doc).unwrap_or_else(|| base.host_str().unwrap_or("Series").to_string());
-    Some(SeriesProposal {
-        title,
-        toc_url: url.to_string(),
-        chapters,
-    })
+    best.map(|(_, chapters)| chapters)
 }
 
-/// Directory of the page path, but at least its first segment: links to
-/// chapters live under it.
-fn section_prefix(url: &Url) -> String {
+/// Candidate path prefixes chapter links live under: the page's directory,
+/// then its first path segment.
+fn section_prefixes(url: &Url) -> Vec<String> {
     let path = url.path();
     let dir = match path.rfind('/') {
         Some(i) => &path[..=i],
         None => "/",
     };
-    if dir == "/" {
-        return "/".into();
-    }
     let first = path.trim_start_matches('/').split('/').next().unwrap_or("");
-    let first_dir = format!("/{first}/");
-    if dir.len() > first_dir.len() {
-        first_dir
+    let first_dir = if first.is_empty() || !path.trim_start_matches('/').contains('/') {
+        "/".to_string()
     } else {
-        dir.to_string()
+        format!("/{first}/")
+    };
+    let mut out = vec![dir.to_string()];
+    if first_dir != dir {
+        out.push(first_dir);
     }
+    out
 }
 
 fn looks_like_toc(el: ElementRef) -> bool {

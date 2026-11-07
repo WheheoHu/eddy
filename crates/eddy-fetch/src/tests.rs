@@ -164,6 +164,41 @@ async fn archive_strategy_uses_the_original_snapshot() {
     assert_eq!(page.final_url, target);
 }
 
+struct FakeWebView;
+
+#[async_trait::async_trait]
+impl WebRenderer for FakeWebView {
+    async fn render(&self, _url: &str) -> Option<String> {
+        Some("<html><body><article><h1>Rendered</h1><p>After JavaScript ran.</p></article></body></html>".into())
+    }
+}
+
+#[tokio::test]
+async fn client_rendered_pages_go_through_the_webview() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/book.html"))
+        .respond_with(ResponseTemplate::new(200).insert_header("content-type", "text/html").set_body_string(
+            "<meta charset='utf-8'>**Raw markdown** that is long enough to be accepted as is.<script src='markdeep.min.js'></script>",
+        ))
+        .mount(&server)
+        .await;
+    let url = format!("{}/book.html", server.uri());
+    let with_view =
+        Fetcher::new(RulePack::default(), Some(std::sync::Arc::new(FakeWebView))).unwrap();
+    let page = with_view.fetch(&url, |_| true).await.unwrap();
+    assert_eq!(page.strategy, "webview");
+    let without = Fetcher::new(RulePack::default(), None).unwrap();
+    assert_eq!(
+        without.fetch(&url, |_| true).await.unwrap().strategy,
+        "direct"
+    );
+    assert!(needs_js(
+        "<html><body><div id=\"root\"></div><noscript>Please enable JavaScript</noscript></body></html>"
+    ));
+    assert!(!needs_js(&long_page()));
+}
+
 #[test]
 fn decodes_legacy_charsets() {
     let (bytes, _, _) = encoding_rs::GBK.encode("中文内容");
