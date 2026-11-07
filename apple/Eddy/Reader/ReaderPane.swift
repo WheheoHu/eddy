@@ -42,7 +42,8 @@ struct ReaderPane: View {
     @State private var lastPosition: (block: String, offset: Int, atEnd: Bool)?
     @State private var cache = ArticleCache()
     @State private var paneHeight: CGFloat = 600
-    @State private var pull: Pull?
+    /// Where the next renderer slides in from.
+    @State private var rendererArrival: Edge = .trailing
 
     @AppStorage("reader.fontSize") private var fontSize = 17.0
     @AppStorage("reader.serif") private var serif = false
@@ -69,9 +70,6 @@ struct ReaderPane: View {
             }
             content
                 .overlay(alignment: .top) { banners }
-                .overlay(alignment: pull?.direction == .previous ? .top : .bottom) {
-                    if let pull, let neighbors { PullIndicator(pull: pull, kind: neighbors.kind) }
-                }
         }
         .clipped()
         .environment(\.colorScheme, scheme)
@@ -115,7 +113,8 @@ struct ReaderPane: View {
                     ContentUnavailableView("PDF Unavailable", systemImage: "doc.richtext", description: Text("The file isn’t on this Mac and couldn’t be downloaded."))
                 }
             } else if rendererID == RendererRegistry.web.id || (document == nil && !loading), let url = item.url.flatMap(URL.init(string:)) {
-                WebPageView(url: url, onSwipe: swipe, onEscape: onEscape, focused: focused, onFocus: onFocus, appearance: appearance.nsAppearance)
+                WebPageView(url: url, gestures: gestures, onEscape: onEscape, focused: focused, onFocus: onFocus, appearance: appearance.nsAppearance)
+                    .transition(.push(from: rendererArrival))
             } else if let document {
                 let version = "\(document.contentHash)|\(mode.rawValue)|\(translations.count)|\(fontSize)|\(serif)|\(lineHeight)|\(scheme)"
                 let article = cache.article(version) {
@@ -140,17 +139,15 @@ struct ReaderPane: View {
                         guard let target = model.item(forLink: url) else { return }
                         if let openItem { openItem(target) } else { model.currentItemID = target }
                     },
-                    pullTarget: neighbors.map { neighbors in { neighbors.peek($0)?.title } },
-                    onPull: { pull = $0 },
-                    onPullRelease: { neighbors?.go($0, .vertical) },
+                    gestures: gestures,
                     onStep: neighbors.map { neighbors in { neighbors.go($0, .vertical) } },
                     onEscape: onEscape,
-                    onSwipe: swipe,
                     focused: focused,
                     onFocus: onFocus,
                     appearance: appearance.nsAppearance
                 )
                 .id(itemID)
+                .transition(.push(from: rendererArrival))
                 .background(Color(nsColor: .textBackgroundColor))
                 .accessibilityLabel(Text("Article: \(item.title)"))
             } else {
@@ -290,15 +287,10 @@ struct ReaderPane: View {
         case let .readingMode(new):
             mode = new
         case .toggleWeb:
-            guard let item else { return }
-            let hasPage = RendererRegistry.web.supports(RenderContext(item: item, document: document))
-            let hasText = document?.blocks.isEmpty == false
-            withAnimation(.easeInOut(duration: 0.2)) {
-                if rendererID == RendererRegistry.web.id, hasText {
-                    rendererID = RendererRegistry.article.id
-                } else if rendererID != RendererRegistry.web.id, hasPage {
-                    rendererID = RendererRegistry.web.id
-                }
+            if rendererID == RendererRegistry.web.id, hasText {
+                slide(to: RendererRegistry.article.id)
+            } else if rendererID != RendererRegistry.web.id, hasPage {
+                slide(to: RendererRegistry.web.id)
             }
         case .fetchFullText:
             Task { if await model.fetchFullText(itemID) { await reloadDocument() } }
@@ -307,22 +299,57 @@ struct ReaderPane: View {
         }
     }
 
-    /// Right shows the web page, left comes back to the reader; an item
-    /// without a page (a book's chapter) turns chapters instead, left for the
-    /// next one. PDFs don't swipe.
-    private func swipe(_ fingers: SwipeDirection) {
-        guard let item else { return }
-        let hasPage = RendererRegistry.web.supports(RenderContext(item: item, document: document))
-        let hasText = document?.blocks.isEmpty == false
-        if rendererID == RendererRegistry.web.id {
-            if fingers == .left, hasText { withAnimation(.easeInOut(duration: 0.2)) { rendererID = RendererRegistry.article.id } }
-        } else if rendererID == RendererRegistry.article.id {
-            if hasPage {
-                if fingers == .right { withAnimation(.easeInOut(duration: 0.2)) { rendererID = RendererRegistry.web.id } }
-            } else if let neighbors {
-                neighbors.go(fingers == .left ? .next : .previous, .horizontal)
-            }
+    private var hasPage: Bool {
+        guard let item else { return false }
+        return RendererRegistry.web.supports(RenderContext(item: item, document: document))
+    }
+
+    private var hasText: Bool { document?.blocks.isEmpty == false }
+
+    /// The web page lies to the right of the reader: it slides in from the
+    /// right, and the reader comes back from the left. The edge is set first
+    /// so the outgoing view leaves the same way.
+    private func slide(to renderer: String) {
+        rendererArrival = renderer == RendererRegistry.web.id ? .trailing : .leading
+        DispatchQueue.main.async {
+            withAnimation(.easeInOut(duration: 0.25)) { rendererID = renderer }
         }
+    }
+
+    /// Gestures past the reader's edges: pulls to the chapters or articles
+    /// around this one; fingers moving left to the web page and right back
+    /// from it. An item without a page (a book's chapter) turns chapters with
+    /// a swipe instead, left for the next one. PDFs don't swipe.
+    private var gestures: EdgeGestures {
+        EdgeGestures(
+            pullTarget: neighbors.map { neighbors in { neighbors.target($0) } },
+            swipeTarget: { fingers in
+                if rendererID == RendererRegistry.web.id {
+                    return fingers == .right && hasText
+                        ? .item(String(localized: "Reader"), release: String(localized: "Release for the reader")) : .none
+                }
+                guard rendererID == RendererRegistry.article.id else { return .none }
+                if hasPage {
+                    return fingers == .left
+                        ? .item(String(localized: "Web Page"), release: String(localized: "Release for the web page")) : .none
+                }
+                return neighbors?.target(fingers == .left ? .next : .previous) ?? .none
+            },
+            commit: { kind in
+                switch kind {
+                case let .pull(direction):
+                    neighbors?.go(direction, .vertical)
+                case let .swipe(fingers):
+                    if rendererID == RendererRegistry.web.id {
+                        slide(to: RendererRegistry.article.id)
+                    } else if hasPage {
+                        slide(to: RendererRegistry.web.id)
+                    } else {
+                        neighbors?.go(fingers == .left ? .next : .previous, .horizontal)
+                    }
+                }
+            }
+        )
     }
 
     private func translate() async {

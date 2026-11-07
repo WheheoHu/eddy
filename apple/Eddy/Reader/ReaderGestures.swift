@@ -1,92 +1,172 @@
 import AppKit
 import SwiftUI
 
-/// A pull past the top or bottom of the text, towards the previous or next
-/// chapter or article.
-struct Pull: Equatable {
-    var direction: Direction
-    /// 0 when the pull starts, 1 once letting go would move on.
-    var progress: Double
-    /// What letting go opens; nil at the first or last item.
-    var target: String?
-
-    var armed: Bool { progress >= 1 && target != nil }
+/// Which way the fingers move in a sideways swipe.
+enum SwipeDirection {
+    case left, right
 }
 
-/// Follows pulls past the edges of the reader's scroll view. On a trackpad
-/// or Magic Mouse only finger movement after the edge is reached counts,
-/// never momentum, and the move happens when the fingers lift. A plain wheel
-/// moves on once it has been still for a moment. A held arrow key fills
-/// over a fixed time and moves on when released.
+/// What a gesture past an edge would do.
+enum EdgeTarget: Equatable {
+    /// Nothing handles it: the gesture scrolls as usual.
+    case none
+    /// Nothing lies that way; the capsule says so and letting go does nothing.
+    case end(String)
+    /// Letting go opens something; `release` is shown once it would.
+    case item(String, release: String)
+}
+
+/// A pull past the top or bottom of the text, or a sideways swipe, in
+/// progress.
+struct EdgeGesture: Equatable {
+    enum Kind: Equatable {
+        case pull(Direction)
+        case swipe(SwipeDirection)
+    }
+
+    var kind: Kind
+    /// 0 when it starts, 1 once letting go would act.
+    var progress: Double
+    var target: EdgeTarget
+
+    var armed: Bool {
+        if progress >= 1, case .item = target { return true }
+        return false
+    }
+}
+
+/// What a reader view does with gestures past its edges. A nil target
+/// function turns that kind of gesture off.
+struct EdgeGestures {
+    var pullTarget: ((Direction) -> EdgeTarget)?
+    var swipeTarget: ((SwipeDirection) -> EdgeTarget)?
+    var commit: (EdgeGesture.Kind) -> Void = { _ in }
+}
+
+/// Follows pulls past the top and bottom of the text and sideways swipes.
+/// Each gesture is classified once: sideways when it starts out clearly
+/// sideways, a pull when it pushes past an edge it has reached. On a
+/// trackpad or Magic Mouse only finger movement counts, never momentum, and
+/// the gesture acts when the fingers lift; a plain wheel acts once it has
+/// been still for a moment; a held arrow key fills over a fixed time and
+/// acts when released. Nothing reaches SwiftUI until a gesture acts.
 @MainActor
-final class PullTracker {
-    static let threshold: CGFloat = 90
+final class EdgeGestureTracker {
+    static let threshold: CGFloat = 180
     static let holdDuration: TimeInterval = 0.7
     static let wheelIdle: TimeInterval = 0.4
     /// Points per line for wheels that scroll by lines.
     static let lineDelta: CGFloat = 12
 
-    /// Title of what a pull would open; nil turns pulls off.
-    var target: ((Direction) -> String?)?
-    var onChange: ((Pull?) -> Void)?
-    var onRelease: ((Direction) -> Void)?
+    var gestures = EdgeGestures()
+    /// The gesture as it moves; nil when it ends, with whether it acted.
+    var onChange: ((EdgeGesture?, _ committed: Bool) -> Void)?
 
-    private var pull: Pull? {
-        didSet { if pull != oldValue { onChange?(pull) } }
+    private var gesture: EdgeGesture? {
+        didSet { if let gesture, gesture != oldValue { onChange?(gesture, false) } }
     }
+    private enum Axis { case undecided, horizontal, vertical }
+    private var axis = Axis.undecided
+    private var classifyX: CGFloat = 0
+    private var classifyY: CGFloat = 0
     private var distance: CGFloat = 0
     private var feltThreshold = false
+    /// The rest of a trackpad gesture that was ours, momentum included.
+    private var ownsGesture = false
+    private var lastWheel: Date?
     private var idleTimer: Timer?
     private var holdTimer: Timer?
     private var holdStart: Date?
     private var holdKey: UInt16?
 
-    var active: Bool { pull != nil }
+    var active: Bool { gesture != nil }
 
     // MARK: Wheel and trackpad
 
-    /// Called after the scroll view has scrolled, so its edges are current.
-    func scrollWheel(_ event: NSEvent, in scroll: NSScrollView) {
-        guard target != nil, holdKey == nil, event.momentumPhase.isEmpty else { return }
+    /// Whether the event belongs to an edge gesture, and must not scroll.
+    /// Called before the view scrolls; `scroll` gives its edges, nil when
+    /// pulls don't apply.
+    func handle(_ event: NSEvent, in scroll: NSScrollView?) -> Bool {
+        guard holdKey == nil else { return false }
+        if !event.momentumPhase.isEmpty { return ownsGesture }
         let phased = !event.phase.isEmpty
         if phased {
             if event.phase.contains(.began) || event.phase.contains(.mayBegin) {
-                reset()
-                return
+                startOver()
             }
-            if event.phase.contains(.cancelled) {
-                reset()
-                return
+            if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
+                let owned = ownsGesture
+                if gesture != nil { finish(commit: event.phase.contains(.ended)) }
+                return owned
             }
-            if event.phase.contains(.ended) {
-                finish()
-                return
+        } else {
+            if gesture == nil, lastWheel.map({ Date().timeIntervalSince($0) > Self.wheelIdle }) ?? true {
+                startOver()
             }
+            lastWheel = Date()
         }
+        var dx = event.scrollingDeltaX
         var dy = event.scrollingDeltaY
-        if !event.hasPreciseScrollingDeltas { dy *= Self.lineDelta }
-        guard dy != 0 else { return }
-        if pull == nil {
-            let towards: Direction = dy < 0 ? .next : .previous
-            let atEdge = towards == .next ? scroll.atBottom : scroll.atTop
-            guard atEdge, abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX) else { return }
-            start(towards)
+        if !event.hasPreciseScrollingDeltas {
+            dx *= Self.lineDelta
+            dy *= Self.lineDelta
         }
-        guard let direction = pull?.direction else { return }
-        distance += direction == .next ? -dy : dy
+        // Natural scrolling reports content movement, which follows the
+        // fingers; a plain wheel scrolling right reports negative x and acts
+        // like fingers moving left.
+        let rightward = phased ? (event.isDirectionInvertedFromDevice ? dx : -dx) : dx
+        if gesture == nil, !begin(rightward: rightward, dy: dy, scroll: scroll) { return false }
+        guard let kind = gesture?.kind else { return false }
+        switch kind {
+        case let .pull(direction): distance += direction == .next ? -dy : dy
+        case let .swipe(fingers): distance += fingers == .right ? rightward : -rightward
+        }
         if distance <= 0 {
-            reset()
-            return
+            // Back past where it started: an early end, and scrolling resumes,
+            // momentum included.
+            finish(commit: false)
+            ownsGesture = false
+            return false
         }
         update(Double(distance / Self.threshold), haptic: phased)
-        if !phased {
-            idleTimer?.invalidate()
-            let timer = Timer(timeInterval: Self.wheelIdle, repeats: false) { [weak self] _ in
-                MainActor.assumeIsolated { self?.finish() }
-            }
-            RunLoop.main.add(timer, forMode: .common)
-            idleTimer = timer
+        if !phased { restartIdleTimer() }
+        return true
+    }
+
+    /// Classifies a gesture that isn't one yet; true once it is.
+    private func begin(rightward: CGFloat, dy: CGFloat, scroll: NSScrollView?) -> Bool {
+        classifyX += rightward
+        classifyY += dy
+        if axis == .undecided, abs(classifyX) + abs(classifyY) > 8 {
+            axis = abs(classifyX) > 2 * abs(classifyY) ? .horizontal : .vertical
         }
+        switch axis {
+        case .horizontal:
+            guard let swipeTarget = gestures.swipeTarget else { return false }
+            let fingers: SwipeDirection = classifyX > 0 ? .right : .left
+            let target = swipeTarget(fingers)
+            guard target != .none else { return false }
+            start(.swipe(fingers), target: target)
+            distance = abs(classifyX)
+            return true
+        case .vertical, .undecided:
+            guard let pullTarget = gestures.pullTarget, let scroll, dy != 0 else { return false }
+            let towards: Direction = dy < 0 ? .next : .previous
+            guard towards == .next ? scroll.atBottom : scroll.atTop else { return false }
+            let target = pullTarget(towards)
+            guard target != .none else { return false }
+            start(.pull(towards), target: target)
+            return true
+        }
+    }
+
+    private func restartIdleTimer() {
+        idleTimer?.invalidate()
+        let timer = Timer(timeInterval: Self.wheelIdle, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.finish(commit: true) }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        idleTimer = timer
     }
 
     // MARK: Keys
@@ -94,12 +174,13 @@ final class PullTracker {
     /// An arrow key pressed at the edge it points past. Repeats of the same
     /// key keep the hold going; it fills on a timer, not with the repeats.
     func hold(_ direction: Direction, key: UInt16) {
-        guard target != nil else { return }
-        if holdKey == key, pull?.direction == direction { return }
-        start(direction)
+        guard let pullTarget = gestures.pullTarget else { return }
+        if holdKey == key, gesture?.kind == .pull(direction) { return }
+        let target = pullTarget(direction)
+        guard target != .none else { return }
+        start(.pull(direction), target: target)
         holdKey = key
         holdStart = Date()
-        holdTimer?.invalidate()
         let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tickHold() }
         }
@@ -107,185 +188,251 @@ final class PullTracker {
         holdTimer = timer
     }
 
-    /// Letting go of a held key moves on when the pull is full.
+    /// Letting go of a held key acts when the pull is full.
     func release(key: UInt16) {
         guard holdKey == key else { return }
-        finish()
+        finish(commit: true)
     }
 
     private func tickHold() {
         guard let holdStart else { return }
-        update(Date().timeIntervalSince(holdStart) / Self.holdDuration, haptic: false)
+        distance = CGFloat(Date().timeIntervalSince(holdStart) / Self.holdDuration) * Self.threshold
+        update(Double(distance / Self.threshold), haptic: false)
     }
 
     // MARK: State
 
-    private func start(_ direction: Direction) {
-        reset()
-        pull = Pull(direction: direction, progress: 0, target: target?(direction))
+    private func startOver() {
+        if gesture != nil { finish(commit: false) }
+        axis = .undecided
+        classifyX = 0
+        classifyY = 0
+        ownsGesture = false
+    }
+
+    private func start(_ kind: EdgeGesture.Kind, target: EdgeTarget) {
+        stopTimers()
+        distance = 0
+        feltThreshold = false
+        ownsGesture = true
+        gesture = EdgeGesture(kind: kind, progress: 0, target: target)
     }
 
     private func update(_ progress: Double, haptic: Bool) {
-        guard var pull else { return }
-        pull.progress = min(progress, 1)
-        if pull.armed, !feltThreshold {
+        guard var gesture else { return }
+        gesture.progress = max(progress, 0)
+        if gesture.armed, !feltThreshold {
             feltThreshold = true
             if haptic { NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now) }
-        } else if !pull.armed {
+        } else if !gesture.armed {
             feltThreshold = false
         }
-        self.pull = pull
+        self.gesture = gesture
     }
 
-    private func finish() {
-        let armed = pull?.armed == true ? pull?.direction : nil
-        reset()
-        if let armed { onRelease?(armed) }
+    private func finish(commit: Bool) {
+        let acted = commit && gesture?.armed == true ? gesture?.kind : nil
+        stopTimers()
+        gesture = nil
+        distance = 0
+        onChange?(nil, acted != nil)
+        if let acted { gestures.commit(acted) }
     }
 
-    func reset() {
+    private func stopTimers() {
         idleTimer?.invalidate()
         idleTimer = nil
         holdTimer?.invalidate()
         holdTimer = nil
         holdStart = nil
         holdKey = nil
-        distance = 0
-        feltThreshold = false
-        pull = nil
+    }
+
+    /// Ends any gesture without acting, as Esc does.
+    func cancel() {
+        guard gesture != nil else { return }
+        finish(commit: false)
     }
 }
 
-/// Which way the fingers move in a horizontal swipe.
-enum SwipeDirection {
-    case left, right
-}
+/// Holds a reader view (text or web page) and moves it with an edge
+/// gesture: up or down past the end of the text, sideways for a swipe. The
+/// capsule sits in the space that opens. Only the view's origin moves, so
+/// nothing is laid out again while the fingers move.
+final class GestureContainer: NSView {
+    let content: NSView
+    let tracker = EdgeGestureTracker()
+    private let indicator = NSHostingView(rootView: EdgeIndicator(gesture: nil))
+    private var offset = CGPoint.zero
 
-/// Recognizes horizontal swipes in scroll events, for the reader and the
-/// web view. A gesture is horizontal when it starts out clearly sideways;
-/// it then fires once, past a threshold, and none of it scrolls.
-@MainActor
-final class SwipeTracker {
-    static let threshold: CGFloat = 90
-    /// How long a plain wheel's sideways movement adds up.
-    static let wheelWindow: TimeInterval = 0.3
+    init(content: NSView) {
+        self.content = content
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.masksToBounds = true
+        addSubview(content)
+        indicator.isHidden = true
+        addSubview(indicator)
+        tracker.onChange = { [weak self] gesture, committed in
+            MainActor.assumeIsolated { self?.follow(gesture, committed: committed) }
+        }
+    }
 
-    var onSwipe: ((SwipeDirection) -> Void)?
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
 
-    private enum Axis { case undecided, horizontal, vertical }
-    private var axis = Axis.undecided
-    private var dx: CGFloat = 0
-    private var dy: CGFloat = 0
-    private var fired = false
-    private var lastWheel: Date?
+    override var isFlipped: Bool { true }
 
-    /// Whether the event belongs to a swipe, and must not scroll.
-    func handle(_ event: NSEvent) -> Bool {
-        guard onSwipe != nil else { return false }
-        if !event.momentumPhase.isEmpty { return axis == .horizontal }
-        let phased = !event.phase.isEmpty
-        if phased {
-            if event.phase.contains(.began) || event.phase.contains(.mayBegin) { reset() }
-            if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
-                return axis == .horizontal
+    /// Sliding in with a transition can leave a strip of the text undrawn;
+    /// redraw once the view has come to rest.
+    override func setFrameOrigin(_ newOrigin: NSPoint) {
+        super.setFrameOrigin(newOrigin)
+        redrawTask?.cancel()
+        redrawTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(120))
+            guard let self, !Task.isCancelled else { return }
+            Self.markNeedsDisplay(self.content)
+        }
+    }
+
+    private var redrawTask: Task<Void, Never>?
+
+    private static func markNeedsDisplay(_ view: NSView) {
+        view.needsDisplay = true
+        view.subviews.forEach(markNeedsDisplay)
+    }
+
+    override func layout() {
+        super.layout()
+        content.frame = bounds.offsetBy(dx: offset.x, dy: offset.y)
+        placeIndicator()
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.underPageBackgroundColor.setFill()
+        dirtyRect.fill()
+    }
+
+    /// Almost 1:1 up to the threshold, then with growing resistance.
+    private static func travel(_ progress: Double) -> CGFloat {
+        let full = EdgeGestureTracker.threshold * 0.8
+        let p = CGFloat(progress)
+        return p <= 1 ? p * full : full + 60 * (1 - 1 / (1 + (p - 1) * 2))
+    }
+
+    private func follow(_ gesture: EdgeGesture?, committed: Bool) {
+        guard let gesture else {
+            if committed {
+                // The view leaves with the reader's transition; should it stay,
+                // it comes back.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in self?.springBack() }
+            } else {
+                springBack()
             }
-        } else if lastWheel.map({ Date().timeIntervalSince($0) > Self.wheelWindow }) ?? true {
-            reset()
+            return
         }
-        if !phased { lastWheel = Date() }
-        var x = event.scrollingDeltaX
-        var y = event.scrollingDeltaY
-        if !event.hasPreciseScrollingDeltas {
-            x *= PullTracker.lineDelta
-            y *= PullTracker.lineDelta
+        let travel = Self.travel(gesture.progress)
+        offset = switch gesture.kind {
+        case .pull(.next): CGPoint(x: 0, y: -travel)
+        case .pull(.previous): CGPoint(x: 0, y: travel)
+        case .swipe(.left): CGPoint(x: -travel, y: 0)
+        case .swipe(.right): CGPoint(x: travel, y: 0)
         }
-        dx += x
-        dy += y
-        if axis == .undecided, abs(dx) + abs(dy) > 8 {
-            axis = abs(dx) > 2 * abs(dy) ? .horizontal : .vertical
-        }
-        guard axis == .horizontal else { return false }
-        if !fired, abs(dx) >= Self.threshold {
-            fired = true
-            // Natural scrolling reports content movement, which follows the
-            // fingers; a plain wheel scrolling right reports negative x.
-            let fingersRight = phased ? (event.isDirectionInvertedFromDevice ? dx > 0 : dx < 0) : dx > 0
-            onSwipe?(fingersRight ? .right : .left)
-        }
-        return true
+        content.frame = bounds.offsetBy(dx: offset.x, dy: offset.y)
+        indicator.rootView = EdgeIndicator(gesture: gesture)
+        indicator.isHidden = false
+        placeIndicator()
     }
 
-    private func reset() {
-        axis = .undecided
-        dx = 0
-        dy = 0
-        fired = false
+    private func springBack() {
+        guard offset != .zero || !indicator.isHidden else { return }
+        offset = .zero
+        indicator.isHidden = true
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.22
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            content.animator().frame = bounds
+        }
+    }
+
+    /// In the middle of the space the content has left, kept on screen.
+    private func placeIndicator() {
+        guard !indicator.isHidden, let gesture = indicator.rootView.gesture else { return }
+        let size = indicator.fittingSize
+        let gapX = abs(offset.x), gapY = abs(offset.y)
+        var origin = CGPoint(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2)
+        switch gesture.kind {
+        case .pull(.next): origin.y = min(bounds.maxY - gapY / 2 - size.height / 2, bounds.maxY - size.height - 12)
+        case .pull(.previous): origin.y = max(gapY / 2 - size.height / 2, 12)
+        case .swipe(.left): origin.x = min(bounds.maxX - gapX / 2 - size.width / 2, bounds.maxX - size.width - 12)
+        case .swipe(.right): origin.x = max(gapX / 2 - size.width / 2, 12)
+        }
+        indicator.frame = CGRect(origin: origin, size: size)
     }
 }
 
 extension NSScrollView {
-    /// The top of the document is in view (or pulled past).
+    /// The top of the document is in view.
     var atTop: Bool {
         contentView.bounds.minY <= -contentInsets.top + 1
     }
 
-    /// The bottom of the document is in view (or pulled past); always true
-    /// for a document shorter than the view.
+    /// The bottom of the document is in view; always true for a document
+    /// shorter than the view.
     var atBottom: Bool {
         guard let document = documentView else { return false }
         return contentView.bounds.maxY >= document.frame.height + contentInsets.bottom - 1
     }
 }
 
-/// Shows a pull at the edge it goes past: how far it has come, what letting
-/// go opens, or that there is nothing more.
-struct PullIndicator: View {
-    let pull: Pull
-    let kind: Neighbors.Kind
+/// Shows an edge gesture: how far it has come, what letting go does, or
+/// that there is nothing more.
+struct EdgeIndicator: View {
+    let gesture: EdgeGesture?
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: pull.direction == .next ? "arrow.down.circle" : "arrow.up.circle")
-                .symbolVariant(pull.armed ? .fill : .none)
-                .foregroundStyle(pull.armed ? Color.accentColor : .secondary)
-            Text(text).lineLimit(1)
-        }
-        .font(.callout)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background {
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Rectangle().fill(.regularMaterial)
-                    if pull.target != nil {
-                        Rectangle()
-                            .fill(Color.accentColor.opacity(pull.armed ? 0.25 : 0.15))
-                            .frame(width: geo.size.width * pull.progress)
+        if let gesture {
+            HStack(spacing: 8) {
+                Image(systemName: icon(gesture.kind))
+                    .symbolVariant(gesture.armed ? .fill : .none)
+                    .foregroundStyle(gesture.armed ? Color.accentColor : .secondary)
+                Text(text(gesture)).lineLimit(1)
+            }
+            .font(.callout)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background {
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Rectangle().fill(.regularMaterial)
+                        if case .item = gesture.target {
+                            Rectangle()
+                                .fill(Color.accentColor.opacity(gesture.armed ? 0.25 : 0.15))
+                                .frame(width: geo.size.width * min(gesture.progress, 1))
+                        }
                     }
                 }
             }
+            .clipShape(Capsule())
+            .frame(maxWidth: 420)
+            .accessibilityElement(children: .combine)
         }
-        .clipShape(Capsule())
-        .shadow(color: .black.opacity(0.1), radius: 8, y: 2)
-        .frame(maxWidth: 460)
-        .padding(16)
-        .accessibilityElement(children: .combine)
     }
 
-    private var text: String {
-        guard let target = pull.target else {
-            switch (kind, pull.direction) {
-            case (.chapter, .next): return String(localized: "This is the last chapter")
-            case (.chapter, .previous): return String(localized: "This is the first chapter")
-            case (.article, .next): return String(localized: "This is the last article")
-            case (.article, .previous): return String(localized: "This is the first article")
-            }
+    private func icon(_ kind: EdgeGesture.Kind) -> String {
+        switch kind {
+        case .pull(.next): "arrow.down.circle"
+        case .pull(.previous): "arrow.up.circle"
+        case .swipe(.left): "arrow.left.circle"
+        case .swipe(.right): "arrow.right.circle"
         }
-        switch (pull.direction, pull.armed) {
-        case (.next, true): return String(localized: "Release for next: \(target)")
-        case (.next, false): return String(localized: "Next: \(target)")
-        case (.previous, true): return String(localized: "Release for previous: \(target)")
-        case (.previous, false): return String(localized: "Previous: \(target)")
+    }
+
+    private func text(_ gesture: EdgeGesture) -> String {
+        switch gesture.target {
+        case .none: ""
+        case let .end(message): message
+        case let .item(label, release): gesture.armed ? release : label
         }
     }
 }

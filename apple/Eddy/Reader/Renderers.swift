@@ -39,7 +39,7 @@ enum RendererRegistry {
 /// forward swipes are off.
 struct WebPageView: NSViewRepresentable {
     let url: URL
-    var onSwipe: ((SwipeDirection) -> Void)?
+    var gestures = EdgeGestures()
     var onEscape: (() -> Void)?
     /// Keyboard focus belongs in the page.
     var focused = false
@@ -48,20 +48,20 @@ struct WebPageView: NSViewRepresentable {
     /// the app's appearance.
     var appearance: NSAppearance?
 
-    func makeCoordinator() -> SwipeTracker { SwipeTracker() }
-
-    func makeNSView(context: Context) -> ReaderWebView {
+    func makeNSView(context: Context) -> GestureContainer {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
         let view = ReaderWebView(frame: .zero, configuration: config)
         view.allowsBackForwardNavigationGestures = false
-        view.swipes = context.coordinator
+        let container = GestureContainer(content: view)
+        view.tracker = container.tracker
         view.load(URLRequest(url: url))
-        return view
+        return container
     }
 
-    func updateNSView(_ view: ReaderWebView, context: Context) {
-        context.coordinator.onSwipe = onSwipe
+    func updateNSView(_ container: GestureContainer, context: Context) {
+        container.tracker.gestures = gestures
+        guard let view = container.content as? ReaderWebView else { return }
         view.onEscape = onEscape
         view.onFocus = onFocus
         view.wantsFocus = focused
@@ -70,10 +70,14 @@ struct WebPageView: NSViewRepresentable {
             view.load(URLRequest(url: url))
         }
     }
+
+    static func dismantleNSView(_ container: GestureContainer, coordinator: ()) {
+        container.tracker.cancel()
+    }
 }
 
 final class ReaderWebView: WKWebView {
-    weak var swipes: SwipeTracker?
+    weak var tracker: EdgeGestureTracker?
     var onEscape: (() -> Void)?
     var onFocus: (() -> Void)?
     var wantsFocus = false {
@@ -92,13 +96,15 @@ final class ReaderWebView: WKWebView {
     }
 
     override func scrollWheel(with event: NSEvent) {
-        if swipes?.handle(event) == true { return }
+        if tracker?.handle(event, in: nil) == true { return }
         super.scrollWheel(with: event)
     }
 
-    /// Esc leaves the page for the column before it.
+    /// Esc cancels a swipe, else leaves the page for the column before it.
     override func keyDown(with event: NSEvent) {
-        if event.keyCode == 53, let onEscape {
+        if event.keyCode == 53, tracker?.active == true {
+            tracker?.cancel()
+        } else if event.keyCode == 53, let onEscape {
             onEscape()
         } else {
             super.keyDown(with: event)

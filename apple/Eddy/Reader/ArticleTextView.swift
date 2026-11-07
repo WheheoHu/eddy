@@ -28,14 +28,11 @@ struct ArticleTextView: NSViewRepresentable {
     let onPosition: (_ blockID: String, _ offset: Int, _ atEnd: Bool) -> Void
     /// Links inside an imported book (`epub://`); others open in the browser.
     var onBookLink: (URL) -> Void = { _ in }
-    /// Title of what pulling past an edge opens; nil turns pulls off.
-    var pullTarget: ((Direction) -> String?)?
-    var onPull: (Pull?) -> Void = { _ in }
-    var onPullRelease: (Direction) -> Void = { _ in }
+    /// Pulls past the top and bottom of the text, and sideways swipes.
+    var gestures = EdgeGestures()
     /// Cmd+Left and Cmd+Right.
     var onStep: ((Direction) -> Void)?
     var onEscape: (() -> Void)?
-    var onSwipe: ((SwipeDirection) -> Void)?
     /// Keyboard focus belongs in the text; it takes it when this turns on,
     /// or when it appears with it on.
     var focused = false
@@ -45,7 +42,7 @@ struct ArticleTextView: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeNSView(context: Context) -> NSScrollView {
+    func makeNSView(context: Context) -> GestureContainer {
         let textView = ReaderTextView(usingTextLayoutManager: true)
         textView.isEditable = false
         textView.isSelectable = true
@@ -63,32 +60,32 @@ struct ArticleTextView: NSViewRepresentable {
         textView.linkTextAttributes = [.foregroundColor: NSColor.linkColor, .cursor: NSCursor.pointingHand]
         textView.textLayoutManager?.delegate = context.coordinator
         textView.delegate = context.coordinator
-        textView.pulls = context.coordinator.pulls
 
         let scroll = ReaderScrollView()
-        scroll.pulls = context.coordinator.pulls
-        scroll.swipes = context.coordinator.swipes
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.drawsBackground = true
         scroll.backgroundColor = .textBackgroundColor
         scroll.documentView = textView
         scroll.contentView.postsBoundsChangedNotifications = true
+        let container = GestureContainer(content: scroll)
+        scroll.tracker = container.tracker
+        textView.tracker = container.tracker
         context.coordinator.attach(scroll: scroll, textView: textView)
-        return scroll
+        return container
     }
 
-    func updateNSView(_ scroll: NSScrollView, context: Context) {
+    func updateNSView(_ container: GestureContainer, context: Context) {
         let c = context.coordinator
         c.onPosition = onPosition
         c.loadImage = loadImage
         c.onBookLink = onBookLink
-        c.pulls.target = pullTarget
-        c.pulls.onChange = onPull
-        c.pulls.onRelease = onPullRelease
-        c.swipes.onSwipe = onSwipe
-        if scroll.appearance?.name != appearance?.name { scroll.appearance = appearance }
-        guard let textView = scroll.documentView as? ReaderTextView else { return }
+        container.tracker.gestures = gestures
+        if container.appearance?.name != appearance?.name { container.appearance = appearance }
+        guard let scroll = c.scroll, let textView = scroll.documentView as? ReaderTextView else { return }
+        // With somewhere to go, the article itself follows a pull past the
+        // ends instead of the system's bounce.
+        scroll.verticalScrollElasticity = gestures.pullTarget != nil ? .none : .automatic
         textView.onStep = onStep
         textView.onEscape = onEscape
         textView.onFocus = onFocus
@@ -109,9 +106,8 @@ struct ArticleTextView: NSViewRepresentable {
         }
     }
 
-    static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
-        coordinator.pulls.onChange = nil
-        coordinator.pulls.reset()
+    static func dismantleNSView(_ container: GestureContainer, coordinator: Coordinator) {
+        container.tracker.cancel()
     }
 
     /// Versions share their prefix (document hash) when only the reading
@@ -131,8 +127,6 @@ struct ArticleTextView: NSViewRepresentable {
         var onPosition: ((String, Int, Bool) -> Void)?
         var loadImage: ((String) async -> NSImage?)?
         var onBookLink: ((URL) -> Void)?
-        let pulls = PullTracker()
-        let swipes = SwipeTracker()
         private var lastReported: (String, Int, Bool)?
         private var reportTask: Task<Void, Never>?
         private var imageTask: Task<Void, Never>?
@@ -314,17 +308,14 @@ struct ArticleTextView: NSViewRepresentable {
     }
 }
 
-/// Keeps sideways swipes from scrolling, and passes scrolling on to the
-/// pull tracker once it has scrolled, so the system's rubber-band still
-/// shows while pulling past an edge.
+/// Hands scrolling to the edge gesture tracker first: a pull past an end or
+/// a sideways swipe doesn't scroll.
 final class ReaderScrollView: NSScrollView {
-    weak var pulls: PullTracker?
-    weak var swipes: SwipeTracker?
+    weak var tracker: EdgeGestureTracker?
 
     override func scrollWheel(with event: NSEvent) {
-        if swipes?.handle(event) == true { return }
+        if tracker?.handle(event, in: self) == true { return }
         super.scrollWheel(with: event)
-        pulls?.scrollWheel(event, in: self)
     }
 }
 
@@ -336,7 +327,7 @@ final class ReaderTextView: NSTextView {
     var maxWidth: CGFloat = 700
     /// One line of text.
     var lineStep: CGFloat = 24
-    weak var pulls: PullTracker?
+    weak var tracker: EdgeGestureTracker?
     var onStep: ((Direction) -> Void)?
     var onEscape: (() -> Void)?
     var onFocus: (() -> Void)?
@@ -375,17 +366,17 @@ final class ReaderTextView: NSTextView {
         }
         let page = max(scroll.contentView.bounds.height - lineStep, lineStep)
         if modifiers == .command, key == .leftArrow || key == .rightArrow, let onStep {
-            pulls?.reset()
+            tracker?.cancel()
             onStep(key == .leftArrow ? .previous : .next)
         } else if modifiers.isEmpty, key == .downArrow || key == .rightArrow {
             if scroll.atBottom {
-                pulls?.hold(.next, key: event.keyCode)
+                tracker?.hold(.next, key: event.keyCode)
             } else {
                 scrollBy(key == .downArrow ? lineStep : page, animated: key == .rightArrow)
             }
         } else if modifiers.isEmpty, key == .upArrow || key == .leftArrow {
             if scroll.atTop {
-                pulls?.hold(.previous, key: event.keyCode)
+                tracker?.hold(.previous, key: event.keyCode)
             } else {
                 scrollBy(key == .upArrow ? -lineStep : -page, animated: key == .leftArrow)
             }
@@ -395,16 +386,17 @@ final class ReaderTextView: NSTextView {
     }
 
     override func keyUp(with event: NSEvent) {
-        pulls?.release(key: event.keyCode)
+        tracker?.release(key: event.keyCode)
         super.keyUp(with: event)
     }
 
-    /// Esc closes the find bar, then cancels a pull, then leaves the text.
+    /// Esc closes the find bar, then cancels a pull, then goes to the reader
+    /// (which cancels a translation, else leaves the text).
     override func cancelOperation(_ sender: Any?) {
         if let scroll = enclosingScrollView, scroll.isFindBarVisible {
             scroll.isFindBarVisible = false
-        } else if pulls?.active == true {
-            pulls?.reset()
+        } else if tracker?.active == true {
+            tracker?.cancel()
         } else if let onEscape {
             onEscape()
         }

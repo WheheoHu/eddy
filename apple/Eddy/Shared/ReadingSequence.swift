@@ -23,6 +23,22 @@ struct Neighbors {
     /// Opens it; `axis` is the gesture's, for the transition.
     let go: @MainActor (Direction, Axis) -> Void
 
+    /// What a gesture towards `direction` would open, worded for the capsule.
+    func target(_ direction: Direction) -> EdgeTarget {
+        guard let item = peek(direction) else {
+            switch (kind, direction) {
+            case (.chapter, .next): return .end(String(localized: "This is the last chapter"))
+            case (.chapter, .previous): return .end(String(localized: "This is the first chapter"))
+            case (.article, .next): return .end(String(localized: "This is the last article"))
+            case (.article, .previous): return .end(String(localized: "This is the first article"))
+            }
+        }
+        let title = item.title
+        return direction == .next
+            ? .item(String(localized: "Next: \(title)"), release: String(localized: "Release for next: \(title)"))
+            : .item(String(localized: "Previous: \(title)"), release: String(localized: "Release for previous: \(title)"))
+    }
+
     /// Chapters in book order. A previous chapter opens at its end, the
     /// way reading backwards would reach it.
     static func chapters(
