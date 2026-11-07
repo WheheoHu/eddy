@@ -1,0 +1,37 @@
+use eddy_model::ids::sha256_hex;
+
+use crate::engine::Inner;
+use crate::{EngineError, Result};
+
+const MAX_IMAGE_BYTES: usize = 25 * 1024 * 1024;
+
+impl Inner {
+    /// Image bytes for `url`, cached as a blob so articles render offline.
+    pub(crate) async fn image(&self, url: &str) -> Result<(Vec<u8>, String)> {
+        let parsed = url::Url::parse(url).map_err(|_| EngineError::Invalid("图片地址无效。".into()))?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Err(EngineError::Invalid("图片地址无效。".into()));
+        }
+        let key = format!("img{}", &sha256_hex(url.as_bytes())[..40]);
+        if let Some(bytes) = self.store.get_blob(&key)? {
+            let mime = self.store.blob_mime(&key)?.unwrap_or_else(|| "image/*".into());
+            return Ok((bytes, mime));
+        }
+        let response = self.http.get(parsed).send().await.map_err(|e| EngineError::Network(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(EngineError::Network(format!("HTTP {}", response.status().as_u16())));
+        }
+        let mime = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("image/*")
+            .to_string();
+        let bytes = response.bytes().await.map_err(|e| EngineError::Network(e.to_string()))?;
+        if bytes.len() > MAX_IMAGE_BYTES {
+            return Err(EngineError::Invalid("图片太大。".into()));
+        }
+        self.store.put_blob_keyed(&key, &bytes, &mime, false)?;
+        Ok((bytes.to_vec(), mime))
+    }
+}

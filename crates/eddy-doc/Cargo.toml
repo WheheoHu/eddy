@@ -1,0 +1,16 @@
+[package]
+name = "eddy-doc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+eddy-model = { workspace = true }
+scraper = { workspace = true }
+serde = { workspace = true }
+syntect = { version = "5", default-features = false, features = ["parsing", "default-syntaxes", "regex-fancy"] }
+url = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

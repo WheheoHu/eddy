@@ -3,16 +3,12 @@ import SwiftUI
 
 @main
 struct EddyApp: App {
-    @State private var pong = "…"
+    @State private var model = DebugModel()
 
     var body: some Scene {
         WindowGroup("Eddy") {
-            VStack(spacing: 12) {
-                Text("Eddy core \(EddyCore.version)")
-                Text(pong).foregroundStyle(.secondary)
-            }
-            .frame(minWidth: 480, minHeight: 320)
-            .task { pong = await ping(delayMs: 10) }
+            DebugView(model: model)
+                .frame(minWidth: 900, minHeight: 560)
         }
     }
 }

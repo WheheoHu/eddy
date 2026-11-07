@@ -1,0 +1,393 @@
+//! FFI view types. They mirror the domain model in shapes convenient for
+//! native UIs; conversions live next to each type.
+
+use eddy_core::{EngineStatus, ItemRow, Mode, RefreshSummary, SourceInfo};
+use eddy_model as m;
+
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EngineMode {
+    Unconfigured,
+    Standalone,
+    Server,
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct AccountView {
+    pub base_url: String,
+    pub username: String,
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct StatusView {
+    pub mode: EngineMode,
+    pub account: Option<AccountView>,
+    pub last_refresh: Option<i64>,
+    pub last_error: Option<String>,
+}
+
+impl From<EngineStatus> for StatusView {
+    fn from(s: EngineStatus) -> Self {
+        StatusView {
+            mode: match s.mode {
+                Mode::Unconfigured => EngineMode::Unconfigured,
+                Mode::Standalone => EngineMode::Standalone,
+                Mode::Server => EngineMode::Server,
+            },
+            account: s.account.map(|a| AccountView { base_url: a.base_url, username: a.username }),
+            last_refresh: s.last_refresh,
+            last_error: s.last_error,
+        }
+    }
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct RefreshSummaryView {
+    pub new_items: u32,
+    pub state_changes: u32,
+    pub sources: u32,
+}
+
+impl From<RefreshSummary> for RefreshSummaryView {
+    fn from(s: RefreshSummary) -> Self {
+        RefreshSummaryView { new_items: s.new_items, state_changes: s.state_changes, sources: s.sources }
+    }
+}
+
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FullTextModeView {
+    Auto,
+    Always,
+    Never,
+}
+
+impl From<m::FullTextMode> for FullTextModeView {
+    fn from(v: m::FullTextMode) -> Self {
+        match v {
+            m::FullTextMode::Auto => FullTextModeView::Auto,
+            m::FullTextMode::Always => FullTextModeView::Always,
+            m::FullTextMode::Never => FullTextModeView::Never,
+        }
+    }
+}
+
+impl From<FullTextModeView> for m::FullTextMode {
+    fn from(v: FullTextModeView) -> Self {
+        match v {
+            FullTextModeView::Auto => m::FullTextMode::Auto,
+            FullTextModeView::Always => m::FullTextMode::Always,
+            FullTextModeView::Never => m::FullTextMode::Never,
+        }
+    }
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct SourceView {
+    pub id: String,
+    pub saved: bool,
+    pub title: String,
+    pub category: Option<String>,
+    pub site_url: Option<String>,
+    pub unread: u32,
+    pub full_text: FullTextModeView,
+    pub truncated: bool,
+}
+
+impl From<SourceInfo> for SourceView {
+    fn from(s: SourceInfo) -> Self {
+        SourceView {
+            id: s.source.id,
+            saved: s.source.kind == m::SourceKind::Saved,
+            title: s.source.title,
+            category: s.source.category,
+            site_url: s.source.site_url,
+            unread: s.unread,
+            full_text: s.source.full_text.into(),
+            truncated: s.source.truncated,
+        }
+    }
+}
+
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ItemKindView {
+    Feed,
+    Saved,
+    Chapter,
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct ItemView {
+    pub id: String,
+    pub kind: ItemKindView,
+    pub title: String,
+    pub url: Option<String>,
+    pub author: Option<String>,
+    pub source_id: Option<String>,
+    pub source_title: Option<String>,
+    pub published_at: i64,
+    pub read: bool,
+    pub starred: bool,
+    pub progress: f64,
+    pub finished: bool,
+    pub excerpt: Option<String>,
+    pub lang: Option<String>,
+    pub text_len: u32,
+    pub series_id: Option<String>,
+    pub chapter_index: Option<u32>,
+    pub last_read_at: Option<i64>,
+}
+
+impl From<ItemRow> for ItemView {
+    fn from(r: ItemRow) -> Self {
+        let i = r.item;
+        ItemView {
+            id: i.id,
+            kind: match i.kind {
+                m::ItemKind::Feed => ItemKindView::Feed,
+                m::ItemKind::Saved => ItemKindView::Saved,
+                m::ItemKind::Chapter => ItemKindView::Chapter,
+            },
+            title: i.title,
+            url: i.url,
+            author: i.author,
+            source_id: i.source_id,
+            source_title: r.source_title,
+            published_at: i.published_at,
+            read: i.read,
+            starred: i.starred,
+            progress: i.progress,
+            finished: i.finished,
+            excerpt: i.excerpt,
+            lang: i.lang,
+            text_len: i.text_len,
+            series_id: i.series_id,
+            chapter_index: i.chapter_index,
+            last_read_at: i.last_read_at,
+        }
+    }
+}
+
+#[derive(uniffi::Enum, Clone, Debug)]
+pub enum ItemFilterView {
+    All,
+    Starred,
+    Saved,
+    ContinueReading,
+    Source { id: String },
+    Category { name: String },
+    Series { id: String },
+    Tag { id: String },
+}
+
+impl From<ItemFilterView> for eddy_core::ItemFilter {
+    fn from(f: ItemFilterView) -> Self {
+        use eddy_core::ItemFilter as F;
+        match f {
+            ItemFilterView::All => F::All,
+            ItemFilterView::Starred => F::Starred,
+            ItemFilterView::Saved => F::Saved,
+            ItemFilterView::ContinueReading => F::ContinueReading,
+            ItemFilterView::Source { id } => F::Source(id),
+            ItemFilterView::Category { name } => F::Category(name),
+            ItemFilterView::Series { id } => F::Series(id),
+            ItemFilterView::Tag { id } => F::Tag(id),
+        }
+    }
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct ItemQueryView {
+    pub filter: ItemFilterView,
+    pub unread_only: bool,
+    pub limit: u32,
+    pub offset: u32,
+}
+
+impl From<ItemQueryView> for eddy_core::ItemQuery {
+    fn from(q: ItemQueryView) -> Self {
+        eddy_core::ItemQuery { filter: q.filter.into(), unread_only: q.unread_only, limit: q.limit, offset: q.offset }
+    }
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct RunView {
+    pub text: String,
+    pub style: u16,
+    pub link: Option<String>,
+    pub math: bool,
+}
+
+impl From<m::Run> for RunView {
+    fn from(r: m::Run) -> Self {
+        RunView { text: r.text, style: r.style, link: r.link, math: r.math }
+    }
+}
+
+fn runs(v: Vec<m::Run>) -> Vec<RunView> {
+    v.into_iter().map(Into::into).collect()
+}
+
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TokenClassView {
+    Keyword,
+    String,
+    Comment,
+    Number,
+    Constant,
+    Function,
+    Type,
+    Variable,
+    Operator,
+    Punctuation,
+    Tag,
+    Attribute,
+}
+
+impl From<m::TokenClass> for TokenClassView {
+    fn from(c: m::TokenClass) -> Self {
+        use m::TokenClass as T;
+        match c {
+            T::Keyword => Self::Keyword,
+            T::String => Self::String,
+            T::Comment => Self::Comment,
+            T::Number => Self::Number,
+            T::Constant => Self::Constant,
+            T::Function => Self::Function,
+            T::Type => Self::Type,
+            T::Variable => Self::Variable,
+            T::Operator => Self::Operator,
+            T::Punctuation => Self::Punctuation,
+            T::Tag => Self::Tag,
+            T::Attribute => Self::Attribute,
+        }
+    }
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct HighlightView {
+    pub start: u32,
+    pub end: u32,
+    pub class: TokenClassView,
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct TableCellView {
+    pub header: bool,
+    pub colspan: u16,
+    pub rowspan: u16,
+    pub runs: Vec<RunView>,
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct TableRowView {
+    pub cells: Vec<TableCellView>,
+}
+
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MediaKindView {
+    Video,
+    Audio,
+    Embed,
+}
+
+#[derive(uniffi::Enum, Clone, Debug)]
+pub enum BlockKindView {
+    Heading { level: u8, runs: Vec<RunView> },
+    Paragraph { runs: Vec<RunView> },
+    ListItem { ordered: bool, depth: u8, index: u32, marker: bool, runs: Vec<RunView> },
+    Code { language: Option<String>, text: String, highlights: Vec<HighlightView> },
+    Math { tex: String },
+    Image { src: String, alt: String, width: Option<u32>, height: Option<u32>, caption: Vec<RunView> },
+    Table { rows: Vec<TableRowView> },
+    Media { media: MediaKindView, src: String, poster: Option<String>, title: Option<String> },
+    Rule,
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct BlockView {
+    pub id: String,
+    pub quote_depth: u8,
+    pub kind: BlockKindView,
+}
+
+impl From<m::Block> for BlockView {
+    fn from(b: m::Block) -> Self {
+        use m::BlockKind as K;
+        let kind = match b.kind {
+            K::Heading { level, runs: r } => BlockKindView::Heading { level, runs: runs(r) },
+            K::Paragraph { runs: r } => BlockKindView::Paragraph { runs: runs(r) },
+            K::ListItem { ordered, depth, index, marker, runs: r } => {
+                BlockKindView::ListItem { ordered, depth, index, marker, runs: runs(r) }
+            }
+            K::Code { language, text, highlights } => BlockKindView::Code {
+                language,
+                text,
+                highlights: highlights
+                    .into_iter()
+                    .map(|h| HighlightView { start: h.start, end: h.end, class: h.class.into() })
+                    .collect(),
+            },
+            K::Math { tex } => BlockKindView::Math { tex },
+            K::Image { src, alt, width, height, caption } => BlockKindView::Image { src, alt, width, height, caption: runs(caption) },
+            K::Table { rows } => BlockKindView::Table {
+                rows: rows
+                    .into_iter()
+                    .map(|row| TableRowView {
+                        cells: row
+                            .cells
+                            .into_iter()
+                            .map(|c| TableCellView { header: c.header, colspan: c.colspan, rowspan: c.rowspan, runs: runs(c.runs) })
+                            .collect(),
+                    })
+                    .collect(),
+            },
+            K::Media { media, src, poster, title } => BlockKindView::Media {
+                media: match media {
+                    m::MediaKind::Video => MediaKindView::Video,
+                    m::MediaKind::Audio => MediaKindView::Audio,
+                    m::MediaKind::Embed => MediaKindView::Embed,
+                },
+                src,
+                poster,
+                title,
+            },
+            K::Rule => BlockKindView::Rule,
+        };
+        BlockView { id: b.id, quote_depth: b.quote_depth, kind }
+    }
+}
+
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContentOriginView {
+    Feed,
+    Extracted,
+    Captured,
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct DocumentView {
+    pub content_hash: String,
+    pub origin: ContentOriginView,
+    pub source_url: Option<String>,
+    pub blocks: Vec<BlockView>,
+}
+
+impl From<eddy_core::LoadedDocument> for DocumentView {
+    fn from(d: eddy_core::LoadedDocument) -> Self {
+        DocumentView {
+            content_hash: d.version.hash,
+            origin: match d.version.origin {
+                m::ContentOrigin::Feed => ContentOriginView::Feed,
+                m::ContentOrigin::Extracted => ContentOriginView::Extracted,
+                m::ContentOrigin::Captured => ContentOriginView::Captured,
+            },
+            source_url: d.version.source_url,
+            blocks: d.document.blocks.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct ImageData {
+    pub bytes: Vec<u8>,
+    pub mime: String,
+}

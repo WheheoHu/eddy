@@ -1,0 +1,180 @@
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ItemKind {
+    /// Article delivered by a subscription.
+    Feed,
+    /// Web page saved by the user.
+    Saved,
+    /// Chapter of a series (multi-page tutorial, book).
+    Chapter,
+}
+
+impl ItemKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ItemKind::Feed => "feed",
+            ItemKind::Saved => "saved",
+            ItemKind::Chapter => "chapter",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "feed" => Some(ItemKind::Feed),
+            "saved" => Some(ItemKind::Saved),
+            "chapter" => Some(ItemKind::Chapter),
+            _ => None,
+        }
+    }
+}
+
+/// An upstream service account. Its secret lives in the platform keychain
+/// (standalone) or the server's encrypted store, never here.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Account {
+    pub id: String,
+    pub kind: String,
+    pub base_url: String,
+    pub username: String,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceKind {
+    Feed,
+    Saved,
+}
+
+impl SourceKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SourceKind::Feed => "feed",
+            SourceKind::Saved => "saved",
+        }
+    }
+}
+
+/// Per-source full-text policy: `Auto` lets truncation detection decide.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FullTextMode {
+    Auto,
+    Always,
+    Never,
+}
+
+impl FullTextMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FullTextMode::Auto => "auto",
+            FullTextMode::Always => "always",
+            FullTextMode::Never => "never",
+        }
+    }
+
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "always" => FullTextMode::Always,
+            "never" => FullTextMode::Never,
+            _ => FullTextMode::Auto,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Source {
+    pub id: String,
+    pub account_id: Option<String>,
+    pub upstream_id: Option<String>,
+    pub kind: SourceKind,
+    pub title: String,
+    pub category: Option<String>,
+    pub site_url: Option<String>,
+    pub full_text: FullTextMode,
+    /// Truncation detection concluded the feed only carries excerpts.
+    pub truncated: bool,
+}
+
+/// Snapshot of an item's metadata. Mutable reading state lives in its own
+/// fields and is changed through operations.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Item {
+    pub id: String,
+    pub source_id: Option<String>,
+    pub account_id: Option<String>,
+    pub upstream_id: Option<String>,
+    pub kind: ItemKind,
+    pub url: Option<String>,
+    pub title: String,
+    pub author: Option<String>,
+    pub published_at: i64,
+    pub added_at: i64,
+    pub read: bool,
+    pub starred: bool,
+    pub series_id: Option<String>,
+    pub chapter_index: Option<u32>,
+    pub current_version: Option<String>,
+    pub excerpt: Option<String>,
+    pub lang: Option<String>,
+    pub text_len: u32,
+    pub progress: f64,
+    pub finished: bool,
+    pub last_read_at: Option<i64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContentOrigin {
+    /// HTML delivered by the subscription.
+    Feed,
+    /// Full text extracted from the fetched page.
+    Extracted,
+    /// Page captured from the user's browser.
+    Captured,
+}
+
+impl ContentOrigin {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ContentOrigin::Feed => "feed",
+            ContentOrigin::Extracted => "extracted",
+            ContentOrigin::Captured => "captured",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "feed" => Some(ContentOrigin::Feed),
+            "extracted" => Some(ContentOrigin::Extracted),
+            "captured" => Some(ContentOrigin::Captured),
+            _ => None,
+        }
+    }
+}
+
+/// An immutable rendition of an item's content. The raw source is always kept
+/// so the document can be regenerated when the schema or extraction improves.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ContentVersion {
+    pub hash: String,
+    pub item_id: String,
+    pub origin: ContentOrigin,
+    pub source_url: Option<String>,
+    pub raw_blob: String,
+    pub raw_mime: String,
+    pub doc_blob: Option<String>,
+    pub doc_schema: Option<u32>,
+    pub text_len: u32,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Series {
+    pub id: String,
+    pub title: String,
+    pub toc_url: Option<String>,
+    pub created_at: i64,
+}
