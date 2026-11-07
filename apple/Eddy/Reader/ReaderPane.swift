@@ -35,7 +35,18 @@ struct ReaderPane: View {
     @State private var rendererID = RendererRegistry.article.id
     @State private var mode: ReadingMode = .original
     @State private var translations: [String: String] = [:]
+    /// The whole text is translated; otherwise translating resumes.
+    @State private var translationComplete = false
     @State private var translating = false
+    /// A translation was cancelled or failed part-way; it can continue.
+    @State private var translationStopped = false
+    /// Batches wait here so the text is rebuilt at most every 0.6 s.
+    @State private var pendingTranslations: [String: String] = [:]
+    @State private var flushScheduled = false
+    @State private var translationRun: Task<Void, Never>?
+    /// Bumped by each start and cancel; a run finishing late leaves the
+    /// banner to the newer one.
+    @State private var translationGeneration = 0
     @State private var showSummary = false
     @State private var showType = false
     @State private var resumeNote: ResumePointView?
@@ -83,7 +94,10 @@ struct ReaderPane: View {
             perform(command.action)
         }
         .onChange(of: mode) { _, new in
-            guard new != .original else { return }
+            guard new != .original else {
+                cancelTranslation()
+                return
+            }
             // Translations show in the reflowed text.
             if rendererID == RendererRegistry.pdf.id {
                 guard document?.blocks.isEmpty == false else {
@@ -93,7 +107,7 @@ struct ReaderPane: View {
                 }
                 rendererID = RendererRegistry.article.id
             }
-            if translations.isEmpty { Task { await translate() } }
+            if !translationComplete, !translating { startTranslation() }
         }
     }
 
@@ -105,7 +119,7 @@ struct ReaderPane: View {
                     PDFReaderView(url: pdfURL, target: pageTarget ?? resumePage, onPage: { page, count in
                         lastPage = (page, count)
                         model.recordPage(itemID, page: page, of: count)
-                    }, focused: focused, onFocus: onFocus, onEscape: onEscape, appearance: appearance.nsAppearance)
+                    }, focused: focused, onFocus: onFocus, onEscape: escape, appearance: appearance.nsAppearance)
                     .accessibilityLabel(Text("PDF: \(item.title)"))
                 } else if loading {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -113,7 +127,7 @@ struct ReaderPane: View {
                     ContentUnavailableView("PDF Unavailable", systemImage: "doc.richtext", description: Text("The file isn’t on this Mac and couldn’t be downloaded."))
                 }
             } else if rendererID == RendererRegistry.web.id || (document == nil && !loading), let url = item.url.flatMap(URL.init(string:)) {
-                WebPageView(url: url, gestures: gestures, onEscape: onEscape, focused: focused, onFocus: onFocus, appearance: appearance.nsAppearance)
+                WebPageView(url: url, gestures: gestures, onEscape: escape, focused: focused, onFocus: onFocus, appearance: appearance.nsAppearance)
                     .transition(.push(from: rendererArrival))
             } else if let document {
                 let version = "\(document.contentHash)|\(mode.rawValue)|\(translations.count)|\(fontSize)|\(serif)|\(lineHeight)|\(scheme)"
@@ -141,7 +155,7 @@ struct ReaderPane: View {
                     },
                     gestures: gestures,
                     onStep: neighbors.map { neighbors in { neighbors.go($0, .vertical) } },
-                    onEscape: onEscape,
+                    onEscape: escape,
                     focused: focused,
                     onFocus: onFocus,
                     appearance: appearance.nsAppearance
@@ -171,7 +185,15 @@ struct ReaderPane: View {
                 }
             }
             if translating {
-                Banner(icon: "character.bubble", text: "Translating…") { ProgressView().controlSize(.small) }
+                Banner(icon: "character.bubble", text: "Translating…") {
+                    ProgressView().controlSize(.small)
+                    Button("Cancel", action: cancelTranslation).help("Stop translating (Esc); what is translated stays")
+                }
+            } else if translationStopped, mode != .original {
+                Banner(icon: "pause.circle", text: "Translation stopped") {
+                    Button("Continue", action: startTranslation)
+                    Button { translationStopped = false } label: { Image(systemName: "xmark") }
+                }
             }
         }
         .padding(.top, 10)
@@ -248,7 +270,9 @@ struct ReaderPane: View {
         lastPage = nil
         scrollTarget = nil
         rendererID = RendererRegistry.preferred(for: item).id
-        translations = model.cachedTranslation(itemID)
+        let cached = model.cachedTranslation(itemID)
+        translations = cached.segments
+        translationComplete = cached.complete
         if item?.format == .pdf {
             if let page = model.resume(itemID)?.page { resumePage = PageTarget(page: Int(page)) }
             pdfURL = await model.contentFile(itemID)
@@ -263,7 +287,7 @@ struct ReaderPane: View {
                 scrollTarget = ScrollTarget(blockID: block, offset: Int(resume.offset))
             }
         }
-        if mode != .original, translations.isEmpty { await translate() }
+        if mode != .original, !translationComplete { startTranslation() }
     }
 
     private func reloadDocument() async {
@@ -352,19 +376,73 @@ struct ReaderPane: View {
         )
     }
 
-    private func translate() async {
+    /// Translates what isn't yet; batches done before are reused. A run
+    /// still finishing its last batch after a cancel goes first.
+    private func startTranslation() {
         guard model.aiConfigured else {
             model.message = "Add an AI provider in Settings to translate."
             mode = .original
             return
         }
+        translationGeneration += 1
+        let generation = translationGeneration
+        let previous = translationRun
         translating = true
-        defer { translating = false }
-        do {
-            translations = try await model.translate(itemID) { batch in translations.merge(batch) { $1 } }
-        } catch {
-            model.message = error.localizedDescription
+        translationStopped = false
+        translationRun = Task {
+            await previous?.value
+            do {
+                let result = try await model.translate(itemID) { queueTranslations($0) }
+                flushTranslations()
+                translations.merge(result.segments) { $1 }
+                guard generation == translationGeneration else { return }
+                translationComplete = result.complete
+                translationStopped = !result.complete
+            } catch {
+                flushTranslations()
+                guard generation == translationGeneration else { return }
+                model.message = error.localizedDescription
+                translationStopped = true
+            }
+            translating = false
         }
+    }
+
+    /// Stops at once on screen; the batch in flight still arrives and shows.
+    private func cancelTranslation() {
+        guard translating else { return }
+        model.cancelTranslation(itemID)
+        translationGeneration += 1
+        translating = false
+        translationStopped = true
+    }
+
+    /// Esc in the reader cancels a translation first.
+    private var escape: () -> Void {
+        { if translating { cancelTranslation() } else { onEscape?() } }
+    }
+
+    /// The first batch shows at once; later ones together, every 0.6 s, so
+    /// the text isn't rebuilt for each.
+    private func queueTranslations(_ batch: [String: String]) {
+        pendingTranslations.merge(batch) { $1 }
+        if translations.isEmpty {
+            flushTranslations()
+            return
+        }
+        guard !flushScheduled else { return }
+        flushScheduled = true
+        Task {
+            try? await Task.sleep(for: .milliseconds(600))
+            flushTranslations()
+        }
+    }
+
+    private func flushTranslations() {
+        flushScheduled = false
+        guard !pendingTranslations.isEmpty else { return }
+        translations.merge(pendingTranslations) { $1 }
+        pendingTranslations = [:]
     }
 }
 

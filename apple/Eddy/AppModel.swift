@@ -426,14 +426,22 @@ final class AppModel {
         return (try? engine.aiSettings().provider) != nil
     }
 
-    func translate(_ id: String, onBatch: @escaping @MainActor ([String: String]) -> Void) async throws -> [String: String] {
-        guard let engine else { return [:] }
+    /// Returns what is translated, and whether that is all of it: a
+    /// cancelled translation returns once the batch in flight is done.
+    func translate(_ id: String, onBatch: @escaping @MainActor ([String: String]) -> Void) async throws -> (segments: [String: String], complete: Bool) {
+        guard let engine else { return ([:], false) }
         let result = try await engine.translate(itemId: id, force: false, listener: BatchListener(onBatch))
-        return result.segments
+        return (result.segments, result.complete)
     }
 
-    func cachedTranslation(_ id: String) -> [String: String] {
-        (try? engine?.cachedTranslation(itemId: id))??.segments ?? [:]
+    func cancelTranslation(_ id: String) {
+        engine?.cancelTranslation(itemId: id)
+    }
+
+    /// The stored translation, or the part of one that was stopped.
+    func cachedTranslation(_ id: String) -> (segments: [String: String], complete: Bool) {
+        guard let cached = (try? engine?.cachedTranslation(itemId: id)) ?? nil else { return ([:], false) }
+        return (cached.segments, cached.complete)
     }
 
     // MARK: Lifecycle

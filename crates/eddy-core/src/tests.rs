@@ -545,6 +545,47 @@ fn configure_ai(engine: &Engine, llm: &MockServer, rules: Vec<AutoRule>) {
 }
 
 #[tokio::test]
+async fn cancelled_translation_keeps_what_is_done_and_resumes() {
+    let pages = mock_pages().await;
+    let llm = mock_llm().await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    configure_ai(&engine, &llm, vec![]);
+    let row = engine
+        .save_url(&format!("{}/essay", pages.uri()))
+        .await
+        .unwrap();
+    let id = row.item.id.clone();
+
+    // Cancelled while the first batch is being handed over.
+    let stopper = engine.clone();
+    let stop_id = id.clone();
+    let cancel: BatchCallback = Arc::new(move |_| stopper.cancel_translation(&stop_id));
+    let partial = engine.translate(&id, false, Some(cancel)).await.unwrap();
+    assert!(!partial.complete);
+    assert!(!partial.segments.is_empty());
+    assert_eq!(llm.received_requests().await.unwrap().len(), 1);
+
+    let cached = engine.cached_translation(&id).unwrap().unwrap();
+    assert!(!cached.complete);
+    assert_eq!(cached.segments, partial.segments);
+
+    // Resuming asks only for the batches still missing.
+    let batches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = batches.clone();
+    let count: BatchCallback = Arc::new(move |_| {
+        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    });
+    let full = engine.translate(&id, false, Some(count)).await.unwrap();
+    assert!(full.complete);
+    let total = batches.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(total >= 3);
+    assert_eq!(llm.received_requests().await.unwrap().len(), total);
+    assert!(full.segments.len() > partial.segments.len());
+    assert!(engine.cached_translation(&id).unwrap().unwrap().complete);
+}
+
+#[tokio::test]
 async fn translation_summary_and_tags_with_caching() {
     let pages = mock_pages().await;
     let llm = mock_llm().await;

@@ -91,6 +91,8 @@ pub(crate) struct Inner {
     pub pdf_reader: RwLock<Option<Arc<dyn crate::PdfReader>>>,
     pub progress_throttle:
         parking_lot::Mutex<std::collections::HashMap<String, (std::time::Instant, f64)>>,
+    /// Items whose translation should stop after the batch in flight.
+    pub translation_cancels: parking_lot::Mutex<std::collections::HashSet<String>>,
     pub search: Option<eddy_search::SearchIndex>,
     pub live: std::sync::atomic::AtomicBool,
     pub backfilling: std::sync::atomic::AtomicBool,
@@ -136,6 +138,7 @@ impl Engine {
             web_renderer: RwLock::new(None),
             pdf_reader: RwLock::new(None),
             progress_throttle: parking_lot::Mutex::new(Default::default()),
+            translation_cancels: parking_lot::Mutex::new(Default::default()),
             search: eddy_search::SearchIndex::open(&data_dir.join("index")).ok(),
             live: std::sync::atomic::AtomicBool::new(false),
             backfilling: std::sync::atomic::AtomicBool::new(false),
