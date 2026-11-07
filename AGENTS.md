@@ -14,6 +14,12 @@ Eddy 是本地优先的个人阅读器：Rust 内核（`crates/`）通过 UniFFI
 - 阅读视图用 TextKit 2（`NSTextView`），不要改回 SwiftUI 的 `LazyVStack` 拼文章：UX demo 阶段两次卡死都是它在滚动时的布局反馈循环。
 - 界面文字先只做英文（SwiftUI 的字符串字面量就是本地化 key），中文等以后加 `.xcstrings`。
 
+## 分支
+
+- `main` 是稳定分支，只在用户确认后由 `dev` 合并过去。
+- `dev` 是集成分支，不直接在上面开发。新功能从 `dev` 拉本地分支 `feature/<名字>`（修复用 `fix/<名字>`），agent 可以在上面自由提交；完成并通过测试后用 `git merge --no-ff` 合并回 `dev`，再删掉本地分支。
+- 远端只保留 `main` 和 `dev`，feature/fix 分支不推送。
+
 ## 数据与安全
 
 - 本地数据目录是 `~/Library/Application Support/Eddy`，测试一律用临时目录，保持用户数据原样。
