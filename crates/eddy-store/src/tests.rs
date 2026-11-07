@@ -432,3 +432,22 @@ fn deleted_items_hide_everywhere_and_release_files_only_they_use() {
     );
     assert_eq!(s.blob_usage().unwrap(), 0);
 }
+
+#[test]
+fn freeing_files_never_scans_all_blobs_or_versions() {
+    let (_d, s) = store();
+    let plan: Vec<String> = s
+        .with(|c| {
+            let mut stmt = c.prepare(&format!("EXPLAIN QUERY PLAN {}", blobs::ORPHAN_BLOBS))?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(3))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+        .unwrap();
+    let scanned: Vec<&str> = plan
+        .iter()
+        .filter_map(|d| d.strip_prefix("SCAN ")?.split_whitespace().next())
+        .collect();
+    for table in ["b", "cv", "blobs", "content_versions"] {
+        assert!(!scanned.contains(&table), "{table} scanned: {plan:#?}");
+    }
+}
