@@ -1,0 +1,14 @@
+[package]
+name = "eddy-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+name = "eddy_ffi"
+
+[dependencies]
+tokio = { workspace = true }
+uniffi = { workspace = true, features = ["tokio"] }

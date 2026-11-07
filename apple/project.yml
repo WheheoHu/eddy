@@ -1,0 +1,47 @@
+name: Eddy
+options:
+  bundleIdPrefix: dev.eddy
+  deploymentTarget:
+    macOS: "15.0"
+  createIntermediateGroups: true
+  developmentLanguage: zh-Hans
+packages:
+  EddyKit:
+    path: EddyKit
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    DEVELOPMENT_TEAM: ""
+    ENABLE_HARDENED_RUNTIME: YES
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+targets:
+  Eddy:
+    type: application
+    platform: macOS
+    sources:
+      - path: Eddy
+    dependencies:
+      - package: EddyKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.eddy.Eddy
+        PRODUCT_NAME: Eddy
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Eddy/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Eddy/Eddy.entitlements
+        COMBINE_HIDPI_IMAGES: YES
+    postBuildScripts:
+      - name: Embed capture host
+        basedOnDependencyAnalysis: false
+        script: |
+          HELPER="$SRCROOT/../build/helpers/eddy-capture-host"
+          if [ -f "$HELPER" ]; then
+            mkdir -p "$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Helpers"
+            cp "$HELPER" "$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Helpers/"
+            codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" --options runtime "$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Helpers/eddy-capture-host"
+          fi

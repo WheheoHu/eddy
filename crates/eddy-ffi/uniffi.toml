@@ -1,0 +1,8 @@
+[bindings.swift]
+module_name = "EddyKit"
+ffi_module_name = "EddyFFI"
+ffi_module_filename = "EddyFFI"
+generate_immutable_records = true
+
+[bindings.kotlin]
+package_name = "dev.eddy.core"

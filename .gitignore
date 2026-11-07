@@ -1,0 +1,23 @@
+/target/
+/build/
+.DS_Store
+
+# Generated Apple artifacts
+/apple/Eddy.xcodeproj/
+/apple/EddyKit/EddyFFI.xcframework/
+/apple/EddyKit/Sources/EddyKit/Generated/
+/apple/DerivedData/
+xcuserdata/
+
+# Local runtime data and secrets
+/deploy/data/
+/deploy/.env
+*.env.local
+
+# Private paywall rule packs never enter this repository
+rulepacks/private/
+*.private.toml
+*.rulepack.toml
+
+# Chrome extension signing material
+extensions/chrome/*.pem

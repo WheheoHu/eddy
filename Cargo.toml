@@ -1,0 +1,52 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "tools/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.85"
+
+[workspace.dependencies]
+eddy-model = { path = "crates/eddy-model" }
+eddy-doc = { path = "crates/eddy-doc" }
+eddy-store = { path = "crates/eddy-store" }
+eddy-source-greader = { path = "crates/eddy-source-greader" }
+eddy-extract = { path = "crates/eddy-extract" }
+eddy-fetch = { path = "crates/eddy-fetch" }
+eddy-ai = { path = "crates/eddy-ai" }
+eddy-search = { path = "crates/eddy-search" }
+eddy-sync = { path = "crates/eddy-sync" }
+eddy-core = { path = "crates/eddy-core" }
+
+anyhow = "1"
+async-trait = "0.1"
+base64 = "0.23"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+futures = "0.3"
+hex = "0.4"
+parking_lot = "0.12"
+regex = "1"
+reqwest = { version = "0.13", features = ["json", "gzip", "brotli", "deflate", "form", "query", "cookies"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
+scraper = "0.29"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
+tracing = "0.1"
+uniffi = "0.32"
+url = { version = "2", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "v5", "v7", "serde"] }
+wiremock = "0.6"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = "debuginfo"
+
+[profile.dev.package."*"]
+opt-level = 1
