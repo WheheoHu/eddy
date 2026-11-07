@@ -104,13 +104,16 @@ impl CollectionEntry {
 
 impl Engine {
     /// Every series and every page or PDF saved on its own. Pages that
-    /// joined a series appear only in it.
+    /// joined a series, and the table of contents it was made from, appear
+    /// only as the series.
     pub fn collection(&self) -> Result<Vec<CollectionEntry>> {
         let inner = &self.inner;
         let mut entries = Vec::new();
         let mut series_ids = HashSet::new();
+        let mut contents_pages = HashSet::new();
         for (series, _, _) in inner.store.series_list()? {
             series_ids.insert(series.id.clone());
+            contents_pages.extend(series.toc_url.clone());
             entries.push(CollectionEntry::from_series(inner.series_info(series)?));
         }
         let saved = inner.store.items(&ItemQuery {
@@ -127,6 +130,10 @@ impl Engine {
                         .series_id
                         .as_ref()
                         .is_none_or(|s| !series_ids.contains(s))
+                        && r.item
+                            .url
+                            .as_ref()
+                            .is_none_or(|u| !contents_pages.contains(u))
                 })
                 .map(CollectionEntry::from_item),
         );
@@ -134,8 +141,8 @@ impl Engine {
     }
 
     /// Deletes a collection entry everywhere: a series with all its
-    /// chapters, or a single saved page or PDF. Subscription articles belong
-    /// to their feed and cannot be deleted.
+    /// chapters and its saved table of contents, or a single saved page or
+    /// PDF. Subscription articles belong to their feed and cannot be deleted.
     pub async fn delete_entry(&self, id: &str) -> Result<()> {
         self.inner.delete_entry(id)?;
         self.inner.push_in_background();
@@ -145,9 +152,17 @@ impl Engine {
 
 impl Inner {
     pub(crate) fn delete_entry(&self, id: &str) -> Result<()> {
-        let items: Vec<String> = if self.store.series(id)?.is_some() {
+        let items: Vec<String> = if let Some(series) = self.store.series(id)? {
             self.record(Entity::Series, id, fields::DELETED, true.into(), false)?;
-            self.chapters(id)?.into_iter().map(|r| r.item.id).collect()
+            let mut items: Vec<String> =
+                self.chapters(id)?.into_iter().map(|r| r.item.id).collect();
+            if let Some(url) = &series.toc_url
+                && let Some(contents) = self.saved_by_url(url)?
+                && !items.contains(&contents.item.id)
+            {
+                items.push(contents.item.id);
+            }
+            items
         } else {
             let row = self.store.item(id)?.ok_or(EngineError::NotFound)?;
             if row.item.kind == ItemKind::Feed {

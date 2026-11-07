@@ -9,6 +9,8 @@ struct ThreePaneView: View {
     @AppStorage("app.mode") private var mode: AppMode = .threePane
     @AppStorage("threePane.contents") private var showContents = false
     @AppStorage("threePane.collectionSort") private var collectionSort: CollectionSort = .added
+    /// Names of the subscription folders folded up; new folders start open.
+    @AppStorage("threePane.collapsedFolders") private var collapsedFoldersJSON = "[]"
     @State private var selection: Selection? = .smart(.all)
     /// The collection entry picked in the middle column.
     @State private var entryID: String?
@@ -31,7 +33,7 @@ struct ThreePaneView: View {
     }
 
     enum Selection: Hashable {
-        case smart(Smart), saved, kind(CollectionKindView), feed(String), tag(String)
+        case smart(Smart), saved, kind(CollectionKindView), folder(String), feed(String), tag(String)
 
         /// The collection kinds a selection lists, if it lists entries.
         var kinds: [CollectionKindView]? {
@@ -94,11 +96,18 @@ struct ThreePaneView: View {
                     }
                 }
             }
-            ForEach(categories, id: \.self) { category in
-                Section(category) {
-                    ForEach(model.feeds.filter { ($0.category ?? "Subscriptions") == category }) { feed in
-                        Label(feed.title, systemImage: "dot.radiowaves.up.forward").badge(Int(feed.unread)).tag(Selection.feed(feed.id))
+            if !model.feeds.isEmpty {
+                Section("Subscriptions") {
+                    ForEach(model.folders, id: \.self) { folder in
+                        DisclosureGroup(isExpanded: expanded(folder)) {
+                            feedRows(model.feeds(inFolder: folder))
+                        } label: {
+                            Label(folder, systemImage: "folder")
+                                .badge(model.unread(inFolder: folder))
+                                .tag(Selection.folder(folder))
+                        }
                     }
+                    feedRows(model.feeds(inFolder: nil))
                 }
             }
             if !model.tags.isEmpty {
@@ -113,8 +122,24 @@ struct ThreePaneView: View {
         .safeAreaInset(edge: .bottom) { StatusFooter() }
     }
 
-    private var categories: [String] {
-        Array(Set(model.feeds.map { $0.category ?? "Subscriptions" })).sorted()
+    private func feedRows(_ feeds: [SourceView]) -> some View {
+        ForEach(feeds) { feed in
+            Label(feed.title, systemImage: "dot.radiowaves.up.forward").badge(Int(feed.unread)).tag(Selection.feed(feed.id))
+        }
+    }
+
+    private var collapsedFolders: Set<String> {
+        (try? JSONDecoder().decode(Set<String>.self, from: Data(collapsedFoldersJSON.utf8))) ?? []
+    }
+
+    private func expanded(_ folder: String) -> Binding<Bool> {
+        Binding {
+            !collapsedFolders.contains(folder)
+        } set: { open in
+            var collapsed = collapsedFolders
+            if open { collapsed.remove(folder) } else { collapsed.insert(folder) }
+            collapsedFoldersJSON = (try? String(data: JSONEncoder().encode(collapsed.sorted()), encoding: .utf8)) ?? collapsedFoldersJSON
+        }
     }
 
     /// A click in the sidebar starts over: nothing is open until something
@@ -206,6 +231,7 @@ struct ThreePaneView: View {
         case .smart(.unread): model.items(.all, unreadOnly: true)
         case .smart(.starred): model.items(.starred, unreadOnly: unreadOnly)
         case .smart(.continueReading): model.items(.continueReading)
+        case let .folder(name): model.items(.category(name: name), unreadOnly: unreadOnly)
         case let .feed(id): model.items(.source(id: id), unreadOnly: unreadOnly)
         case let .tag(id): model.items(.tag(id: id), unreadOnly: unreadOnly)
         default: model.items(.all, unreadOnly: unreadOnly)
@@ -312,6 +338,9 @@ struct CollectionList: View {
         .listStyle(.inset)
         .contextMenu(forSelectionType: String.self) { ids in
             if let id = ids.first, let entry = model.entry(id) {
+                if entry.kind == .webPage {
+                    Button("Convert to Web Series…") { Task { await model.convertToSeries(entry) } }
+                }
                 Button("Delete…", role: .destructive) { model.requestDelete(entry) }
             }
         }

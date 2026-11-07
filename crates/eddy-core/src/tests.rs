@@ -1322,10 +1322,14 @@ async fn the_collection_holds_books_pdfs_pages_and_series_and_deletes_them() {
         .save_url(&format!("{}/1", pages.uri()))
         .await
         .unwrap();
+    let contents = engine
+        .save_url(&format!("{}/3", pages.uri()))
+        .await
+        .unwrap();
     let series_id = engine
         .create_series(
             "Notes",
-            Some(&format!("{}/notes", pages.uri())),
+            Some(&format!("{}/3", pages.uri())),
             &[
                 ("One".into(), format!("{}/1", pages.uri())),
                 ("Two".into(), format!("{}/2", pages.uri())),
@@ -1337,7 +1341,7 @@ async fn the_collection_holds_books_pdfs_pages_and_series_and_deletes_them() {
     assert_eq!(
         entries.len(),
         4,
-        "a page that joined a series is not listed on its own"
+        "neither a page that joined a series nor its table of contents is listed on its own"
     );
     let sampling = entry(&entries, "Sampling Book");
     assert_eq!(
@@ -1413,7 +1417,7 @@ async fn the_collection_holds_books_pdfs_pages_and_series_and_deletes_them() {
     assert!(!reimported.existing, "a deleted book imports afresh");
     assert_ne!(reimported.series_id, book.series_id);
 
-    // A web series takes the pages that joined it along.
+    // A web series takes the pages that joined it and its table of contents along.
     engine.delete_series(&series_id).unwrap();
     let saved = engine
         .items(&ItemQuery {
@@ -1421,7 +1425,11 @@ async fn the_collection_holds_books_pdfs_pages_and_series_and_deletes_them() {
             ..Default::default()
         })
         .unwrap();
-    assert!(saved.iter().all(|r| r.item.id != adopted.item.id));
+    assert!(
+        saved
+            .iter()
+            .all(|r| r.item.id != adopted.item.id && r.item.id != contents.item.id)
+    );
 
     engine.delete_entry(&paper.item_id).await.unwrap();
     assert!(engine.content_file(&paper.item_id).await.unwrap().is_none());

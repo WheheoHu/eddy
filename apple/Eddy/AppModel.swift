@@ -95,6 +95,20 @@ final class AppModel {
     var savedSourceID: String? { sources.first { $0.saved }?.id }
     var unreadTotal: Int { feeds.reduce(0) { $0 + Int($1.unread) } }
 
+    /// The folders subscriptions are filed in, by name.
+    var folders: [String] {
+        Array(Set(feeds.compactMap(\.category))).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    /// Subscriptions in a folder; `nil` for the ones in none.
+    func feeds(inFolder folder: String?) -> [SourceView] {
+        feeds.filter { $0.category == folder }
+    }
+
+    func unread(inFolder folder: String?) -> Int {
+        feeds(inFolder: folder).reduce(0) { $0 + Int($1.unread) }
+    }
+
     func entry(_ id: String) -> CollectionEntryView? {
         collection.first { $0.id == id }
     }
@@ -305,9 +319,34 @@ final class AppModel {
     var pendingSeries: SeriesProposalView?
 
     func createSeries(_ proposal: SeriesProposalView) {
-        _ = try? engine?.createSeries(title: proposal.title, tocUrl: proposal.tocUrl, chapters: proposal.chapters)
+        let seriesID = try? engine?.createSeries(title: proposal.title, tocUrl: proposal.tocUrl, chapters: proposal.chapters)
         pendingSeries = nil
         reload()
+        if let seriesID { revealed = seriesID }
+    }
+
+    /// Offers a saved page's table of contents as a web series: from the
+    /// stored copy, else from the live page.
+    func convertToSeries(_ entry: CollectionEntryView) async {
+        guard let engine, let url = entry.url else { return }
+        busy = true
+        defer { busy = false }
+        var proposal = try? engine.detectSeriesIn(itemId: entry.id)
+        if proposal == nil {
+            do {
+                proposal = try await engine.detectSeriesAt(url: url)
+            } catch {
+                message = error.localizedDescription
+                return
+            }
+        }
+        guard let proposal else {
+            message = String(localized: "No table of contents found on this page.")
+            return
+        }
+        // The page goes into the series only when the addresses match, and
+        // the live page may have redirected.
+        pendingSeries = SeriesProposalView(title: proposal.title, tocUrl: url, chapters: proposal.chapters)
     }
 
     func fetchFullText(_ id: String) async -> Bool {
