@@ -7,11 +7,10 @@ import SwiftUI
 enum MathRenderer {
     private static var cache: [String: (NSImage, CGFloat)] = [:]
 
-    static func attachment(_ tex: String, size: CGFloat, display: Bool) -> NSTextAttachment {
-        let attachment = NSTextAttachment()
+    static func attachment(_ tex: String, size: CGFloat, display: Bool) -> MathAttachment {
         let key = "\(display)|\(size)|\(tex)"
         let rendered: (NSImage, CGFloat)? = cache[key] ?? {
-            var image = MathImage(latex: tex, fontSize: size * 2, textColor: .labelColor, labelMode: display ? .display : .text)
+            var image = MathImage(latex: normalized(tex), fontSize: size * 2, textColor: .labelColor, labelMode: display ? .display : .text)
             let (_, img, info) = image.asImage()
             guard let img else { return nil }
             // Rendered at 2x; sized once here so cached images are reused as is.
@@ -21,16 +20,136 @@ enum MathRenderer {
             return value
         }()
         if let (image, descent) = rendered {
-            attachment.image = image
-            attachment.bounds = CGRect(x: 0, y: -descent, width: image.size.width, height: image.size.height)
-        } else {
-            // Unparseable TeX: show the source.
-            let text = NSAttributedString(string: tex, attributes: [.font: NSFont.monospacedSystemFont(ofSize: size * 0.85, weight: .regular), .foregroundColor: NSColor.secondaryLabelColor])
-            let image = NSImage(size: text.size(), flipped: false) { rect in text.draw(in: rect); return true }
-            attachment.image = image
-            attachment.bounds = CGRect(origin: .zero, size: image.size)
+            return MathAttachment(image: image, descent: descent, display: display)
         }
-        return attachment
+        // Unparseable TeX: show the source.
+        let text = NSAttributedString(string: tex, attributes: [.font: NSFont.monospacedSystemFont(ofSize: size * 0.85, weight: .regular), .foregroundColor: NSColor.secondaryLabelColor])
+        let image = NSImage(size: text.size(), flipped: false) { rect in text.draw(in: rect); return true }
+        return MathAttachment(image: image, descent: 0, display: display)
+    }
+
+    /// Rewrites what SwiftMath cannot parse (equation tags, manual delimiter
+    /// sizes, a few AMS spellings) into what it can, so the formula renders
+    /// instead of falling back to its source.
+    static func normalized(_ tex: String) -> String {
+        var s = tex
+        var tag: String?
+        if let range = s.range(of: #"\\tag(\*?)\{([^{}]*)\}"#, options: .regularExpression) {
+            let match = s[range]
+            let number = match.drop { $0 != "{" }.dropFirst().dropLast()
+            tag = match.hasPrefix(#"\tag*"#) ? String(number) : "(\(number))"
+            s.removeSubrange(range)
+        }
+        for (pattern, replacement) in replacements {
+            s = s.replacingOccurrences(of: pattern, with: replacement, options: .regularExpression)
+        }
+        if let tag { s += #"\qquad \text{"# + tag + "}" }
+        return s
+    }
+
+    private static let replacements: [(String, String)] = [
+        (#"\\[Bb]igg?[lmr]?(?![a-zA-Z])"#, ""),
+        (#"\\[dt]frac(?![a-zA-Z])"#, #"\\frac"#),
+        (#"\\widehat(?![a-zA-Z])"#, #"\\hat"#),
+        (#"\\widetilde(?![a-zA-Z])"#, #"\\tilde"#),
+        (#"\\[lr]Vert(?![a-zA-Z])"#, #"\\Vert"#),
+        (#"\\[lr]vert(?![a-zA-Z])"#, #"\\vert"#),
+    ]
+}
+
+/// A rendered formula. It never takes more than its line: TextKit 2 makes
+/// room for wider content by moving the whole viewport sideways, which
+/// shifts the article out of the column with no way to scroll it back. A
+/// display formula that is too wide scrolls sideways in its own line; an
+/// inline one shrinks to fit.
+final class MathAttachment: NSTextAttachment {
+    let naturalSize: CGSize
+    let descent: CGFloat
+    let display: Bool
+
+    init(image: NSImage, descent: CGFloat, display: Bool) {
+        naturalSize = image.size
+        self.descent = descent
+        self.display = display
+        super.init(data: nil, ofType: nil)
+        self.image = image
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    /// Room under a scrolling formula for its scroller.
+    static var scrollerHeight: CGFloat {
+        NSScroller.preferredScrollerStyle == .legacy ? NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy) : 10
+    }
+
+    func scrolls(in width: CGFloat) -> Bool {
+        display && naturalSize.width > width + 0.5
+    }
+
+    override func attachmentBounds(
+        for attributes: [NSAttributedString.Key: Any],
+        location: any NSTextLocation,
+        textContainer: NSTextContainer?,
+        proposedLineFragment: CGRect,
+        position: CGPoint
+    ) -> CGRect {
+        let width = proposedLineFragment.width
+        if naturalSize.width <= width + 0.5 {
+            return CGRect(x: 0, y: -descent, width: naturalSize.width, height: naturalSize.height)
+        }
+        if display {
+            let scroller = Self.scrollerHeight
+            return CGRect(x: 0, y: -descent - scroller, width: width, height: naturalSize.height + scroller)
+        }
+        let scale = width / naturalSize.width
+        return CGRect(x: 0, y: -descent * scale, width: width, height: naturalSize.height * scale)
+    }
+
+    override func viewProvider(for parentView: NSView?, location: any NSTextLocation, textContainer: NSTextContainer?) -> NSTextAttachmentViewProvider? {
+        guard let textContainer, scrolls(in: textContainer.size.width - 2 * textContainer.lineFragmentPadding) else { return nil }
+        return ScrollingMathProvider(textAttachment: self, parentView: parentView, textLayoutManager: textContainer.textLayoutManager, location: location)
+    }
+}
+
+/// A wide display formula in a horizontal scroll view the size of its line.
+final class ScrollingMathProvider: NSTextAttachmentViewProvider {
+    override func loadView() {
+        guard let attachment = textAttachment as? MathAttachment, let image = attachment.image else { return }
+        // Flipped, so the formula sits at the top and the scroller below it.
+        let content = FlippedView(frame: CGRect(origin: .zero, size: attachment.naturalSize))
+        let imageView = NSImageView(image: image)
+        imageView.imageScaling = .scaleNone
+        imageView.frame = content.bounds
+        content.addSubview(imageView)
+        let scroll = SidewaysScrollView()
+        scroll.drawsBackground = false
+        scroll.hasHorizontalScroller = true
+        scroll.hasVerticalScroller = false
+        scroll.verticalScrollElasticity = .none
+        scroll.documentView = content
+        view = scroll
+    }
+
+    private final class FlippedView: NSView {
+        override var isFlipped: Bool { true }
+    }
+
+    /// Scrolls sideways only; vertical scrolling goes on to the article, so
+    /// reading past a formula does not stall under the pointer. A trackpad
+    /// gesture keeps the direction it started with.
+    private final class SidewaysScrollView: NSScrollView {
+        private var vertical = false
+
+        override func scrollWheel(with event: NSEvent) {
+            if event.phase == .began || (event.phase.isEmpty && event.momentumPhase.isEmpty) {
+                vertical = abs(event.scrollingDeltaY) > abs(event.scrollingDeltaX)
+            }
+            if vertical {
+                nextResponder?.scrollWheel(with: event)
+            } else {
+                super.scrollWheel(with: event)
+            }
+        }
     }
 }
 

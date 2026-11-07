@@ -391,6 +391,22 @@ async fn standalone_client_migrates_and_a_second_device_joins() {
     assert_eq!(b.refresh().await.unwrap().new_items, 0);
     assert!(find(&b, "Read on the web").item.read);
 
+    // Deleting the book on A removes it, chapters included, from B.
+    let book_id = imported.series_id.clone().unwrap();
+    assert!(b.collection().unwrap().iter().any(|e| e.id == book_id));
+    a.delete_entry(&book_id).await.unwrap();
+    a.refresh().await.unwrap();
+    b.refresh().await.unwrap();
+    assert!(b.collection().unwrap().iter().all(|e| e.id != book_id));
+    assert!(
+        b.items(&ItemQuery {
+            filter: ItemFilter::Series(book_id),
+            ..Default::default()
+        })
+        .unwrap()
+        .is_empty()
+    );
+
     // Disconnecting keeps local data.
     b.disconnect_server().unwrap();
     assert_eq!(b.status().unwrap().mode, Mode::Unconfigured);

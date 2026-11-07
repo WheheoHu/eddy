@@ -7,12 +7,13 @@ struct ReaderPane: View {
     @Environment(AppModel.self) private var model
     let itemID: String
     @Binding var scrollTarget: ScrollTarget?
-    var onDocument: (DocumentView?) -> Void = { _ in }
     /// A page to show in a PDF (outline jumps from the contents column).
     var pageTarget: PageTarget?
-    var onPDFOutline: ([PDFOutlineEntry]) -> Void = { _ in }
     /// Opens another item (a chapter a book link points to).
     var openItem: ((String) -> Void)?
+    /// Shows or hides a contents panel beside the reader; the toggle leads
+    /// the reader's toolbar.
+    var showContents: Binding<Bool>?
 
     @State private var document: DocumentView?
     @State private var pdfURL: URL?
@@ -69,7 +70,7 @@ struct ReaderPane: View {
                     PDFReaderView(url: pdfURL, target: pageTarget ?? resumePage, onPage: { page, count in
                         lastPage = (page, count)
                         model.recordPage(itemID, page: page, of: count)
-                    }, onOutline: onPDFOutline)
+                    })
                     .accessibilityLabel(Text("PDF: \(item.title)"))
                 } else if loading {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -131,6 +132,12 @@ struct ReaderPane: View {
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
         ToolbarItemGroup {
+            if let showContents {
+                Button { withAnimation(.easeInOut(duration: 0.2)) { showContents.wrappedValue.toggle() } } label: {
+                    Label("Contents", systemImage: "sidebar.left")
+                }
+                .help(showContents.wrappedValue ? "Hide contents" : "Show contents")
+            }
             if let item {
                 let context = RenderContext(item: item, document: document)
                 let renderers = RendererRegistry.available(for: context)
@@ -209,7 +216,6 @@ struct ReaderPane: View {
     private func reloadDocument() async {
         document = await model.document(itemID)
         loading = false
-        onDocument(document)
     }
 
     private func flush() {

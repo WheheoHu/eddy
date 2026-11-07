@@ -6,20 +6,20 @@ import UniformTypeIdentifiers
 struct EddyApp: App {
     @State private var model = AppModel()
     @AppStorage("app.mode") private var mode: AppMode = .threePane
-    @State private var savingURL = false
-    @State private var importing = false
 
     var body: some Scene {
         WindowGroup("Eddy") {
-            RootView(mode: $mode, savingURL: $savingURL, importing: $importing)
+            RootView(mode: mode)
                 .environment(model)
                 .frame(minWidth: 960, minHeight: 620)
         }
         .defaultSize(width: 1360, height: 860)
+        // One toolbar height whether or not a screen shows a title.
+        .windowToolbarStyle(.unifiedCompact)
         .commands {
             CommandGroup(after: .newItem) {
-                Button("Save Page…") { savingURL = true }.keyboardShortcut("l", modifiers: .command)
-                Button("Import EPUB or PDF…") { importing = true }.keyboardShortcut("o", modifiers: .command)
+                Button("Save Page…") { model.savingURL = true }.keyboardShortcut("l", modifiers: .command)
+                Button("Import EPUB or PDF…") { model.importing = true }.keyboardShortcut("o", modifiers: .command)
                 Button("Refresh") { Task { await model.refresh() } }.keyboardShortcut("r", modifiers: .command)
             }
             CommandGroup(before: .toolbar) {
@@ -37,16 +37,16 @@ struct EddyApp: App {
 
 struct RootView: View {
     @Environment(AppModel.self) private var model
-    @Binding var mode: AppMode
-    @Binding var savingURL: Bool
-    @Binding var importing: Bool
+    let mode: AppMode
 
     static let importTypes: [UTType] = [.epub, .pdf]
 
     var body: some View {
+        @Bindable var model = model
         Group {
             if let error = model.openError {
                 ContentUnavailableView("Eddy Couldn’t Open Its Library", systemImage: "exclamationmark.triangle", description: Text(error))
+                    .toolbar(removing: .title)
             } else {
                 switch mode {
                 case .threePane: ThreePaneView()
@@ -54,28 +54,18 @@ struct RootView: View {
                 }
             }
         }
-        .toolbar {
-            ToolbarItem(placement: .navigation) {
-                Picker("Mode", selection: $mode) {
-                    ForEach(AppMode.allCases) { Label($0.rawValue, systemImage: $0.icon).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .help("Three-Pane (⌘1) or Library (⌘2)")
-            }
-            ToolbarItem(placement: .navigation) {
-                Menu {
-                    Button("Save Page…") { savingURL = true }
-                    Button("Import EPUB or PDF…") { importing = true }
-                } label: {
-                    Label("Add", systemImage: "plus")
-                } primaryAction: {
-                    savingURL = true
-                }
-                .help("Save a page to read later (⌘L), or import an EPUB or PDF (⌘O)")
-            }
-        }
         .overlay(alignment: .bottom) { MessageBanner() }
-        .fileImporter(isPresented: $importing, allowedContentTypes: Self.importTypes, allowsMultipleSelection: true) { result in
+        .confirmationDialog(
+            Text("Delete “\(model.pendingDeletion?.title ?? "")”?"),
+            isPresented: Binding(get: { model.pendingDeletion != nil }, set: { if !$0 { model.pendingDeletion = nil } }),
+            presenting: model.pendingDeletion
+        ) { entry in
+            Button("Delete", role: .destructive) { Task { await model.delete(entry) } }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("It will be removed from Eddy on all your devices, along with its reading progress. This can’t be undone.")
+        }
+        .fileImporter(isPresented: $model.importing, allowedContentTypes: Self.importTypes, allowsMultipleSelection: true) { result in
             if case let .success(urls) = result { Task { await model.importFiles(urls) } }
         }
         .dropDestination(for: URL.self) { urls, _ in
@@ -84,7 +74,7 @@ struct RootView: View {
             Task { await model.importFiles(files) }
             return true
         }
-        .sheet(isPresented: $savingURL) { SavePageSheet() }
+        .sheet(isPresented: $model.savingURL) { SavePageSheet() }
         .sheet(item: Binding(get: { model.pendingSeries.map(SeriesProposalBox.init) }, set: { if $0 == nil { model.pendingSeries = nil } })) { box in
             SeriesProposalSheet(proposal: box.proposal)
         }
