@@ -156,6 +156,73 @@ final class PullTracker {
     }
 }
 
+/// Which way the fingers move in a horizontal swipe.
+enum SwipeDirection {
+    case left, right
+}
+
+/// Recognizes horizontal swipes in scroll events, for the reader and the
+/// web view. A gesture is horizontal when it starts out clearly sideways;
+/// it then fires once, past a threshold, and none of it scrolls.
+@MainActor
+final class SwipeTracker {
+    static let threshold: CGFloat = 90
+    /// How long a plain wheel's sideways movement adds up.
+    static let wheelWindow: TimeInterval = 0.3
+
+    var onSwipe: ((SwipeDirection) -> Void)?
+
+    private enum Axis { case undecided, horizontal, vertical }
+    private var axis = Axis.undecided
+    private var dx: CGFloat = 0
+    private var dy: CGFloat = 0
+    private var fired = false
+    private var lastWheel: Date?
+
+    /// Whether the event belongs to a swipe, and must not scroll.
+    func handle(_ event: NSEvent) -> Bool {
+        guard onSwipe != nil else { return false }
+        if !event.momentumPhase.isEmpty { return axis == .horizontal }
+        let phased = !event.phase.isEmpty
+        if phased {
+            if event.phase.contains(.began) || event.phase.contains(.mayBegin) { reset() }
+            if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
+                return axis == .horizontal
+            }
+        } else if lastWheel.map({ Date().timeIntervalSince($0) > Self.wheelWindow }) ?? true {
+            reset()
+        }
+        if !phased { lastWheel = Date() }
+        var x = event.scrollingDeltaX
+        var y = event.scrollingDeltaY
+        if !event.hasPreciseScrollingDeltas {
+            x *= PullTracker.lineDelta
+            y *= PullTracker.lineDelta
+        }
+        dx += x
+        dy += y
+        if axis == .undecided, abs(dx) + abs(dy) > 8 {
+            axis = abs(dx) > 2 * abs(dy) ? .horizontal : .vertical
+        }
+        guard axis == .horizontal else { return false }
+        if !fired, abs(dx) >= Self.threshold {
+            fired = true
+            // Natural scrolling reports content movement, which follows the
+            // fingers; a plain wheel scrolling right reports negative x.
+            let fingersRight = phased ? (event.isDirectionInvertedFromDevice ? dx > 0 : dx < 0) : dx > 0
+            onSwipe?(fingersRight ? .right : .left)
+        }
+        return true
+    }
+
+    private func reset() {
+        axis = .undecided
+        dx = 0
+        dy = 0
+        fired = false
+    }
+}
+
 extension NSScrollView {
     /// The top of the document is in view (or pulled past).
     var atTop: Bool {

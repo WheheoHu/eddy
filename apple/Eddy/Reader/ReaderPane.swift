@@ -100,7 +100,7 @@ struct ReaderPane: View {
                     ContentUnavailableView("PDF Unavailable", systemImage: "doc.richtext", description: Text("The file isn’t on this Mac and couldn’t be downloaded."))
                 }
             } else if rendererID == RendererRegistry.web.id || (document == nil && !loading), let url = item.url.flatMap(URL.init(string:)) {
-                WebPageView(url: url)
+                WebPageView(url: url, onSwipe: swipe, onEscape: onEscape)
             } else if let document {
                 let version = "\(document.contentHash)|\(mode.rawValue)|\(translations.count)|\(fontSize)|\(serif)|\(lineHeight)"
                 let article = cache.article(version) {
@@ -124,7 +124,8 @@ struct ReaderPane: View {
                     onPull: { pull = $0 },
                     onPullRelease: { neighbors?.go($0, .vertical) },
                     onStep: neighbors.map { neighbors in { neighbors.go($0, .vertical) } },
-                    onEscape: onEscape
+                    onEscape: onEscape,
+                    onSwipe: swipe
                 )
                 .id(itemID)
                 .background(Color(nsColor: .textBackgroundColor))
@@ -253,6 +254,24 @@ struct ReaderPane: View {
 
     private func toggleSummary(_ show: Bool) {
         withAnimation(.easeInOut(duration: 0.2)) { showSummary = show }
+    }
+
+    /// Right shows the web page, left comes back to the reader; an item
+    /// without a page (a book's chapter) turns chapters instead, left for the
+    /// next one. PDFs don't swipe.
+    private func swipe(_ fingers: SwipeDirection) {
+        guard let item else { return }
+        let hasPage = RendererRegistry.web.supports(RenderContext(item: item, document: document))
+        let hasText = document?.blocks.isEmpty == false
+        if rendererID == RendererRegistry.web.id {
+            if fingers == .left, hasText { withAnimation(.easeInOut(duration: 0.2)) { rendererID = RendererRegistry.article.id } }
+        } else if rendererID == RendererRegistry.article.id {
+            if hasPage {
+                if fingers == .right { withAnimation(.easeInOut(duration: 0.2)) { rendererID = RendererRegistry.web.id } }
+            } else if let neighbors {
+                neighbors.go(fingers == .left ? .next : .previous, .horizontal)
+            }
+        }
     }
 
     private func translate() async {

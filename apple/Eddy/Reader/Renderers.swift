@@ -35,21 +35,49 @@ enum RendererRegistry {
 }
 
 /// The original page, for content the reflowed reader cannot express.
+/// A sideways swipe goes back to the reader, so WebKit's own back and
+/// forward swipes are off.
 struct WebPageView: NSViewRepresentable {
     let url: URL
+    var onSwipe: ((SwipeDirection) -> Void)?
+    var onEscape: (() -> Void)?
 
-    func makeNSView(context: Context) -> WKWebView {
+    func makeCoordinator() -> SwipeTracker { SwipeTracker() }
+
+    func makeNSView(context: Context) -> ReaderWebView {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
-        let view = WKWebView(frame: .zero, configuration: config)
-        view.allowsBackForwardNavigationGestures = true
+        let view = ReaderWebView(frame: .zero, configuration: config)
+        view.allowsBackForwardNavigationGestures = false
+        view.swipes = context.coordinator
         view.load(URLRequest(url: url))
         return view
     }
 
-    func updateNSView(_ view: WKWebView, context: Context) {
+    func updateNSView(_ view: ReaderWebView, context: Context) {
+        context.coordinator.onSwipe = onSwipe
+        view.onEscape = onEscape
         if view.url?.absoluteString != url.absoluteString, !view.isLoading {
             view.load(URLRequest(url: url))
+        }
+    }
+}
+
+final class ReaderWebView: WKWebView {
+    weak var swipes: SwipeTracker?
+    var onEscape: (() -> Void)?
+
+    override func scrollWheel(with event: NSEvent) {
+        if swipes?.handle(event) == true { return }
+        super.scrollWheel(with: event)
+    }
+
+    /// Esc leaves the page for the column before it.
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53, let onEscape {
+            onEscape()
+        } else {
+            super.keyDown(with: event)
         }
     }
 }

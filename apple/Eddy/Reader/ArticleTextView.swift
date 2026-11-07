@@ -35,6 +35,7 @@ struct ArticleTextView: NSViewRepresentable {
     /// Cmd+Left and Cmd+Right.
     var onStep: ((Direction) -> Void)?
     var onEscape: (() -> Void)?
+    var onSwipe: ((SwipeDirection) -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -60,6 +61,7 @@ struct ArticleTextView: NSViewRepresentable {
 
         let scroll = ReaderScrollView()
         scroll.pulls = context.coordinator.pulls
+        scroll.swipes = context.coordinator.swipes
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.drawsBackground = true
@@ -78,6 +80,7 @@ struct ArticleTextView: NSViewRepresentable {
         c.pulls.target = pullTarget
         c.pulls.onChange = onPull
         c.pulls.onRelease = onPullRelease
+        c.swipes.onSwipe = onSwipe
         guard let textView = scroll.documentView as? ReaderTextView else { return }
         textView.onStep = onStep
         textView.onEscape = onEscape
@@ -120,6 +123,7 @@ struct ArticleTextView: NSViewRepresentable {
         var loadImage: ((String) async -> NSImage?)?
         var onBookLink: ((URL) -> Void)?
         let pulls = PullTracker()
+        let swipes = SwipeTracker()
         private var lastReported: (String, Int, Bool)?
         private var reportTask: Task<Void, Never>?
         private var imageTask: Task<Void, Never>?
@@ -298,12 +302,15 @@ struct ArticleTextView: NSViewRepresentable {
     }
 }
 
-/// Passes scrolling on to the pull tracker once it has scrolled, so the
-/// system's rubber-band still shows while pulling past an edge.
+/// Keeps sideways swipes from scrolling, and passes scrolling on to the
+/// pull tracker once it has scrolled, so the system's rubber-band still
+/// shows while pulling past an edge.
 final class ReaderScrollView: NSScrollView {
     weak var pulls: PullTracker?
+    weak var swipes: SwipeTracker?
 
     override func scrollWheel(with event: NSEvent) {
+        if swipes?.handle(event) == true { return }
         super.scrollWheel(with: event)
         pulls?.scrollWheel(event, in: self)
     }
