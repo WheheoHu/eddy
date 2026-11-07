@@ -89,6 +89,12 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX content_versions_raw ON content_versions(raw_blob);
     CREATE INDEX content_versions_source ON content_versions(source_url);
     "#,
+    // 4: freeing files after deletion looks blobs up from both columns and
+    // starts from the few deleted items
+    r#"
+    CREATE INDEX content_versions_doc ON content_versions(doc_blob);
+    CREATE INDEX items_deleted ON items(id) WHERE deleted = 1;
+    "#,
 ];
 
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {

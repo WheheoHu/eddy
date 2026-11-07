@@ -5,6 +5,25 @@ use rusqlite::{OptionalExtension, params};
 
 use crate::{Result, Store, StoreError};
 
+/// Blobs of deleted items that no live item uses. Libraries hold hundreds of
+/// thousands of blobs, so this starts from the deleted items (`CROSS JOIN`
+/// keeps that loop order in SQLite) and checks each column through its own
+/// index; an `OR` across the two columns scans them.
+pub(crate) const ORPHAN_BLOBS: &str = "
+    WITH candidates(key) AS (
+        SELECT cv.raw_blob FROM items i CROSS JOIN content_versions cv ON cv.item_id=i.id
+         WHERE i.deleted=1
+        UNION
+        SELECT cv.doc_blob FROM items i CROSS JOIN content_versions cv ON cv.item_id=i.id
+         WHERE i.deleted=1 AND cv.doc_blob IS NOT NULL)
+    SELECT b.key, b.size FROM candidates c CROSS JOIN blobs b ON b.key=c.key
+     WHERE NOT EXISTS (
+            SELECT 1 FROM content_versions cv JOIN items i ON i.id=cv.item_id
+             WHERE cv.raw_blob=b.key AND i.deleted=0)
+       AND NOT EXISTS (
+            SELECT 1 FROM content_versions cv JOIN items i ON i.id=cv.item_id
+             WHERE cv.doc_blob=b.key AND i.deleted=0)";
+
 impl Store {
     fn blob_path(&self, key: &str) -> Result<PathBuf> {
         if key.is_empty()
@@ -108,14 +127,7 @@ impl Store {
     /// of imported books and PDFs included. Returns bytes freed.
     pub fn purge_orphan_blobs(&self) -> Result<u64> {
         let orphans: Vec<(String, u64)> = self.with(|c| {
-            let mut stmt = c.prepare(
-                "SELECT b.key, b.size FROM blobs b WHERE EXISTS (
-                    SELECT 1 FROM content_versions cv JOIN items i ON i.id=cv.item_id
-                    WHERE (cv.raw_blob=b.key OR cv.doc_blob=b.key) AND i.deleted=1)
-                 AND NOT EXISTS (
-                    SELECT 1 FROM content_versions cv JOIN items i ON i.id=cv.item_id
-                    WHERE (cv.raw_blob=b.key OR cv.doc_blob=b.key) AND i.deleted=0)",
-            )?;
+            let mut stmt = c.prepare(ORPHAN_BLOBS)?;
             let rows = stmt.query_map([], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))
             })?;
@@ -157,7 +169,11 @@ impl Store {
             let mut stmt = c.prepare(
                 "SELECT b.key, b.size FROM blobs b WHERE b.pinned=0 AND NOT EXISTS (
                     SELECT 1 FROM content_versions cv JOIN items i ON i.id=cv.item_id
-                    WHERE (cv.raw_blob=b.key OR cv.doc_blob=b.key)
+                    WHERE cv.raw_blob=b.key
+                      AND (i.starred=1 OR i.read=0 OR (i.progress>0 AND i.finished=0) OR i.kind!='feed'))
+                 AND NOT EXISTS (
+                    SELECT 1 FROM content_versions cv JOIN items i ON i.id=cv.item_id
+                    WHERE cv.doc_blob=b.key
                       AND (i.starred=1 OR i.read=0 OR (i.progress>0 AND i.finished=0) OR i.kind!='feed'))
                  ORDER BY b.last_access ASC",
             )?;
