@@ -8,6 +8,7 @@ struct ThreePaneView: View {
     @Environment(AppModel.self) private var model
     @AppStorage("app.mode") private var mode: AppMode = .threePane
     @AppStorage("threePane.contents") private var showContents = false
+    @AppStorage("threePane.collectionSort") private var collectionSort: CollectionSort = .added
     @State private var selection: Selection? = .smart(.all)
     /// The collection entry picked in the middle column.
     @State private var entryID: String?
@@ -140,8 +141,21 @@ struct ThreePaneView: View {
     @ViewBuilder
     private var middle: some View {
         if results == nil, let kinds = selection?.kinds {
-            CollectionList(kinds: kinds, selection: Binding(get: { entryID }, set: openEntry))
-                .toolbar { refreshItem }
+            CollectionList(kinds: kinds, sort: collectionSort, selection: Binding(get: { entryID }, set: openEntry))
+                .toolbar {
+                    ToolbarItem {
+                        Menu {
+                            Picker("Sort By", selection: $collectionSort) {
+                                ForEach(CollectionSort.allCases) { Text($0.rawValue).tag($0) }
+                            }
+                            .pickerStyle(.inline)
+                        } label: {
+                            Label("Sort By", systemImage: "arrow.up.arrow.down")
+                        }
+                        .help("Sort order")
+                    }
+                    refreshItem
+                }
         } else {
             articles
         }
@@ -274,10 +288,15 @@ struct ThreePaneView: View {
 struct CollectionList: View {
     @Environment(AppModel.self) private var model
     let kinds: [CollectionKindView]
+    let sort: CollectionSort
     @Binding var selection: String?
+    /// The order taken when the list appears or its filter or sort changes.
+    /// Reading an entry changes its last-read time and progress; re-sorting
+    /// on that would move rows away from under the pointer.
+    @State private var order: [String: Int] = [:]
 
     var body: some View {
-        let entries = model.collection.filter { kinds.contains($0.kind) }.sorted(by: CollectionEntryView.byRecency)
+        let entries = ordered(model.collection.filter { kinds.contains($0.kind) })
         List(selection: $selection) {
             if kinds.count == 1 {
                 rows(entries)
@@ -307,6 +326,20 @@ struct CollectionList: View {
                 ContentUnavailableView("Nothing Here", systemImage: "tray", description: Text("Save a page with ⌘L, or import an EPUB or PDF with ⌘O."))
             }
         }
+        .onAppear(perform: reorder)
+        .onChange(of: kinds) { reorder() }
+        .onChange(of: sort) { reorder() }
+    }
+
+    private func reorder() {
+        order = Dictionary(uniqueKeysWithValues: model.collection.sorted(by: sort.inOrder).enumerated().map { ($1.id, $0) })
+    }
+
+    /// Entries in the order taken last; ones added since come first.
+    private func ordered(_ entries: [CollectionEntryView]) -> [CollectionEntryView] {
+        let new = entries.filter { order[$0.id] == nil }.sorted(by: sort.inOrder)
+        let known = entries.compactMap { entry in order[entry.id].map { (entry, $0) } }.sorted { $0.1 < $1.1 }.map(\.0)
+        return new + known
     }
 
     private func rows(_ entries: [CollectionEntryView]) -> some View {

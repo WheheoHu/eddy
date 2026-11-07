@@ -74,9 +74,24 @@ extension CollectionEntryView {
         return inProgress ? String(localized: "\(left) min left") : String(localized: "\(readingMinutes) min")
     }
 
-    /// Most recently read first, then most recently added.
-    static func byRecency(_ a: CollectionEntryView, _ b: CollectionEntryView) -> Bool {
-        (a.lastReadAt ?? 0, a.addedAt) > (b.lastReadAt ?? 0, b.addedAt)
+}
+
+/// How a list of collection entries is ordered.
+enum CollectionSort: String, CaseIterable, Identifiable {
+    case added = "Recently Added"
+    case read = "Recently Read"
+    case title = "Title"
+    case progress = "Progress"
+
+    var id: String { rawValue }
+
+    func inOrder(_ a: CollectionEntryView, _ b: CollectionEntryView) -> Bool {
+        switch self {
+        case .added: a.addedAt > b.addedAt
+        case .read: (a.lastReadAt ?? 0, a.addedAt) > (b.lastReadAt ?? 0, b.addedAt)
+        case .title: a.title.localizedStandardCompare(b.title) == .orderedAscending
+        case .progress: (a.progress, a.lastReadAt ?? 0) > (b.progress, b.lastReadAt ?? 0)
+        }
     }
 }
 
