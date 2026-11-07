@@ -380,3 +380,126 @@ async fn automatic_rules_run_on_new_items() {
     assert_eq!(summary.unwrap().tldr, "一句话");
     assert_eq!(engine.ai_usage_today().unwrap(), 1);
 }
+
+fn para_ids(doc: &eddy_model::Document) -> Vec<String> {
+    doc.blocks.iter().filter(|b| matches!(b.kind, BlockKind::Paragraph { .. })).map(|b| b.id.clone()).collect()
+}
+
+#[tokio::test]
+async fn progress_is_throttled_finishes_and_feeds_continue_reading() {
+    let pages = mock_pages().await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let row = engine.save_url(&format!("{}/essay", pages.uri())).await.unwrap();
+    let doc = engine.document(&row.item.id).await.unwrap().unwrap().document;
+    let paras = para_ids(&doc);
+    let ops = |e: &Engine| e.inner.store.unuploaded_ops(10_000).unwrap().iter().filter(|o| o.op.field == "locator").count();
+
+    let mid = engine.record_progress(&row.item.id, &paras[paras.len() / 2], 3, false).unwrap().unwrap();
+    assert!(mid.progression > 0.3 && mid.progression < 0.7, "{}", mid.progression);
+    engine.record_progress(&row.item.id, &paras[paras.len() / 2 + 1], 0, false).unwrap();
+    assert_eq!(ops(&engine), 1, "scrolling within the interval is throttled");
+    engine.record_progress(&row.item.id, &paras[paras.len() / 2 + 1], 0, true).unwrap();
+    assert_eq!(ops(&engine), 2);
+    let shelf = engine.items(&ItemQuery { filter: ItemFilter::ContinueReading, ..Default::default() }).unwrap();
+    assert_eq!(shelf.len(), 1);
+
+    let resume = engine.resume_point(&row.item.id).unwrap().unwrap();
+    assert_eq!(resume.block_id.as_deref(), Some(paras[paras.len() / 2 + 1].as_str()));
+    assert!(!resume.from_other_device);
+
+    let last = doc.blocks.last().unwrap().id.clone();
+    engine.record_progress(&row.item.id, &last, 0, true).unwrap();
+    assert!(engine.item(&row.item.id).unwrap().unwrap().item.finished);
+    assert!(engine.items(&ItemQuery { filter: ItemFilter::ContinueReading, ..Default::default() }).unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn resume_point_follows_the_switch_to_full_text() {
+    let pages = MockServer::start().await;
+    // Feed excerpt and full page share the second paragraph.
+    let shared = "The shared paragraph describes multiple importance sampling in detail for the reader.";
+    let body: String = (0..25).map(|i| format!("<p>Full paragraph {i} adds detail about light transport and variance.</p>")).collect();
+    Mock::given(method("GET"))
+        .and(path("/2"))
+        .respond_with(ResponseTemplate::new(200).insert_header("content-type", "text/html").set_body_string(format!(
+            "<html><head><title>New post</title></head><body><article><p>Intro only in the full text.</p><p>{shared}</p>{body}</article></body></html>"
+        )))
+        .mount(&pages)
+        .await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/api/greader.php/accounts/ClientLogin")).respond_with(ResponseTemplate::new(200).set_body_string("Auth=t")).mount(&server).await;
+    Mock::given(method("GET")).and(path("/api/greader.php/reader/api/0/subscription/list")).respond_with(ResponseTemplate::new(200).set_body_json(json!({"subscriptions": []}))).mount(&server).await;
+    Mock::given(method("GET")).and(path("/api/greader.php/reader/api/0/stream/items/ids")).respond_with(ResponseTemplate::new(200).set_body_json(json!({"itemRefs": [{"id": "2"}]}))).mount(&server).await;
+    Mock::given(method("GET"))
+        .and(path_regex("^/api/greader.php/reader/api/0/stream/contents/.*"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"items": [{
+            "id": "tag:google.com,2005:reader/item/0000000000000002", "title": "New post", "published": 1_700_000_000,
+            "categories": [], "alternate": [{"href": format!("{}/2", pages.uri())}],
+            "summary": {"content": format!("<p>Teaser line.</p><p>{shared}</p>")}, "origin": {"streamId": "feed/1"}
+        }]})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST")).and(path("/api/greader.php/reader/api/0/stream/items/contents")).respond_with(ResponseTemplate::new(200).set_body_json(json!({"items": []}))).mount(&server).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    engine.configure_freshrss(&server.uri(), "me", "pw").await.unwrap();
+    engine.refresh().await.unwrap();
+    let item = engine.items(&ItemQuery::default()).unwrap().remove(0);
+    let feed_doc = engine.document(&item.item.id).await.unwrap().unwrap().document;
+    let shared_id = para_ids(&feed_doc)[1].clone();
+    engine.record_progress(&item.item.id, &shared_id, 13, true).unwrap();
+
+    let full = engine.fetch_full_text(&item.item.id).await.unwrap();
+    let resume = engine.resume_point(&item.item.id).unwrap().unwrap();
+    assert_eq!(resume.locator.content_hash, full.version.hash);
+    assert_eq!(resume.block_id.as_deref(), Some(shared_id.as_str()), "same paragraph keeps its ID across versions");
+    assert_eq!(resume.offset, 13);
+}
+
+#[tokio::test]
+async fn series_from_a_table_of_contents() {
+    let site = MockServer::start().await;
+    let toc: String = (1..=4).map(|i| format!("<li><a href=\"/book/ch{i}.html\">Chapter {i}</a></li>")).collect();
+    Mock::given(method("GET"))
+        .and(path("/book/index.html"))
+        .respond_with(ResponseTemplate::new(200).insert_header("content-type", "text/html").set_body_string(format!(
+            "<html><head><title>Ray Tracing Book</title></head><body><nav class='toc'><ol>{toc}</ol></nav><main><p>Welcome.</p></main></body></html>"
+        )))
+        .mount(&site)
+        .await;
+    for i in 1..=4 {
+        Mock::given(method("GET"))
+            .and(path(format!("/book/ch{i}.html")))
+            .respond_with(ResponseTemplate::new(200).insert_header("content-type", "text/html").set_body_string(article_html(&format!("Chapter {i}"), 12)))
+            .mount(&site)
+            .await;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let proposal = engine.detect_series_at(&format!("{}/book/index.html", site.uri())).await.unwrap().unwrap();
+    assert_eq!(proposal.title, "Ray Tracing Book");
+    assert_eq!(proposal.chapters.len(), 4);
+    let chapters: Vec<(String, String)> = proposal.chapters.iter().map(|c| (c.title.clone(), c.url.clone())).collect();
+    let series_id = engine.create_series(&proposal.title, Some(&proposal.toc_url), &chapters).unwrap();
+
+    let info = engine.series_info(&series_id).unwrap().unwrap();
+    assert_eq!((info.chapters, info.finished), (4, 0));
+    let first = info.next_item_id.clone().unwrap();
+    assert!(engine.items(&ItemQuery::default()).unwrap().is_empty(), "chapters stay out of the main list");
+
+    // Opening a chapter fetches its content on demand.
+    let doc = engine.document(&first).await.unwrap().unwrap().document;
+    let last = doc.blocks.last().unwrap().id.clone();
+    engine.record_progress(&first, &last, 0, true).unwrap();
+    let second = engine.items(&ItemQuery { filter: ItemFilter::Series(series_id.clone()), ..Default::default() }).unwrap()[1].item.id.clone();
+    let mid = para_ids(&engine.document(&second).await.unwrap().unwrap().document)[5].clone();
+    engine.record_progress(&second, &mid, 0, true).unwrap();
+
+    let info = engine.series_info(&series_id).unwrap().unwrap();
+    assert_eq!(info.finished, 1);
+    assert!(info.progress > 0.3 && info.progress < 0.5, "{}", info.progress);
+    assert_eq!(info.next_item_id.as_deref(), Some(second.as_str()));
+    assert_eq!(engine.series_list().unwrap().len(), 1);
+}

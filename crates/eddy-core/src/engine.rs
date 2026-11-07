@@ -72,6 +72,7 @@ pub(crate) struct Inner {
     pub options: EngineOptions,
     pub fetcher: RwLock<Arc<Fetcher>>,
     pub web_renderer: RwLock<Option<Arc<dyn WebRenderer>>>,
+    pub progress_throttle: parking_lot::Mutex<std::collections::HashMap<String, (std::time::Instant, f64)>>,
 }
 
 /// Cheap to clone; all clones share one engine.
@@ -104,6 +105,7 @@ impl Engine {
                 Fetcher::new(Default::default(), None).map_err(|e| EngineError::Network(e.to_string()))?,
             )),
             web_renderer: RwLock::new(None),
+            progress_throttle: parking_lot::Mutex::new(Default::default()),
         });
         inner.rebuild_fetcher()?;
         inner.store.upsert_source(&Source {
@@ -225,6 +227,9 @@ impl Engine {
     pub async fn document(&self, item_id: &str) -> Result<Option<LoadedDocument>> {
         if let Some(doc) = self.inner.current_document(item_id)? {
             return Ok(Some(doc));
+        }
+        if self.inner.ensure_page_content(item_id).await? {
+            return self.inner.current_document(item_id);
         }
         let row = self.inner.store.item(item_id)?.ok_or(EngineError::NotFound)?;
         let direct = self.inner.direct.read().clone();

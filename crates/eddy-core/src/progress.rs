@@ -1,0 +1,231 @@
+use std::time::{Duration, Instant};
+
+use eddy_doc::{locator_at, remap_locator};
+use eddy_extract::{SeriesProposal, detect_series};
+use eddy_model::{ContentOrigin, Entity, Item, ItemKind, Locator, Position, fields, ids, now_ms};
+use eddy_store::{ItemFilter, ItemQuery, ItemRow};
+
+use crate::engine::{Engine, Inner};
+use crate::fulltext::PAGE_MIME;
+use crate::{EngineError, Result};
+
+/// Progression at which an item counts as finished.
+const FINISHED_AT: f64 = 0.98;
+/// Minimum interval between progress ops for one item while scrolling.
+const PROGRESS_INTERVAL: Duration = Duration::from_secs(5);
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResumePoint {
+    /// Locator re-anchored to the item's current content.
+    pub locator: Locator,
+    pub block_id: Option<String>,
+    pub offset: u32,
+    pub updated_at: i64,
+    /// Device that recorded it.
+    pub device: Option<String>,
+    pub from_other_device: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SeriesInfo {
+    pub id: String,
+    pub title: String,
+    pub toc_url: Option<String>,
+    pub chapters: u32,
+    pub finished: u32,
+    /// Overall progress through the series, 0..=1.
+    pub progress: f64,
+    /// The chapter to continue with.
+    pub next_item_id: Option<String>,
+}
+
+impl Inner {
+    fn chapters(&self, series_id: &str) -> Result<Vec<ItemRow>> {
+        Ok(self.store.items(&ItemQuery { filter: ItemFilter::Series(series_id.into()), unread_only: false, limit: 10_000, offset: 0 })?)
+    }
+
+    fn series_info(&self, series: eddy_model::Series) -> Result<SeriesInfo> {
+        let chapters = self.chapters(&series.id)?;
+        let total = chapters.len() as u32;
+        let finished = chapters.iter().filter(|r| r.item.finished).count() as u32;
+        let partial: f64 = chapters.iter().filter(|r| !r.item.finished).map(|r| r.item.progress).sum();
+        let progress = if total == 0 { 0.0 } else { ((finished as f64 + partial) / total as f64).min(1.0) };
+        // Continue where reading stopped: the first unfinished chapter after
+        // the last one touched, else the first unfinished one.
+        let last_touched = chapters.iter().enumerate().filter(|(_, r)| r.item.last_read_at.is_some()).max_by_key(|(_, r)| r.item.last_read_at).map(|(i, _)| i);
+        let next = last_touched
+            .and_then(|i| chapters[i..].iter().find(|r| !r.item.finished))
+            .or_else(|| chapters.iter().find(|r| !r.item.finished))
+            .map(|r| r.item.id.clone());
+        Ok(SeriesInfo { id: series.id, title: series.title, toc_url: series.toc_url, chapters: total, finished, progress, next_item_id: next })
+    }
+
+    /// Fetches content for items that have only a URL (series chapters).
+    pub(crate) async fn ensure_page_content(&self, item_id: &str) -> Result<bool> {
+        let row = self.store.item(item_id)?.ok_or(EngineError::NotFound)?;
+        if row.item.current_version.is_some() || row.item.kind == ItemKind::Feed {
+            return Ok(false);
+        }
+        let Some(url) = row.item.url.clone() else { return Ok(false) };
+        let fetcher = self.fetcher.read().clone();
+        let page = fetcher.fetch(&url, |_| true).await.map_err(|e| EngineError::Network(e.to_string()))?;
+        let (ingested, _) = self.ingest_page(item_id, &page.html, &page.final_url, ContentOrigin::Extracted, true)?;
+        self.switch_version(item_id, &ingested)?;
+        self.after_ingest(item_id, &ingested);
+        Ok(true)
+    }
+}
+
+impl Engine {
+    /// Records the reading position reported by a renderer (top visible
+    /// block and UTF-16 offset in it). Throttled while scrolling unless
+    /// `force` (e.g. when the reader closes). Marks the item finished at the
+    /// end. Returns the full locator.
+    pub fn record_progress(&self, item_id: &str, block_id: &str, offset: u32, force: bool) -> Result<Option<Locator>> {
+        let inner = &self.inner;
+        let Some(doc) = inner.current_document(item_id)? else { return Ok(None) };
+        let Some(mut locator) = locator_at(&doc.document, &doc.version.hash, block_id, offset) else { return Ok(None) };
+        let at_end = doc.document.blocks.last().is_some_and(|b| b.id == block_id);
+        if at_end {
+            locator.progression = locator.progression.max(FINISHED_AT);
+        }
+        {
+            let mut last = inner.progress_throttle.lock();
+            if let Some((when, progression)) = last.get(item_id) {
+                if !force && when.elapsed() < PROGRESS_INTERVAL && (progression - locator.progression).abs() < 0.2 {
+                    return Ok(Some(locator));
+                }
+            }
+            last.insert(item_id.to_string(), (Instant::now(), locator.progression));
+        }
+        inner.record(Entity::Progress, item_id, fields::LOCATOR, serde_json::to_value(&locator)?, false)?;
+        let row = inner.store.item(item_id)?.ok_or(EngineError::NotFound)?;
+        if locator.progression >= FINISHED_AT && !row.item.finished {
+            inner.record(Entity::Item, item_id, fields::FINISHED, true.into(), false)?;
+        }
+        Ok(Some(locator))
+    }
+
+    pub fn set_finished(&self, item_id: &str, finished: bool) -> Result<()> {
+        self.inner.record(Entity::Item, item_id, fields::FINISHED, finished.into(), false)
+    }
+
+    /// Where to resume reading, re-anchored to the current content version
+    /// (the position may have been taken in the feed excerpt, or on another
+    /// device).
+    pub fn resume_point(&self, item_id: &str) -> Result<Option<ResumePoint>> {
+        let inner = &self.inner;
+        let Some(stored) = inner.store.progress(item_id)? else { return Ok(None) };
+        let Some(doc) = inner.current_document(item_id)? else { return Ok(None) };
+        let locator = remap_locator(&doc.document, &doc.version.hash, &stored);
+        let (block_id, offset) = match &locator.position {
+            Position::Block { block_id, offset } => (Some(block_id.clone()), *offset),
+            _ => (None, 0),
+        };
+        let clock = inner.store.field_clock(Entity::Progress, item_id, fields::LOCATOR)?;
+        let device = clock.as_ref().map(|h| h.node.clone());
+        Ok(Some(ResumePoint {
+            locator,
+            block_id,
+            offset,
+            updated_at: clock.map(|h| h.wall_ms as i64).unwrap_or(0),
+            from_other_device: device.as_deref().is_some_and(|d| d != inner.clock.node()),
+            device,
+        }))
+    }
+
+    /// Looks for a table of contents in a saved page.
+    pub fn detect_series_in(&self, item_id: &str) -> Result<Option<SeriesProposal>> {
+        let inner = &self.inner;
+        let row = inner.store.item(item_id)?.ok_or(EngineError::NotFound)?;
+        let Some(hash) = row.item.current_version else { return Ok(None) };
+        let Some(version) = inner.store.content_version(&hash)? else { return Ok(None) };
+        if version.raw_mime != PAGE_MIME {
+            return Ok(None);
+        }
+        let Some(raw) = inner.store.get_blob(&version.raw_blob)? else { return Ok(None) };
+        let url = version.source_url.or(row.item.url).unwrap_or_default();
+        Ok(detect_series(&String::from_utf8_lossy(&raw), &url))
+    }
+
+    /// Fetches a table-of-contents page and proposes a series from it.
+    pub async fn detect_series_at(&self, url: &str) -> Result<Option<SeriesProposal>> {
+        let fetcher = self.inner.fetcher.read().clone();
+        let page = fetcher.fetch(url, |_| true).await.map_err(|e| EngineError::Network(e.to_string()))?;
+        Ok(detect_series(&page.html, &page.final_url))
+    }
+
+    /// Creates a series from confirmed chapters. Pages already saved join it;
+    /// the others become chapters whose content is fetched when opened.
+    pub fn create_series(&self, title: &str, toc_url: Option<&str>, chapters: &[(String, String)]) -> Result<String> {
+        let inner = &self.inner;
+        let series_id = ids::new_local_id();
+        inner.record(Entity::Series, &series_id, fields::CREATE, serde_json::json!({ "title": title, "toc_url": toc_url }), false)?;
+        for (index, (chapter_title, url)) in chapters.iter().enumerate() {
+            let item_id = match inner.saved_by_url(url)? {
+                Some(row) => row.item.id,
+                None => {
+                    let id = ids::new_local_id();
+                    let now = now_ms();
+                    let item = Item {
+                        id: id.clone(),
+                        source_id: Some(ids::saved_source_id()),
+                        account_id: None,
+                        upstream_id: None,
+                        kind: ItemKind::Chapter,
+                        url: Some(url.clone()),
+                        title: chapter_title.clone(),
+                        author: None,
+                        published_at: now,
+                        added_at: now,
+                        read: false,
+                        starred: false,
+                        series_id: None,
+                        chapter_index: None,
+                        current_version: None,
+                        excerpt: None,
+                        lang: None,
+                        text_len: 0,
+                        progress: 0.0,
+                        finished: false,
+                        last_read_at: None,
+                    };
+                    inner.record(Entity::Item, &id, fields::CREATE, serde_json::to_value(&item)?, false)?;
+                    id
+                }
+            };
+            self.add_to_series(&series_id, &item_id, index as u32)?;
+        }
+        Ok(series_id)
+    }
+
+    pub fn add_to_series(&self, series_id: &str, item_id: &str, chapter_index: u32) -> Result<()> {
+        self.inner.record(
+            Entity::Item,
+            item_id,
+            fields::SERIES,
+            serde_json::json!({ "series_id": series_id, "chapter_index": chapter_index }),
+            false,
+        )
+    }
+
+    pub fn remove_from_series(&self, item_id: &str) -> Result<()> {
+        self.inner.record(Entity::Item, item_id, fields::SERIES, serde_json::json!({ "series_id": null, "chapter_index": null }), false)
+    }
+
+    pub fn rename_series(&self, series_id: &str, title: &str) -> Result<()> {
+        self.inner.record(Entity::Series, series_id, fields::TITLE, title.trim().into(), false)
+    }
+
+    pub fn delete_series(&self, series_id: &str) -> Result<()> {
+        self.inner.record(Entity::Series, series_id, fields::DELETED, true.into(), false)
+    }
+
+    pub fn series_list(&self) -> Result<Vec<SeriesInfo>> {
+        self.inner.store.series_list()?.into_iter().map(|(s, _, _)| self.inner.series_info(s)).collect()
+    }
+
+    pub fn series_info(&self, series_id: &str) -> Result<Option<SeriesInfo>> {
+        self.inner.store.series(series_id)?.map(|s| self.inner.series_info(s)).transpose()
+    }
+}

@@ -1,6 +1,7 @@
 //! UniFFI surface of the Eddy engine for Swift and Kotlin.
 
 mod ai;
+mod progress;
 mod views;
 
 use std::path::PathBuf;
@@ -9,6 +10,7 @@ use std::sync::Arc;
 use eddy_core::{Engine, EngineError, EngineOptions, LogLevel, Platform};
 
 pub use ai::*;
+pub use progress::*;
 pub use views::*;
 
 uniffi::setup_scaffolding!();
