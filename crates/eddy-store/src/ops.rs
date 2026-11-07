@@ -327,12 +327,14 @@ fn effect(tx: &Transaction, op: &Op) -> Result<()> {
         }
         (Entity::Series, fields::CREATE) => {
             tx.execute(
-                "INSERT OR IGNORE INTO series(id,title,toc_url,created_at) VALUES(?,?,?,?)",
+                "INSERT OR IGNORE INTO series(id,title,toc_url,created_at,author,cover) VALUES(?,?,?,?,?,?)",
                 params![
                     id,
                     v.get("title").and_then(Value::as_str).unwrap_or("Series"),
                     v.get("toc_url").and_then(Value::as_str),
-                    op.hlc.wall_ms as i64
+                    op.hlc.wall_ms as i64,
+                    v.get("author").and_then(Value::as_str),
+                    v.get("cover").and_then(Value::as_str)
                 ],
             )?;
         }

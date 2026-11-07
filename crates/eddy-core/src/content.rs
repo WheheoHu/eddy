@@ -1,5 +1,8 @@
 use eddy_doc::{ConvertOptions, SCHEMA_VERSION, html_to_document};
-use eddy_model::{ContentOrigin, ContentVersion, Document, ids::sha256_hex, now_ms};
+use eddy_model::{
+    ContentOrigin, ContentVersion, Document, EPUB_MIME, Entity, PDF_MIME, fields, ids::sha256_hex,
+    now_ms,
+};
 
 use crate::engine::Inner;
 use crate::{EngineError, Result};
@@ -74,6 +77,53 @@ impl Inner {
         })
     }
 
+    /// Stores a document made from a raw file that is already stored (an
+    /// import) as a new content version. It syncs: other devices cannot
+    /// fetch the file from anywhere else.
+    pub(crate) fn ingest_document(
+        &self,
+        item_id: &str,
+        document: Document,
+        raw_blob: &str,
+        raw_mime: &str,
+        source_url: Option<&str>,
+    ) -> Result<Ingested> {
+        let doc_blob =
+            self.store
+                .put_blob(&serde_json::to_vec(&document)?, "application/json", false)?;
+        let origin = ContentOrigin::Imported;
+        let hash =
+            sha256_hex(format!("{}\u{0}{}\u{0}{}", item_id, origin.as_str(), raw_blob).as_bytes());
+        let version = ContentVersion {
+            hash,
+            item_id: item_id.to_string(),
+            origin,
+            source_url: source_url.map(str::to_string),
+            raw_blob: raw_blob.to_string(),
+            raw_mime: raw_mime.to_string(),
+            doc_blob: Some(doc_blob),
+            doc_schema: Some(SCHEMA_VERSION),
+            text_len: document.text_len() as u32,
+            created_at: now_ms(),
+        };
+        self.store.insert_content_version(&version)?;
+        self.record(
+            Entity::ContentVersion,
+            &version.hash,
+            fields::CREATE,
+            serde_json::to_value(&version)?,
+            false,
+        )?;
+        let excerpt = document.excerpt(240);
+        let lang = detect_lang(&document);
+        Ok(Ingested {
+            version,
+            document,
+            excerpt,
+            lang,
+        })
+    }
+
     /// Loads the document of a content version, regenerating it from the raw
     /// source when it was evicted or produced by an older schema.
     pub(crate) fn load_version(
@@ -88,23 +138,42 @@ impl Inner {
         {
             return Ok(Some(doc));
         }
-        let Some(raw) = self.store.get_blob(&version.raw_blob)? else {
-            return Ok(None);
-        };
-        let html = String::from_utf8_lossy(&raw);
-        let document = if version.raw_mime == crate::fulltext::PAGE_MIME {
-            match self.regenerate_page(version, &html) {
+        let document = match version.raw_mime.as_str() {
+            EPUB_MIME => match self.epub_chapter_document(version, title)? {
                 Some(doc) => doc,
                 None => return Ok(None),
+            },
+            // Without a PDF reader (servers, tools) the file still opens,
+            // just without text; that is not worth caching.
+            PDF_MIME => match self.pdf_document(&version.raw_blob)? {
+                Some(doc) => doc,
+                None => {
+                    return Ok(Some(Document {
+                        schema_version: SCHEMA_VERSION,
+                        blocks: Vec::new(),
+                    }));
+                }
+            },
+            _ => {
+                let Some(raw) = self.store.get_blob(&version.raw_blob)? else {
+                    return Ok(None);
+                };
+                let html = String::from_utf8_lossy(&raw);
+                if version.raw_mime == crate::fulltext::PAGE_MIME {
+                    match self.regenerate_page(version, &html) {
+                        Some(doc) => doc,
+                        None => return Ok(None),
+                    }
+                } else {
+                    html_to_document(
+                        &html,
+                        &ConvertOptions {
+                            base_url: version.source_url.as_deref(),
+                            title,
+                        },
+                    )
+                }
             }
-        } else {
-            html_to_document(
-                &html,
-                &ConvertOptions {
-                    base_url: version.source_url.as_deref(),
-                    title,
-                },
-            )
         };
         let doc_blob =
             self.store

@@ -1,15 +1,17 @@
 import EddyKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 @main
 struct EddyApp: App {
     @State private var model = AppModel()
     @AppStorage("app.mode") private var mode: AppMode = .threePane
     @State private var savingURL = false
+    @State private var importing = false
 
     var body: some Scene {
         WindowGroup("Eddy") {
-            RootView(mode: $mode, savingURL: $savingURL)
+            RootView(mode: $mode, savingURL: $savingURL, importing: $importing)
                 .environment(model)
                 .frame(minWidth: 960, minHeight: 620)
         }
@@ -17,6 +19,7 @@ struct EddyApp: App {
         .commands {
             CommandGroup(after: .newItem) {
                 Button("Save Page…") { savingURL = true }.keyboardShortcut("l", modifiers: .command)
+                Button("Import EPUB or PDF…") { importing = true }.keyboardShortcut("o", modifiers: .command)
                 Button("Refresh") { Task { await model.refresh() } }.keyboardShortcut("r", modifiers: .command)
             }
             CommandGroup(before: .toolbar) {
@@ -36,6 +39,9 @@ struct RootView: View {
     @Environment(AppModel.self) private var model
     @Binding var mode: AppMode
     @Binding var savingURL: Bool
+    @Binding var importing: Bool
+
+    static let importTypes: [UTType] = [.epub, .pdf]
 
     var body: some View {
         Group {
@@ -57,11 +63,27 @@ struct RootView: View {
                 .help("Three-Pane (⌘1) or Library (⌘2)")
             }
             ToolbarItem(placement: .navigation) {
-                Button { savingURL = true } label: { Label("Save Page", systemImage: "plus") }
-                    .help("Save a page to read later (⌘L)")
+                Menu {
+                    Button("Save Page…") { savingURL = true }
+                    Button("Import EPUB or PDF…") { importing = true }
+                } label: {
+                    Label("Add", systemImage: "plus")
+                } primaryAction: {
+                    savingURL = true
+                }
+                .help("Save a page to read later (⌘L), or import an EPUB or PDF (⌘O)")
             }
         }
         .overlay(alignment: .bottom) { MessageBanner() }
+        .fileImporter(isPresented: $importing, allowedContentTypes: Self.importTypes, allowsMultipleSelection: true) { result in
+            if case let .success(urls) = result { Task { await model.importFiles(urls) } }
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+            let files = urls.filter { url in Self.importTypes.contains { UTType(filenameExtension: url.pathExtension)?.conforms(to: $0) == true } }
+            guard !files.isEmpty else { return false }
+            Task { await model.importFiles(files) }
+            return true
+        }
         .sheet(isPresented: $savingURL) { SavePageSheet() }
         .sheet(item: Binding(get: { model.pendingSeries.map(SeriesProposalBox.init) }, set: { if $0 == nil { model.pendingSeries = nil } })) { box in
             SeriesProposalSheet(proposal: box.proposal)

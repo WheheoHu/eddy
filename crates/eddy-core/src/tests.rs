@@ -941,3 +941,337 @@ async fn local_search_covers_feed_and_saved_items() {
     assert_eq!(engine.rebuild_search_index().unwrap(), 4);
     assert_eq!(engine.search("importance sampling", 10).unwrap().len(), 1);
 }
+
+fn epub_bytes(files: &[(&str, &[u8])]) -> Vec<u8> {
+    use std::io::Write;
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    zip.start_file(
+        "mimetype",
+        options.compression_method(zip::CompressionMethod::Stored),
+    )
+    .unwrap();
+    zip.write_all(b"application/epub+zip").unwrap();
+    for (name, body) in files {
+        zip.start_file(*name, options).unwrap();
+        zip.write_all(body).unwrap();
+    }
+    zip.finish().unwrap().into_inner()
+}
+
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\nfake";
+
+pub(crate) fn sample_epub() -> Vec<u8> {
+    epub_bytes(&[
+        (
+            "META-INF/container.xml",
+            br#"<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"#,
+        ),
+        (
+            "OEBPS/content.opf",
+            br#"<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Sampling Book</dc:title><dc:creator>Ada</dc:creator></metadata>
+<manifest>
+  <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+  <item id="cover" href="text/cover.xhtml" media-type="application/xhtml+xml"/>
+  <item id="c1" href="text/ch1.xhtml" media-type="application/xhtml+xml"/>
+  <item id="c1b" href="text/ch1b.xhtml" media-type="application/xhtml+xml"/>
+  <item id="c2" href="text/ch2.xhtml" media-type="application/xhtml+xml"/>
+  <item id="img" href="images/cover.png" media-type="image/png" properties="cover-image"/>
+  <item id="fig" href="images/fig.png" media-type="image/png"/>
+</manifest>
+<spine><itemref idref="cover"/><itemref idref="c1"/><itemref idref="c1b"/><itemref idref="c2"/></spine>
+</package>"#,
+        ),
+        (
+            "OEBPS/nav.xhtml",
+            br#"<html><body><nav epub:type="toc"><ol><li><a href="text/ch1.xhtml">Chapter One</a></li><li><a href="text/ch2.xhtml">Chapter Two</a></li></ol></nav></body></html>"#,
+        ),
+        (
+            "OEBPS/text/cover.xhtml",
+            br#"<html><body><img src="../images/cover.png" alt="Cover"/></body></html>"#,
+        ),
+        (
+            "OEBPS/text/ch1.xhtml",
+            br#"<html><head><title/></head><body><h1>Chapter One</h1><p>Importance sampling draws samples where the integrand is large. See <a href="ch2.xhtml#n1">the note</a>.</p><img src="../images/fig.png" alt="Figure"/></body></html>"#,
+        ),
+        (
+            "OEBPS/text/ch1b.xhtml",
+            br#"<html><body><p>The estimator stays unbiased.</p></body></html>"#,
+        ),
+        (
+            "OEBPS/text/ch2.xhtml",
+            br#"<html><body><h1>Chapter Two</h1><p id="n1">Multiple importance sampling combines strategies.</p></body></html>"#,
+        ),
+        ("OEBPS/images/cover.png", PNG),
+        ("OEBPS/images/fig.png", PNG),
+    ])
+}
+
+#[tokio::test]
+async fn epub_import_creates_a_publication_of_readable_chapters() {
+    use eddy_model::{ContentFormat, ContentOrigin, ItemKind};
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(&dir.path().join("data"));
+    let file = dir.path().join("sampling.epub");
+    std::fs::write(&file, sample_epub()).unwrap();
+
+    let imported = engine.import_file(&file).await.unwrap();
+    assert!(!imported.existing);
+    assert_eq!(imported.title, "Sampling Book");
+    let series_id = imported.series_id.clone().unwrap();
+    let info = engine.series_info(&series_id).unwrap().unwrap();
+    assert_eq!(info.author.as_deref(), Some("Ada"));
+    assert_eq!(info.chapters, 3);
+    let cover = info.cover.clone().unwrap();
+    assert!(
+        cover.starts_with("epub://") && cover.ends_with("/OEBPS/images/cover.png"),
+        "{cover}"
+    );
+    assert_eq!(
+        engine.image(&cover).await.unwrap(),
+        (PNG.to_vec(), "image/png".to_string())
+    );
+
+    let chapters = engine
+        .items(&ItemQuery {
+            filter: ItemFilter::Series(series_id.clone()),
+            ..Default::default()
+        })
+        .unwrap();
+    let titles: Vec<_> = chapters.iter().map(|r| r.item.title.as_str()).collect();
+    assert_eq!(
+        titles,
+        ["Sampling Book", "Chapter One", "Chapter Two"],
+        "an untitled cover takes the book title; split files join their chapter"
+    );
+    assert!(chapters.iter().all(|r| r.item.kind == ItemKind::Chapter
+        && r.format == ContentFormat::Article
+        && r.item.author.as_deref() == Some("Ada")));
+    assert_eq!(imported.item_id, chapters[0].item.id);
+    assert!(
+        engine.items(&ItemQuery::default()).unwrap().is_empty(),
+        "chapters live in their book"
+    );
+
+    let one = chapters[1].item.id.clone();
+    let doc = engine.document(&one).await.unwrap().unwrap();
+    assert_eq!(doc.version.origin, ContentOrigin::Imported);
+    let text = doc.document.plain_text();
+    assert!(
+        !text.starts_with("Chapter One"),
+        "the title heading is dropped"
+    );
+    assert!(
+        text.contains("integrand") && text.contains("stays unbiased"),
+        "{text}"
+    );
+    let image = doc
+        .document
+        .blocks
+        .iter()
+        .find_map(|b| match &b.kind {
+            BlockKind::Image { src, .. } => Some(src.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert!(image.ends_with("/OEBPS/images/fig.png"), "{image}");
+    assert_eq!(engine.image(&image).await.unwrap().1, "image/png");
+    let link = doc
+        .document
+        .blocks
+        .iter()
+        .flat_map(|b| b.kind.runs().unwrap_or_default())
+        .find_map(|r| r.link.clone())
+        .unwrap();
+    assert_eq!(
+        engine.item_for_link(&link).unwrap().as_deref(),
+        Some(chapters[2].item.id.as_str())
+    );
+    let continuation = link.replace("ch2.xhtml#n1", "ch1b.xhtml");
+    assert_eq!(
+        engine.item_for_link(&continuation).unwrap().as_deref(),
+        Some(one.as_str()),
+        "a continuation file belongs to its chapter"
+    );
+    assert_eq!(
+        engine.search("combines strategies", 10).unwrap()[0]
+            .item
+            .item
+            .id,
+        chapters[2].item.id
+    );
+
+    // Documents regenerate from the stored book.
+    engine
+        .inner
+        .store
+        .set_doc_blob(
+            &doc.version.hash,
+            doc.version.doc_blob.as_deref().unwrap(),
+            0,
+            0,
+        )
+        .unwrap();
+    let regenerated = engine.document(&one).await.unwrap().unwrap();
+    assert_eq!(regenerated.document, doc.document);
+
+    let again = engine.import_file(&file).await.unwrap();
+    assert!(again.existing);
+    assert_eq!(again.series_id, Some(series_id));
+    assert_eq!(engine.series_list().unwrap().len(), 1);
+}
+
+struct FakePdfReader;
+
+impl PdfReader for FakePdfReader {
+    fn read(&self, path: &std::path::Path) -> Option<PdfText> {
+        let bytes = std::fs::read(path).ok()?;
+        bytes.starts_with(b"%PDF-").then(|| PdfText {
+            title: Some("Microsoft Word - draft.docx".into()),
+            author: Some("Ada".into()),
+            pages: vec![
+                "Importance sampling draws more samples where the inte-\ngrand is large and so reduces the variance of Monte\nCarlo estimates without adding any bias at all.\nA Short Heading\nNext paragraph.".into(),
+                "第二页的内容比较长一些\n继续".into(),
+            ],
+        })
+    }
+}
+
+#[tokio::test]
+async fn pdf_import_reads_text_through_the_platform_and_tracks_pages() {
+    use eddy_model::{ContentFormat, ItemKind};
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(&dir.path().join("data"));
+    engine.set_pdf_reader(Some(Arc::new(FakePdfReader)));
+    let pdf = b"%PDF-1.7\n1 0 obj<<>>endobj\n%%EOF\n".to_vec();
+    let file = dir.path().join("Paper Draft.pdf");
+    std::fs::write(&file, &pdf).unwrap();
+
+    let imported = engine.import_file(&file).await.unwrap();
+    assert_eq!(
+        imported.title, "Paper Draft",
+        "authoring-tool titles are ignored"
+    );
+    assert_eq!(imported.series_id, None);
+    let row = engine.item(&imported.item_id).unwrap().unwrap();
+    assert_eq!(
+        (row.item.kind, row.format),
+        (ItemKind::Saved, ContentFormat::Pdf)
+    );
+    assert_eq!(row.item.author.as_deref(), Some("Ada"));
+    assert!(row.item.url.is_none());
+    assert!(row.item.excerpt.unwrap().starts_with("Importance sampling"));
+
+    let doc = engine
+        .document(&imported.item_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .document;
+    let paragraphs: Vec<String> = doc.blocks.iter().map(|b| b.plain_text()).collect();
+    assert_eq!(
+        paragraphs,
+        [
+            "Importance sampling draws more samples where the integrand is large and so reduces the variance of Monte Carlo estimates without adding any bias at all.",
+            "A Short Heading",
+            "Next paragraph.",
+            "第二页的内容比较长一些继续",
+        ]
+    );
+    assert_eq!(
+        engine.search("integrand", 5).unwrap()[0].item.item.id,
+        imported.item_id
+    );
+
+    let path = engine
+        .content_file(&imported.item_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(std::fs::read(path).unwrap(), pdf);
+
+    engine
+        .record_page_progress(&imported.item_id, 1, 4, true)
+        .unwrap();
+    let first_block = doc.blocks[0].id.clone();
+    assert_eq!(
+        engine
+            .record_progress(&imported.item_id, &first_block, 0, true)
+            .unwrap(),
+        None,
+        "the text view does not replace the page"
+    );
+    let resume = engine.resume_point(&imported.item_id).unwrap().unwrap();
+    assert_eq!((resume.page, resume.block_id), (Some(1), None));
+    assert!((resume.locator.progression - 0.25).abs() < 1e-9);
+    assert!(
+        !engine
+            .item(&imported.item_id)
+            .unwrap()
+            .unwrap()
+            .item
+            .finished
+    );
+    engine
+        .record_page_progress(&imported.item_id, 3, 4, true)
+        .unwrap();
+    assert!(
+        engine
+            .item(&imported.item_id)
+            .unwrap()
+            .unwrap()
+            .item
+            .finished
+    );
+
+    assert!(engine.import_file(&file).await.unwrap().existing);
+    let saved = engine
+        .items(&ItemQuery {
+            filter: ItemFilter::Saved,
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(saved.len(), 1);
+}
+
+#[tokio::test]
+async fn imports_without_text_and_unsupported_files() {
+    use eddy_model::ContentFormat;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(&dir.path().join("data"));
+
+    let scan = dir.path().join("scan.pdf");
+    std::fs::write(&scan, b"%PDF-1.4\n%%EOF\n").unwrap();
+    let imported = engine.import_file(&scan).await.unwrap();
+    assert_eq!(imported.title, "scan");
+    let doc = engine.document(&imported.item_id).await.unwrap().unwrap();
+    assert!(
+        doc.document.blocks.is_empty(),
+        "without a PDF reader there is no text, but the file opens"
+    );
+    assert_eq!(
+        engine.item(&imported.item_id).unwrap().unwrap().format,
+        ContentFormat::Pdf
+    );
+
+    let notes = dir.path().join("notes.txt");
+    std::fs::write(&notes, "plain text").unwrap();
+    assert!(matches!(
+        engine.import_file(&notes).await,
+        Err(EngineError::Invalid(_))
+    ));
+
+    let locked = dir.path().join("locked.epub");
+    std::fs::write(
+        &locked,
+        epub_bytes(&[(
+            "META-INF/encryption.xml",
+            br#"<encryption><EncryptedData><EncryptionMethod Algorithm="http://www.w3.org/2001/04/xmlenc#aes128-cbc"/></EncryptedData></encryption>"#,
+        )]),
+    )
+    .unwrap();
+    let err = engine.import_file(&locked).await.unwrap_err().to_string();
+    assert!(err.contains("DRM"), "{err}");
+    assert!(engine.series_list().unwrap().is_empty());
+}

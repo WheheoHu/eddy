@@ -9,6 +9,7 @@ publish = false
 async-trait = { workspace = true }
 eddy-ai = { path = "../eddy-ai" }
 eddy-doc = { workspace = true }
+eddy-epub = { path = "../eddy-epub" }
 eddy-extract = { path = "../eddy-extract" }
 eddy-fetch = { path = "../eddy-fetch" }
 eddy-model = { workspace = true }
@@ -28,5 +29,6 @@ whatlang = "0.18"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 wiremock = { workspace = true }

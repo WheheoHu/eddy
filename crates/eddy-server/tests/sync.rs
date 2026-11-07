@@ -161,6 +161,27 @@ async fn pages() -> MockServer {
     server
 }
 
+/// A one-chapter EPUB with an image.
+fn book() -> Vec<u8> {
+    use std::io::Write;
+    let files: [(&str, &[u8]); 5] = [
+        ("META-INF/container.xml", br#"<container><rootfiles><rootfile full-path="content.opf"/></rootfiles></container>"#),
+        ("content.opf", br#"<package><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Path Tracing Notes</dc:title></metadata>
+<manifest><item id="c" href="c.xhtml" media-type="application/xhtml+xml"/><item id="i" href="i.png" media-type="image/png"/></manifest>
+<spine><itemref idref="c"/></spine></package>"#),
+        ("c.xhtml", br#"<html><body><h1>Radiance</h1><p>Radiance is constant along rays in a vacuum.</p><img src="i.png"/></body></html>"#),
+        ("i.png", b"\x89PNG-figure"),
+        ("mimetype", b"application/epub+zip"),
+    ];
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for (name, body) in files {
+        zip.start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(body).unwrap();
+    }
+    zip.finish().unwrap().into_inner()
+}
+
 fn client(dir: &std::path::Path) -> Engine {
     Engine::open(
         dir,
@@ -216,6 +237,9 @@ async fn standalone_client_migrates_and_a_second_device_joins() {
     a.record_progress(&essay.item.id, &mid, 4, true).unwrap();
     let tag = a.create_tag("Sampling").unwrap();
     a.set_item_tag(&essay.item.id, &tag, true).unwrap();
+    let book_file = dir_a.path().join("notes.epub");
+    std::fs::write(&book_file, book()).unwrap();
+    let imported = a.import_file(&book_file).await.unwrap();
     a.import_rule_pack("private", "name = \"Private\"\nversion = 1\n[[site]]\ndomains = [\"example.com\"]\nstrategies = [\"archive\"]\n").unwrap();
 
     // The server starts empty.
@@ -278,6 +302,34 @@ async fn standalone_client_migrates_and_a_second_device_joins() {
         vec![("Private".to_string(), 1)],
         "private rule packs are distributed"
     );
+    // An imported book arrives with its chapters; the book file itself
+    // (for images) comes from the server on demand.
+    let books = b.series_list().unwrap();
+    let notes = books
+        .iter()
+        .find(|s| s.title == "Path Tracing Notes")
+        .unwrap();
+    assert_eq!(
+        notes.next_item_id.as_deref(),
+        Some(imported.item_id.as_str())
+    );
+    let chapter = b
+        .document(&imported.item_id)
+        .await
+        .unwrap()
+        .expect("chapter document from the server")
+        .document;
+    assert!(chapter.plain_text().contains("constant along rays"));
+    let figure = chapter
+        .blocks
+        .iter()
+        .find_map(|b| match &b.kind {
+            eddy_model::BlockKind::Image { src, .. } => Some(src.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(b.image(&figure).await.unwrap().0, b"\x89PNG-figure");
+
     let feed_doc = b
         .document(&find(&b, "Unread elsewhere").item.id)
         .await

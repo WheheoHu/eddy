@@ -77,6 +77,13 @@ impl Store {
         Ok(self.blob_path(key)?.exists())
     }
 
+    /// The file holding a blob, for readers that seek (archives) or open
+    /// files themselves (PDF views), when it is stored locally.
+    pub fn blob_file(&self, key: &str) -> Result<Option<PathBuf>> {
+        let path = self.blob_path(key)?;
+        Ok(path.exists().then_some(path))
+    }
+
     pub fn pin_blob(&self, key: &str, pinned: bool) -> Result<()> {
         self.with(|c| {
             c.execute(

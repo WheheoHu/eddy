@@ -20,6 +20,8 @@ struct ArticleTextView: NSViewRepresentable {
     let scrollTarget: ScrollTarget?
     let loadImage: (String) async -> NSImage?
     let onPosition: (_ blockID: String, _ offset: Int, _ fraction: Double) -> Void
+    /// Links inside an imported book (`epub://`); others open in the browser.
+    var onBookLink: (URL) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -57,6 +59,7 @@ struct ArticleTextView: NSViewRepresentable {
         let c = context.coordinator
         c.onPosition = onPosition
         c.loadImage = loadImage
+        c.onBookLink = onBookLink
         guard let textView = scroll.documentView as? ReaderTextView else { return }
         if textView.maxWidth != style.maxWidth {
             textView.maxWidth = style.maxWidth
@@ -89,6 +92,7 @@ struct ArticleTextView: NSViewRepresentable {
         var hasShown = false
         var onPosition: ((String, Int, Double) -> Void)?
         var loadImage: ((String) async -> NSImage?)?
+        var onBookLink: ((URL) -> Void)?
         private var lastReported: (String, Int)?
         private var reportTask: Task<Void, Never>?
         private var imageTask: Task<Void, Never>?
@@ -225,7 +229,11 @@ struct ArticleTextView: NSViewRepresentable {
 
         func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
             if let url = link as? URL ?? (link as? String).flatMap(URL.init(string:)) {
-                NSWorkspace.shared.open(url)
+                if url.scheme == "epub" {
+                    onBookLink?(url)
+                } else {
+                    NSWorkspace.shared.open(url)
+                }
                 return true
             }
             return false

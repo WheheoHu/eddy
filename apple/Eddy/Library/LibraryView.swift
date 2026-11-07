@@ -12,9 +12,12 @@ struct Book: Identifiable, Equatable {
     let id: String
     let kind: Kind
     let title: String
+    var subtitle: String?
     let detail: String
     let symbol: String
     let coverItemID: String?
+    var coverURL: String?
+    var pdfItemID: String?
     let updated: Int64
     let lastRead: Int64
     let unread: Int
@@ -56,6 +59,12 @@ struct LibraryView: View {
             }
         }
         .onAppear(perform: openCurrent)
+        .onChange(of: model.revealed) { _, revealed in
+            guard revealed != nil else { return }
+            model.revealed = nil
+            open = nil
+            openCurrent()
+        }
     }
 
     private var shelf: some View {
@@ -73,7 +82,7 @@ struct LibraryView: View {
         }
         .overlay {
             if books.isEmpty {
-                ContentUnavailableView("Your Library Is Empty", systemImage: "books.vertical", description: Text("Save a page with ⌘L, or connect FreshRSS in Settings."))
+                ContentUnavailableView("Your Library Is Empty", systemImage: "books.vertical", description: Text("Save a page with ⌘L, import an EPUB or PDF with ⌘O, or connect FreshRSS in Settings."))
             }
         }
         .searchable(text: $query, placement: .toolbar, prompt: "Filter")
@@ -123,17 +132,22 @@ struct LibraryView: View {
             let chapters = model.chapters(series.id)
             books.append(Book(
                 id: "pub:\(series.id)", kind: .publication(seriesID: series.id), title: series.title,
+                subtitle: series.author,
                 detail: "\(series.finished)/\(series.chapters) chapters", symbol: "book.closed",
-                coverItemID: nil,
+                coverItemID: nil, coverURL: series.cover,
                 updated: chapters.map(\.publishedAt).max() ?? 0, lastRead: chapters.compactMap(\.lastReadAt).max() ?? 0,
                 unread: Int(series.chapters - series.finished), progress: series.progress
             ))
         }
         for item in model.items(.saved, limit: 5000) {
+            let pdf = item.format == .pdf
+            let size = pdf && item.textLen == 0 ? "PDF" : "\(item.readingMinutes) min · \(item.host)"
+            let left = pdf ? "read" : "· \(item.minutesLeft) min left"
             books.append(Book(
                 id: "saved:\(item.id)", kind: .saved(itemID: item.id), title: item.title,
-                detail: item.finished ? "Finished" : item.inProgress ? "\(Int(item.progress * 100))% · \(item.minutesLeft) min left" : "\(item.readingMinutes) min · \(item.host)",
-                symbol: "bookmark", coverItemID: item.id,
+                subtitle: pdf ? item.author : nil,
+                detail: item.finished ? "Finished" : item.inProgress ? "\(Int(item.progress * 100))% \(left)" : size,
+                symbol: pdf ? "doc.richtext" : "bookmark", coverItemID: item.id, pdfItemID: pdf ? item.id : nil,
                 updated: item.publishedAt, lastRead: item.lastReadAt ?? 0, unread: item.read ? 0 : 1, progress: item.progress
             ))
         }
@@ -167,7 +181,7 @@ private struct BookTile: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            BookCover(title: book.title, subtitle: nil, imageItemID: book.coverItemID, symbol: book.symbol)
+            BookCover(title: book.title, subtitle: book.subtitle, imageItemID: book.coverItemID, imageURL: book.coverURL, pdfItemID: book.pdfItemID, symbol: book.symbol)
                 .aspectRatio(2 / 3, contentMode: .fit)
                 .shadow(color: .black.opacity(hovering ? 0.28 : 0.16), radius: hovering ? 9 : 5, y: hovering ? 5 : 3)
                 .overlay(alignment: .topTrailing) {

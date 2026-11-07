@@ -11,6 +11,8 @@ struct LibraryReader: View {
     @State private var currentID: String?
     @State private var scrollTarget: ScrollTarget?
     @State private var outline: [(id: String, level: Int, title: String)] = []
+    @State private var pdfOutline: [PDFOutlineEntry] = []
+    @State private var pageTarget: PageTarget?
     @State private var showContents = true
 
     private var entries: [ItemView] {
@@ -31,9 +33,9 @@ struct LibraryReader: View {
             }
             VStack(spacing: 0) {
                 if let id = currentID {
-                    ReaderPane(itemID: id, scrollTarget: $scrollTarget) { doc in
+                    ReaderPane(itemID: id, scrollTarget: $scrollTarget, onDocument: { doc in
                         outline = Self.outline(of: doc)
-                    }
+                    }, pageTarget: pageTarget, onPDFOutline: { pdfOutline = $0 }, openItem: select)
                     .id(id)
                     if case .saved = book.kind {} else if entries.count > 1 {
                         Divider()
@@ -69,6 +71,27 @@ struct LibraryReader: View {
     @ViewBuilder
     private var contents: some View {
         switch book.kind {
+        case let .saved(itemID) where model.item(itemID)?.format == .pdf:
+            List {
+                Section("Contents") {
+                    if pdfOutline.isEmpty {
+                        Text("This PDF has no outline.").foregroundStyle(.secondary)
+                    }
+                    ForEach(pdfOutline) { entry in
+                        Button { pageTarget = PageTarget(page: entry.page) } label: {
+                            HStack {
+                                Text(entry.title).lineLimit(2)
+                                Spacer()
+                                Text("\(entry.page + 1)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                            }
+                            .padding(.leading, CGFloat(entry.level - 1) * 12)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .listStyle(.sidebar)
         case .saved:
             List {
                 Section("Contents") {
@@ -150,6 +173,7 @@ struct LibraryReader: View {
     private func select(_ id: String) {
         guard id != currentID else { return }
         scrollTarget = nil
+        pageTarget = nil
         currentID = id
         model.currentItemID = id
     }

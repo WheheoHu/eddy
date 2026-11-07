@@ -7,6 +7,8 @@ pub struct ResumePointView {
     pub block_id: Option<String>,
     /// UTF-16 offset within the block's layout text.
     pub offset: u32,
+    /// Page of a PDF (0-based).
+    pub page: Option<u32>,
     pub progression: f64,
     pub updated_at: i64,
     pub device: Option<String>,
@@ -21,6 +23,7 @@ impl From<core::ResumePoint> for ResumePointView {
         ResumePointView {
             block_id: r.block_id,
             offset: r.offset,
+            page: r.page,
             progression: r.locator.progression,
             updated_at: r.updated_at,
             device: r.device,
@@ -66,6 +69,9 @@ pub struct SeriesView {
     pub id: String,
     pub title: String,
     pub toc_url: Option<String>,
+    pub author: Option<String>,
+    /// Cover image URL for `image`.
+    pub cover: Option<String>,
     pub chapters: u32,
     pub finished: u32,
     pub progress: f64,
@@ -78,6 +84,8 @@ impl From<core::SeriesInfo> for SeriesView {
             id: s.id,
             title: s.title,
             toc_url: s.toc_url,
+            author: s.author,
+            cover: s.cover,
             chapters: s.chapters,
             finished: s.finished,
             progress: s.progress,
@@ -140,6 +148,21 @@ impl EddyEngine {
         Ok(self
             .engine
             .record_progress(&item_id, &block_id, offset, force)?
+            .map(|l| l.progression))
+    }
+
+    /// Reports the page a PDF view shows (0-based) out of `page_count`;
+    /// returns the overall progression. Throttled unless `force`.
+    pub fn record_page_progress(
+        &self,
+        item_id: String,
+        page: u32,
+        page_count: u32,
+        force: bool,
+    ) -> R<Option<f64>> {
+        Ok(self
+            .engine
+            .record_page_progress(&item_id, page, page_count, force)?
             .map(|l| l.progression))
     }
 

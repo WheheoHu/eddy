@@ -14,6 +14,12 @@ use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_VERSION: u32 = 1;
 
+/// Largest content blob a server accepts (imported books and PDFs).
+pub const MAX_BLOB_BYTES: usize = 256 * 1024 * 1024;
+
+/// Blob transfers can be large; other requests keep the client's timeout.
+const BLOB_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
 #[derive(Debug, thiserror::Error)]
 pub enum SyncError {
     #[error("{0}")]
@@ -244,6 +250,7 @@ impl SyncClient {
         self.send(
             self.http
                 .put(self.url(&format!("blobs/{key}")))
+                .timeout(BLOB_TIMEOUT)
                 .header("content-type", mime)
                 .body(bytes),
         )
@@ -253,7 +260,11 @@ impl SyncClient {
 
     pub async fn get_blob(&self, key: &str) -> Result<Option<(Vec<u8>, String)>> {
         match self
-            .send(self.http.get(self.url(&format!("blobs/{key}"))))
+            .send(
+                self.http
+                    .get(self.url(&format!("blobs/{key}")))
+                    .timeout(BLOB_TIMEOUT),
+            )
             .await
         {
             Ok(response) => {

@@ -175,7 +175,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/ops", post(push).get(pull))
         .route(
             "/v1/blobs/{key}",
-            get(get_blob).head(head_blob).put(put_blob),
+            get(get_blob)
+                .head(head_blob)
+                .put(put_blob)
+                .layer(DefaultBodyLimit::max(eddy_sync::MAX_BLOB_BYTES)),
         )
         .route("/v1/config", get(config))
         .route("/v1/config/{key}", put(put_config).delete(delete_config))

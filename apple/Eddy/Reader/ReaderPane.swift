@@ -8,8 +8,16 @@ struct ReaderPane: View {
     let itemID: String
     @Binding var scrollTarget: ScrollTarget?
     var onDocument: (DocumentView?) -> Void = { _ in }
+    /// A page to show in a PDF (outline jumps from the contents column).
+    var pageTarget: PageTarget?
+    var onPDFOutline: ([PDFOutlineEntry]) -> Void = { _ in }
+    /// Opens another item (a chapter a book link points to).
+    var openItem: ((String) -> Void)?
 
     @State private var document: DocumentView?
+    @State private var pdfURL: URL?
+    @State private var resumePage: PageTarget?
+    @State private var lastPage: (page: Int, count: Int)?
     @State private var loading = true
     @State private var rendererID = RendererRegistry.article.id
     @State private var mode: ReadingMode = .original
@@ -39,14 +47,36 @@ struct ReaderPane: View {
             .task(id: itemID) { await load() }
             .onDisappear(perform: flush)
             .onChange(of: mode) { _, new in
-                if new != .original, translations.isEmpty { Task { await translate() } }
+                guard new != .original else { return }
+                // Translations show in the reflowed text.
+                if rendererID == RendererRegistry.pdf.id {
+                    guard document?.blocks.isEmpty == false else {
+                        model.message = "This PDF has no text to translate."
+                        mode = .original
+                        return
+                    }
+                    rendererID = RendererRegistry.article.id
+                }
+                if translations.isEmpty { Task { await translate() } }
             }
     }
 
     @ViewBuilder
     private var content: some View {
         if let item {
-            if rendererID == RendererRegistry.web.id || (document == nil && !loading), let url = item.url.flatMap(URL.init(string:)) {
+            if rendererID == RendererRegistry.pdf.id {
+                if let pdfURL {
+                    PDFReaderView(url: pdfURL, target: pageTarget ?? resumePage, onPage: { page, count in
+                        lastPage = (page, count)
+                        model.recordPage(itemID, page: page, of: count)
+                    }, onOutline: onPDFOutline)
+                    .accessibilityLabel(Text("PDF: \(item.title)"))
+                } else if loading {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ContentUnavailableView("PDF Unavailable", systemImage: "doc.richtext", description: Text("The file isn’t on this Mac and couldn’t be downloaded."))
+                }
+            } else if rendererID == RendererRegistry.web.id || (document == nil && !loading), let url = item.url.flatMap(URL.init(string:)) {
                 WebPageView(url: url)
             } else if let document {
                 let version = "\(document.contentHash)|\(mode.rawValue)|\(translations.count)|\(fontSize)|\(serif)|\(lineHeight)"
@@ -62,6 +92,10 @@ struct ReaderPane: View {
                     onPosition: { block, offset, _ in
                         lastPosition = (block, offset)
                         model.recordProgress(itemID, blockID: block, offset: offset)
+                    },
+                    onBookLink: { url in
+                        guard let target = model.item(forLink: url) else { return }
+                        if let openItem { openItem(target) } else { model.currentItemID = target }
                     }
                 )
                 .id(itemID)
@@ -105,7 +139,7 @@ struct ReaderPane: View {
                         ForEach(renderers) { Label($0.title, systemImage: $0.icon).tag($0.id) }
                     }
                     .pickerStyle(.segmented)
-                    .help("Reader or original web page")
+                    .help("How to view this item")
                 }
                 Picker("Language", selection: $mode) {
                     ForEach(ReadingMode.allCases) { Text($0.rawValue).tag($0) }
@@ -149,11 +183,18 @@ struct ReaderPane: View {
     private func load() async {
         loading = true
         document = nil
+        pdfURL = nil
+        resumePage = nil
         resumeNote = nil
         lastPosition = nil
+        lastPage = nil
         scrollTarget = nil
-        rendererID = RendererRegistry.article.id
+        rendererID = RendererRegistry.preferred(for: item).id
         translations = model.cachedTranslation(itemID)
+        if item?.format == .pdf {
+            if let page = model.resume(itemID)?.page { resumePage = PageTarget(page: Int(page)) }
+            pdfURL = await model.contentFile(itemID)
+        }
         await reloadDocument()
         model.markOpened(itemID)
         if let resume = model.resume(itemID), let block = resume.blockId {
@@ -173,6 +214,7 @@ struct ReaderPane: View {
 
     private func flush() {
         if let (block, offset) = lastPosition { model.flushProgress(itemID, blockID: block, offset: offset) }
+        if let lastPage { model.recordPage(itemID, page: lastPage.page, of: lastPage.count, force: true) }
     }
 
     private func translate() async {

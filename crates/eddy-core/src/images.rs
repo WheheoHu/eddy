@@ -1,3 +1,4 @@
+use eddy_model::EPUB_SCHEME;
 use eddy_model::ids::sha256_hex;
 
 use crate::engine::Inner;
@@ -10,7 +11,7 @@ impl Inner {
     pub(crate) async fn image(&self, url: &str) -> Result<(Vec<u8>, String)> {
         let parsed =
             url::Url::parse(url).map_err(|_| EngineError::Invalid("图片地址无效。".into()))?;
-        if !matches!(parsed.scheme(), "http" | "https") {
+        if !matches!(parsed.scheme(), "http" | "https" | EPUB_SCHEME) {
             return Err(EngineError::Invalid("图片地址无效。".into()));
         }
         let key = format!("img{}", &sha256_hex(url.as_bytes())[..40]);
@@ -20,6 +21,15 @@ impl Inner {
                 .blob_mime(&key)?
                 .unwrap_or_else(|| "image/*".into());
             return Ok((bytes, mime));
+        }
+        if parsed.scheme() == EPUB_SCHEME {
+            // Not pinned: it can be read from the book again.
+            let (bytes, mime) = self.archive_file(url).await?.ok_or(EngineError::NotFound)?;
+            if bytes.len() > MAX_IMAGE_BYTES {
+                return Err(EngineError::Invalid("图片太大。".into()));
+            }
+            self.store.put_blob_keyed(&key, &bytes, mime, false)?;
+            return Ok((bytes, mime.to_string()));
         }
         let response = self
             .http

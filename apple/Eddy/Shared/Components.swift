@@ -18,7 +18,9 @@ extension ItemView {
     var date: Date { Date(timeIntervalSince1970: TimeInterval(publishedAt) / 1000) }
 
     var host: String {
-        url.flatMap { URL(string: $0)?.host() }?.replacingOccurrences(of: "www.", with: "") ?? "Saved"
+        if format == .pdf { return "PDF" }
+        if let host = url.flatMap({ URL(string: $0)?.host() }) { return host.replacingOccurrences(of: "www.", with: "") }
+        return kind == .chapter ? "Book" : "Saved"
     }
 
     var sourceName: String { kind == .feed ? (sourceTitle ?? host) : host }
@@ -61,42 +63,57 @@ struct ArticleRow: View {
     }
 }
 
-/// A generated book cover: the lead image when there is one, otherwise a
-/// gradient keyed to the title.
+/// A book cover: the book's own cover or a PDF's first page as is; else a
+/// gradient keyed to the title, with the lead image when there is one.
 struct BookCover: View {
     @Environment(AppModel.self) private var model
     let title: String
     let subtitle: String?
     var imageItemID: String?
+    /// The book's own cover image.
+    var imageURL: String?
+    var pdfItemID: String?
     var symbol: String = "book.closed"
 
     @State private var image: String?
+    @State private var cover: NSImage?
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
-            LinearGradient(colors: palette, startPoint: .topLeading, endPoint: .bottomTrailing)
-            if let image {
-                Color.clear.overlay { EngineImage(url: image, contentMode: .fill) }
-                LinearGradient(colors: [.clear, .black.opacity(0.65)], startPoint: .center, endPoint: .bottom)
-            }
-            VStack(alignment: .leading, spacing: 4) {
-                Image(systemName: symbol).font(.caption).opacity(0.8)
-                Spacer(minLength: 0)
-                Text(title)
-                    .font(.system(size: 13, weight: .bold, design: .serif))
-                    .lineLimit(4)
-                if let subtitle {
-                    Text(subtitle).font(.system(size: 10, weight: .medium)).opacity(0.85).lineLimit(1)
+            if let cover {
+                Color.white.overlay { Image(nsImage: cover).resizable().aspectRatio(contentMode: .fill) }
+            } else {
+                LinearGradient(colors: palette, startPoint: .topLeading, endPoint: .bottomTrailing)
+                if let image {
+                    Color.clear.overlay { EngineImage(url: image, contentMode: .fill) }
+                    LinearGradient(colors: [.clear, .black.opacity(0.65)], startPoint: .center, endPoint: .bottom)
                 }
+                VStack(alignment: .leading, spacing: 4) {
+                    Image(systemName: symbol).font(.caption).opacity(0.8)
+                    Spacer(minLength: 0)
+                    Text(title)
+                        .font(.system(size: 13, weight: .bold, design: .serif))
+                        .lineLimit(4)
+                    if let subtitle {
+                        Text(subtitle).font(.system(size: 10, weight: .medium)).opacity(0.85).lineLimit(1)
+                    }
+                }
+                .foregroundStyle(.white)
+                .padding(10)
+                .shadow(color: .black.opacity(0.35), radius: 2)
             }
-            .foregroundStyle(.white)
-            .padding(10)
-            .shadow(color: .black.opacity(0.35), radius: 2)
             Rectangle().fill(Color.black.opacity(0.18)).frame(width: 5).frame(maxHeight: .infinity, alignment: .leading)
         }
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .task(id: imageItemID) {
-            if let imageItemID { image = await model.leadImage(imageItemID) }
+            if let imageItemID, imageURL == nil, pdfItemID == nil { image = await model.leadImage(imageItemID) }
+        }
+        .task(id: imageURL ?? pdfItemID) {
+            if let imageURL {
+                cover = await model.image(imageURL)
+            } else if let pdfItemID {
+                cover = await model.pdfCover(pdfItemID)
+            }
         }
     }
 
