@@ -29,6 +29,7 @@ struct ReaderPane: View {
     @State private var resumeNote: ResumePointView?
     @State private var lastPosition: (String, Int)?
     @State private var cache = ArticleCache()
+    @State private var paneHeight: CGFloat = 600
 
     @AppStorage("reader.fontSize") private var fontSize = 17.0
     @AppStorage("reader.serif") private var serif = false
@@ -42,9 +43,18 @@ struct ReaderPane: View {
     private var item: ItemView? { model.item(itemID) }
 
     var body: some View {
-        content
-            .overlay(alignment: .top) { banners }
-            .toolbar { toolbar }
+        VStack(spacing: 0) {
+            if showSummary {
+                SummaryPanel(itemID: itemID, maxHeight: paneHeight * 0.4) { toggleSummary(false) }
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                Divider()
+            }
+            content
+                .overlay(alignment: .top) { banners }
+        }
+        .clipped()
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { paneHeight = $0 }
+        .toolbar { toolbar }
             .task(id: itemID) { await load() }
             .onDisappear(perform: flush)
             .onChange(of: mode) { _, new in
@@ -154,9 +164,8 @@ struct ReaderPane: View {
                 .pickerStyle(.menu)
                 .frame(width: 120)
                 .help("Show a translation alongside or instead of the original")
-                Button { showSummary.toggle() } label: { Label("Summary", systemImage: "sparkles") }
-                    .help("AI summary")
-                    .popover(isPresented: $showSummary) { SummaryPopover(itemID: itemID) }
+                Button { toggleSummary(!showSummary) } label: { Label("Summary", systemImage: "sparkles") }
+                    .help(showSummary ? "Hide the AI summary" : "AI summary")
                 Button { showType.toggle() } label: { Label("Text Style", systemImage: "textformat.size") }
                     .popover(isPresented: $showType) { typography }
                 if item.kind == .feed {
@@ -223,6 +232,10 @@ struct ReaderPane: View {
         if let lastPage { model.recordPage(itemID, page: lastPage.page, of: lastPage.count, force: true) }
     }
 
+    private func toggleSummary(_ show: Bool) {
+        withAnimation(.easeInOut(duration: 0.2)) { showSummary = show }
+    }
+
     private func translate() async {
         guard model.aiConfigured else {
             model.message = "Add an AI provider in Settings to translate."
@@ -253,16 +266,48 @@ final class ArticleCache {
     }
 }
 
-struct SummaryPopover: View {
+/// The AI summary across the top of the reader, above the text it pushes
+/// down. Summarizes as soon as it opens when nothing is cached.
+struct SummaryPanel: View {
     @Environment(AppModel.self) private var model
     let itemID: String
+    /// Longer summaries scroll within this height.
+    let maxHeight: CGFloat
+    let close: () -> Void
     @State private var summary: SummaryView?
     @State private var loading = false
     @State private var errorText: String?
+    @State private var detailsHeight: CGFloat = 20
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label("Summary", systemImage: "sparkles").font(.headline)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("Summary", systemImage: "sparkles").font(.headline)
+                Spacer()
+                Button(action: close) { Image(systemName: "xmark") }
+                    .buttonStyle(.borderless)
+                    .help("Hide the summary")
+                    .accessibilityLabel("Hide Summary")
+            }
+            ScrollView {
+                details.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { detailsHeight = $0 }
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(height: min(detailsHeight, max(maxHeight, 80)))
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background.secondary)
+        .task(id: itemID) {
+            summary = (try? model.engine?.cachedSummary(itemId: itemID)) ?? nil
+            if summary == nil, model.aiConfigured { await load() }
+        }
+    }
+
+    @ViewBuilder
+    private var details: some View {
+        VStack(alignment: .leading, spacing: 8) {
             if let summary {
                 Text(summary.tldr).font(.body.weight(.medium))
                 ForEach(summary.points, id: \.self) { point in
@@ -272,22 +317,29 @@ struct SummaryPopover: View {
                     }
                 }
             } else if loading {
-                ProgressView().frame(maxWidth: .infinity)
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Summarizing…").foregroundStyle(.secondary)
+                }
             } else if let errorText {
-                Text(errorText).foregroundStyle(.secondary)
+                HStack {
+                    Text(errorText).foregroundStyle(.secondary)
+                    Button("Try Again") { Task { await load() } }
+                }
             } else if !model.aiConfigured {
                 Text("Add an AI provider in Settings to summarize articles.").foregroundStyle(.secondary)
             } else {
                 Button("Summarize") { Task { await load() } }
             }
         }
-        .padding(16)
-        .frame(width: 360, alignment: .leading)
-        .task(id: itemID) { summary = (try? model.engine?.cachedSummary(itemId: itemID)) ?? nil }
+        .textSelection(.enabled)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func load() async {
         loading = true
+        errorText = nil
         defer { loading = false }
         do {
             summary = try await model.engine?.summarize(itemId: itemID, force: false)
