@@ -1,0 +1,16 @@
+[package]
+name = "eddy-search"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+eddy-model = { workspace = true }
+parking_lot = { workspace = true }
+tantivy = "0.27"
+tantivy-jieba = "0.21"
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

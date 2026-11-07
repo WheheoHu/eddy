@@ -74,7 +74,41 @@ impl From<core::SeriesInfo> for SeriesView {
     }
 }
 
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct TextRangeView {
+    pub start: u32,
+    pub end: u32,
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct SearchResultView {
+    pub item: crate::ItemView,
+    pub snippet: String,
+    /// Highlighted ranges in `snippet`, UTF-16 offsets.
+    pub highlights: Vec<TextRangeView>,
+}
+
 type R<T> = Result<T, EddyError>;
+
+#[uniffi::export]
+impl EddyEngine {
+    pub fn search(&self, query: String, limit: u32) -> R<Vec<SearchResultView>> {
+        Ok(self
+            .engine
+            .search(&query, limit)?
+            .into_iter()
+            .map(|r| SearchResultView {
+                item: r.item.into(),
+                snippet: r.snippet,
+                highlights: r.highlights.into_iter().map(|(start, end)| TextRangeView { start, end }).collect(),
+            })
+            .collect())
+    }
+
+    pub fn rebuild_search_index(&self) -> R<u32> {
+        Ok(self.engine.rebuild_search_index()?)
+    }
+}
 
 #[uniffi::export(async_runtime = "tokio")]
 impl EddyEngine {

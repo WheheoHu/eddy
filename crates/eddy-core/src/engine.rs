@@ -73,6 +73,7 @@ pub(crate) struct Inner {
     pub fetcher: RwLock<Arc<Fetcher>>,
     pub web_renderer: RwLock<Option<Arc<dyn WebRenderer>>>,
     pub progress_throttle: parking_lot::Mutex<std::collections::HashMap<String, (std::time::Instant, f64)>>,
+    pub search: Option<eddy_search::SearchIndex>,
 }
 
 /// Cheap to clone; all clones share one engine.
@@ -106,6 +107,7 @@ impl Engine {
             )),
             web_renderer: RwLock::new(None),
             progress_throttle: parking_lot::Mutex::new(Default::default()),
+            search: eddy_search::SearchIndex::open(&data_dir.join("index")).ok(),
         });
         inner.rebuild_fetcher()?;
         inner.store.upsert_source(&Source {
@@ -201,6 +203,7 @@ impl Engine {
         if let Err(e) = inner.store.evict(self.cache_limit()?) {
             inner.platform.log(LogLevel::Warn, &format!("cache eviction failed: {e}"));
         }
+        inner.commit_index();
         result
     }
 
@@ -343,6 +346,8 @@ impl Inner {
         });
     }
 
-    /// Hook run after new content is stored (search indexing, AI triggers).
-    pub(crate) fn after_ingest(&self, _item_id: &str, _ingested: &Ingested) {}
+    /// Hook run after new content is stored.
+    pub(crate) fn after_ingest(&self, item_id: &str, ingested: &Ingested) {
+        self.index_item(item_id, ingested);
+    }
 }

@@ -12,6 +12,7 @@ eddy-doc = { workspace = true }
 eddy-extract = { path = "../eddy-extract" }
 eddy-fetch = { path = "../eddy-fetch" }
 eddy-model = { workspace = true }
+eddy-search = { path = "../eddy-search" }
 eddy-source-greader = { workspace = true }
 eddy-store = { workspace = true }
 futures = { workspace = true }

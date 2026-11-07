@@ -503,3 +503,24 @@ async fn series_from_a_table_of_contents() {
     assert_eq!(info.next_item_id.as_deref(), Some(second.as_str()));
     assert_eq!(engine.series_list().unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn local_search_covers_feed_and_saved_items() {
+    let pages = mock_pages().await;
+    let server = mock_freshrss().await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    engine.configure_freshrss(&server.uri(), "me", "secret").await.unwrap();
+    engine.refresh().await.unwrap();
+    engine.save_url(&format!("{}/essay", pages.uri())).await.unwrap();
+
+    let feed_hits = engine.search("Unread elsewhere", 10).unwrap();
+    assert_eq!(feed_hits[0].item.item.title, "Unread elsewhere");
+    let saved_hits = engine.search("importance sampling", 10).unwrap();
+    assert_eq!(saved_hits[0].item.item.title, "An Essay");
+    assert!(!saved_hits[0].highlights.is_empty());
+    assert!(engine.search("graphics blog", 10).unwrap().len() >= 3, "source names are searchable");
+
+    assert_eq!(engine.rebuild_search_index().unwrap(), 4);
+    assert_eq!(engine.search("importance sampling", 10).unwrap().len(), 1);
+}

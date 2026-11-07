@@ -10,12 +10,14 @@ mod native_host;
 mod platform;
 mod progress;
 mod rules;
+mod search;
 mod upstream;
 
 pub use ai::{BatchCallback, ItemTagsResult, SummaryResult, TagInfo, TranslationResult};
 pub use content::LoadedDocument;
 pub use eddy_extract::{ChapterLink, SeriesProposal};
 pub use progress::{ResumePoint, SeriesInfo};
+pub use search::SearchResult;
 pub use eddy_ai::{AiSettings, AutoAction, AutoRule, ProviderSettings, RuleScope, Summary};
 pub use eddy_fetch::WebRenderer;
 pub use native_host::{CHROME_EXTENSION_ID, NATIVE_HOST_NAME, install_native_host};
