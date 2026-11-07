@@ -19,6 +19,12 @@ struct ThreePaneView: View {
     @State private var results: [ItemView]?
     @State private var scrollTarget: ScrollTarget?
     @State private var pageTarget: PageTarget?
+    /// Back and forward through the articles of the middle column.
+    @State private var history = ReadingHistory()
+    /// Where the reader slides in from when moving to a neighbor.
+    @State private var arrival: Edge = .bottom
+    /// A previous chapter, opened at its end.
+    @State private var landAtEnd: String?
 
     enum Smart: String, CaseIterable {
         case all = "All Articles", unread = "Unread", starred = "Starred", continueReading = "Continue Reading"
@@ -66,7 +72,13 @@ struct ThreePaneView: View {
         .onChange(of: model.revision) {
             if let entryID, model.entry(entryID) == nil { self.entryID = nil }
         }
-        .onChange(of: model.currentItemID) { pageTarget = nil }
+        .onChange(of: model.currentItemID) { _, new in
+            pageTarget = nil
+            history.opened(new)
+            if new != landAtEnd { landAtEnd = nil }
+        }
+        .onChange(of: selection) { history.reset(model.currentItemID) }
+        .onChange(of: query) { history.reset(model.currentItemID) }
         .task(id: query) {
             guard !query.isEmpty else { results = nil; return }
             try? await Task.sleep(for: .milliseconds(250))
@@ -299,8 +311,13 @@ struct ThreePaneView: View {
                     Divider()
                 }
                 VStack(spacing: 0) {
-                    ReaderPane(itemID: id, scrollTarget: $scrollTarget, pageTarget: pageTarget, openItem: open, showContents: entry == nil ? nil : $showContents)
-                        .id(id)
+                    ReaderPane(
+                        itemID: id, scrollTarget: $scrollTarget, pageTarget: pageTarget, openItem: open,
+                        showContents: entry == nil ? nil : $showContents,
+                        neighbors: neighbors(of: item, in: entry), startAtEnd: landAtEnd == id
+                    )
+                    .id(id)
+                    .transition(.push(from: arrival))
                     if let seriesID = item.seriesId, let info = model.series.first(where: { $0.id == seriesID }) {
                         Divider()
                         SequenceBar(title: info.title, items: model.chapters(seriesID), current: id) { open($0) }
@@ -316,6 +333,26 @@ struct ThreePaneView: View {
         switch target {
         case let .block(id): scrollTarget = ScrollTarget(blockID: id)
         case let .page(page): pageTarget = PageTarget(page: page)
+        }
+    }
+
+    /// A chapter's book, or the articles of the middle column; nothing to
+    /// move to from a page or PDF saved on its own.
+    private func neighbors(of item: ItemView, in entry: CollectionEntryView?) -> Neighbors? {
+        if let seriesID = item.seriesId {
+            return .chapters({ model.chapters(seriesID) }, current: item.id, open: travel)
+        }
+        guard entry == nil else { return nil }
+        return .articles({ results ?? rowsForSelection }, current: item.id, history: history, item: { model.item($0) }, open: travel)
+    }
+
+    /// Opens a neighbor, sliding it in from the side it lies on. The edge
+    /// is set first so the outgoing reader leaves the same way.
+    private func travel(to id: String, _ direction: Direction, _ axis: Axis, _ atEnd: Bool) {
+        arrival = .arriving(direction, along: axis)
+        landAtEnd = atEnd ? id : nil
+        DispatchQueue.main.async {
+            withAnimation(.easeInOut(duration: 0.2)) { open(id) }
         }
     }
 }

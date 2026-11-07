@@ -13,6 +13,12 @@ struct LibraryReader: View {
     @State private var currentID: String?
     @State private var scrollTarget: ScrollTarget?
     @State private var pageTarget: PageTarget?
+    /// Back and forward through a subscription's articles; one per book.
+    @State private var history = ReadingHistory()
+    /// Where the reader slides in from when moving to a neighbor.
+    @State private var arrival: Edge = .bottom
+    /// A previous chapter, opened at its end.
+    @State private var landAtEnd: String?
 
     /// The entry as it is now, with current progress.
     private var entry: CollectionEntryView? {
@@ -43,6 +49,10 @@ struct LibraryReader: View {
         }
         .navigationTitle(book.title)
         .onAppear(perform: chooseStart)
+        .onChange(of: currentID) { _, new in
+            history.opened(new)
+            if new != landAtEnd { landAtEnd = nil }
+        }
     }
 
     // MARK: Contents column
@@ -60,8 +70,9 @@ struct LibraryReader: View {
     private var reader: some View {
         if let id = currentID {
             VStack(spacing: 0) {
-                ReaderPane(itemID: id, scrollTarget: $scrollTarget, pageTarget: pageTarget, openItem: select)
+                ReaderPane(itemID: id, scrollTarget: $scrollTarget, pageTarget: pageTarget, openItem: select, neighbors: neighbors(of: id), startAtEnd: landAtEnd == id)
                     .id(id)
+                    .transition(.push(from: arrival))
                 if entries.count > 1 {
                     Divider()
                     SequenceBar(title: book.title, items: entries, current: id) { select($0) }
@@ -101,6 +112,27 @@ struct LibraryReader: View {
         switch target {
         case let .block(id): scrollTarget = ScrollTarget(blockID: id)
         case let .page(page): pageTarget = PageTarget(page: page)
+        }
+    }
+
+    /// A series' chapters or a subscription's articles; nothing to move to
+    /// in a page or PDF saved on its own.
+    private func neighbors(of id: String) -> Neighbors? {
+        switch book.kind {
+        case .feed:
+            .articles({ entries }, current: id, history: history, item: { model.item($0) }, open: travel)
+        case let .entry(entry):
+            entry.isSeries ? .chapters({ entries }, current: id, open: travel) : nil
+        }
+    }
+
+    /// Opens a neighbor, sliding it in from the side it lies on. The edge
+    /// is set first so the outgoing reader leaves the same way.
+    private func travel(to id: String, _ direction: Direction, _ axis: Axis, _ atEnd: Bool) {
+        arrival = .arriving(direction, along: axis)
+        landAtEnd = atEnd ? id : nil
+        DispatchQueue.main.async {
+            withAnimation(.easeInOut(duration: 0.2)) { select(id) }
         }
     }
 }

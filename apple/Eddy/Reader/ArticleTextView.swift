@@ -7,7 +7,11 @@ import SwiftUI
 struct ScrollTarget: Equatable {
     var blockID: String
     var offset: Int = 0
+    /// The end of the text instead of a block.
+    var toEnd = false
     var token = UUID()
+
+    static var end: ScrollTarget { ScrollTarget(blockID: "", toEnd: true) }
 }
 
 /// The reflowed article in a TextKit 2 text view: native layout, selection
@@ -98,10 +102,12 @@ struct ArticleTextView: NSViewRepresentable {
         private var lastReported: (String, Int, Bool)?
         private var reportTask: Task<Void, Never>?
         private var imageTask: Task<Void, Never>?
-        /// Position set by the app (resume, outline jump) that images loading
-        /// above must not disturb, until the user scrolls on their own.
-        private var anchor: (String, Int)?
+        /// Position set by the app (resume, outline jump, the end of a
+        /// previous chapter) that images loading above must not disturb,
+        /// until the user scrolls on their own.
+        private var anchor: ScrollTarget?
         private var scrollingProgrammatically = false
+        private var settlingEnd = false
 
         func attach(scroll: NSScrollView, textView: ReaderTextView) {
             self.scroll = scroll
@@ -142,7 +148,7 @@ struct ArticleTextView: NSViewRepresentable {
         /// Swaps in a loaded image, keeping the reading position steady.
         private func replaceImage(_ attachment: ImageAttachment, with image: NSImage) {
             guard let textView, let storage = textView.textStorage else { return }
-            let anchor = self.anchor ?? currentPosition()
+            let anchor = self.anchor ?? currentPosition().map { ScrollTarget(blockID: $0.0, offset: $0.1) }
             attachment.loaded(image)
             var found: NSRange?
             storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, range, stop in
@@ -150,7 +156,7 @@ struct ArticleTextView: NSViewRepresentable {
             }
             guard let range = found else { return }
             storage.edited(.editedAttributes, range: range, changeInLength: 0)
-            if let anchor { scroll(to: ScrollTarget(blockID: anchor.0, offset: anchor.1), animated: false, report: false) }
+            if let anchor { scroll(to: anchor, animated: false, report: false) }
             report(onlyAtEnd: true)
         }
 
@@ -192,23 +198,37 @@ struct ArticleTextView: NSViewRepresentable {
         }
 
         func scroll(to target: ScrollTarget, animated: Bool, report: Bool = true) {
-            guard let scroll, let textView, let tlm = textView.textLayoutManager, let article,
-                  let utf16 = article.location(of: target.blockID, offset: target.offset),
-                  let location = tlm.location(tlm.documentRange.location, offsetBy: utf16)
-            else { return }
-            tlm.ensureLayout(for: NSTextRange(location: tlm.documentRange.location, end: location) ?? tlm.documentRange)
-            guard let fragment = tlm.textLayoutFragment(for: location) else { return }
-            var y = fragment.layoutFragmentFrame.minY + textView.textContainerOrigin.y - 12
-            // Within the paragraph, land on the line holding the offset.
-            if let line = fragment.textLineFragments.first(where: { line in
-                let lineStart = tlm.offset(from: tlm.documentRange.location, to: fragment.rangeInElement.location) + line.characterRange.location
-                return utf16 >= lineStart && utf16 < lineStart + max(line.characterRange.length, 1)
-            }) {
-                y += line.typographicBounds.minY
+            guard let scroll, let textView, let tlm = textView.textLayoutManager, let article else { return }
+            var y: CGFloat
+            if target.toEnd {
+                tlm.ensureLayout(for: tlm.documentRange)
+                y = textView.frame.height
+                // The view takes its full height once layout resizes it.
+                if !settlingEnd {
+                    settlingEnd = true
+                    DispatchQueue.main.async { [weak self] in
+                        self?.scroll(to: target, animated: false, report: report)
+                        self?.settlingEnd = false
+                    }
+                }
+            } else {
+                guard let utf16 = article.location(of: target.blockID, offset: target.offset),
+                      let location = tlm.location(tlm.documentRange.location, offsetBy: utf16)
+                else { return }
+                tlm.ensureLayout(for: NSTextRange(location: tlm.documentRange.location, end: location) ?? tlm.documentRange)
+                guard let fragment = tlm.textLayoutFragment(for: location) else { return }
+                y = fragment.layoutFragmentFrame.minY + textView.textContainerOrigin.y - 12
+                // Within the paragraph, land on the line holding the offset.
+                if let line = fragment.textLineFragments.first(where: { line in
+                    let lineStart = tlm.offset(from: tlm.documentRange.location, to: fragment.rangeInElement.location) + line.characterRange.location
+                    return utf16 >= lineStart && utf16 < lineStart + max(line.characterRange.length, 1)
+                }) {
+                    y += line.typographicBounds.minY
+                }
             }
             y = max(0, min(y, textView.frame.height - scroll.contentView.bounds.height))
             let point = NSPoint(x: 0, y: y)
-            anchor = (target.blockID, target.offset)
+            anchor = target
             scrollingProgrammatically = true
             if animated {
                 NSAnimationContext.runAnimationGroup { ctx in
@@ -222,7 +242,7 @@ struct ArticleTextView: NSViewRepresentable {
                 scroll.reflectScrolledClipView(scroll.contentView)
                 DispatchQueue.main.async { [weak self] in self?.scrollingProgrammatically = false }
             }
-            if !report { lastReported = (target.blockID, target.offset, lastReported?.2 ?? false) }
+            if !report, !target.toEnd { lastReported = (target.blockID, target.offset, lastReported?.2 ?? false) }
         }
 
         // Code backgrounds and quote bars.

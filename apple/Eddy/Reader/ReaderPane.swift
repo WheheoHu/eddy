@@ -14,6 +14,12 @@ struct ReaderPane: View {
     /// Shows or hides a contents panel beside the reader; the toggle leads
     /// the reader's toolbar.
     var showContents: Binding<Bool>?
+    /// The chapters or articles around this one; nil when there are none
+    /// to move to (a page or PDF saved on its own).
+    var neighbors: Neighbors?
+    /// Open at the end of the text instead of the resume point: a previous
+    /// chapter, reached by reading backwards.
+    var startAtEnd = false
 
     @State private var document: DocumentView?
     @State private var pdfURL: URL?
@@ -213,7 +219,9 @@ struct ReaderPane: View {
         }
         await reloadDocument()
         model.markOpened(itemID)
-        if let resume = model.resume(itemID), let block = resume.blockId {
+        if startAtEnd, rendererID == RendererRegistry.article.id, document?.blocks.isEmpty == false {
+            scrollTarget = .end
+        } else if let resume = model.resume(itemID), let block = resume.blockId {
             resumeNote = resume
             if scrollTarget == nil || scrollTarget?.blockID != block {
                 scrollTarget = ScrollTarget(blockID: block, offset: Int(resume.offset))
