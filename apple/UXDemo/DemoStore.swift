@@ -18,6 +18,9 @@ final class DemoStore {
     var seed: SeedProgress?
     var message: String?
     var busy = false
+    /// What is being read, shared by both modes so switching keeps context.
+    var currentItemID: String?
+    var currentSeriesID: String?
 
     private var leadImages: [String: String?] = [:]
     private var spoolWatcher: SpoolWatcher?

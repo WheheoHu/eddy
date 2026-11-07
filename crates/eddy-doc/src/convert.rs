@@ -191,6 +191,7 @@ impl Converter {
                 self.with_style(style::BOLD, |c| c.walk_children(el));
                 self.flush();
             }
+            "a" if is_permalink(el) => {}
             "a" => {
                 let href = el
                     .value()
@@ -603,6 +604,24 @@ fn inline_style(name: &str) -> Option<u16> {
         "mark" => style::MARK,
         _ => return None,
     })
+}
+
+/// Heading permalink anchors ("¶", "#") that docs generators append.
+fn is_permalink(el: ElementRef) -> bool {
+    let classy = el.value().classes().any(|c| {
+        matches!(
+            c,
+            "headerlink"
+                | "anchor"
+                | "anchor-link"
+                | "permalink"
+                | "heading-anchor"
+                | "header-anchor"
+                | "hash-link"
+        )
+    });
+    let text: String = el.text().collect();
+    classy || matches!(text.trim(), "¶" | "#" | "§" | "🔗")
 }
 
 fn first_descendant<'a>(el: ElementRef<'a>, name: &str) -> Option<ElementRef<'a>> {

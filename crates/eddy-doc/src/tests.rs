@@ -222,6 +222,16 @@ fn block_ids_are_stable_across_unrelated_edits() {
 }
 
 #[test]
+fn heading_permalinks_are_dropped() {
+    let d = doc(
+        "<h2>Argument Passing<a class=\"headerlink\" href=\"#arg\">¶</a></h2><h3>Install <a href=\"#install\">#</a></h3><p>See <a href=\"#x\">section 2</a>.</p>",
+    );
+    assert_eq!(d.blocks[0].plain_text(), "Argument Passing");
+    assert_eq!(d.blocks[1].plain_text(), "Install");
+    assert_eq!(d.blocks[2].plain_text(), "See section 2.");
+}
+
+#[test]
 fn bare_text_and_br_become_paragraph_text() {
     let d = doc("Line one<br>line two\n\n  spaced   out");
     assert_eq!(d.blocks.len(), 1);

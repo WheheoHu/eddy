@@ -10,7 +10,8 @@ struct ArticleView: View {
     var typography = Typography()
     var topInset: CGFloat = 0
     var showHeader = true
-    var onProgress: (Double) -> Void = { _ in }
+    var progress: ReaderProgress?
+    var chrome: ChromeState?
 
     @State private var doc: DocumentView?
     @State private var loading = true
@@ -20,6 +21,7 @@ struct ArticleView: View {
     @State private var topBlock: String?
     @State private var resume: ResumePointView?
     @State private var ready = false
+    @State private var lastTracked: String?
 
     private var item: ItemView? { store.item(itemID) }
 
@@ -106,9 +108,13 @@ struct ArticleView: View {
     }
 
     private func track(_ id: String?) {
-        guard ready, let id, let doc, let index = doc.blocks.firstIndex(where: { $0.id == id }) else { return }
+        guard ready, let id, id != lastTracked, let doc, let index = doc.blocks.firstIndex(where: { $0.id == id }) else { return }
+        let previous = lastTracked.flatMap { last in doc.blocks.firstIndex { $0.id == last } } ?? index
+        lastTracked = id
         store.recordProgress(itemID, blockID: id)
-        onProgress(Double(index + 1) / Double(max(doc.blocks.count, 1)))
+        progress?.update(Double(index + 1) / Double(max(doc.blocks.count, 1)))
+        // Scrolling back up brings the controls back, like Safari and Books.
+        if index < previous { chrome?.reveal() } else { chrome?.scrolled() }
     }
 
     private func flush() {

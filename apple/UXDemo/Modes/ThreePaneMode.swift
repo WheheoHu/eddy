@@ -1,19 +1,18 @@
 import EddyKit
 import SwiftUI
 
-/// Direction A — classic three panes (Reeder / NetNewsWire): sources and
-/// smart lists, a dense article list, the reader. Keyboard first.
-struct ClassicView: View {
+/// Three-pane mode: subscriptions browse as lists; publications (tutorials,
+/// books, papers) are sources whose second column lists their chapters.
+struct ThreePaneMode: View {
     @Environment(DemoStore.self) private var store
     @State private var selection: SidebarItem? = .smart(.all)
-    @State private var selectedItem: String?
     @State private var unreadOnly = false
     @State private var query = ""
     @State private var mode: ReadingMode = .original
     @State private var showSummary = false
 
     enum Smart: String, CaseIterable {
-        case all = "全部", unread = "未读", starred = "星标", continueReading = "继续阅读", saved = "保存的网页"
+        case all = "全部", unread = "未读", starred = "星标", continueReading = "继续阅读", saved = "稍后读"
         var icon: String {
             switch self {
             case .all: "tray.full"
@@ -26,18 +25,35 @@ struct ClassicView: View {
     }
 
     enum SidebarItem: Hashable {
-        case smart(Smart), series(String), tag(String), source(String), category(String)
+        case smart(Smart), publication(String), tag(String), source(String)
     }
 
     var body: some View {
+        @Bindable var store = store
         NavigationSplitView {
-            sidebar.navigationSplitViewColumnWidth(min: 200, ideal: 230)
+            sidebar.navigationSplitViewColumnWidth(min: 210, ideal: 240)
         } content: {
-            list.navigationSplitViewColumnWidth(min: 300, ideal: 360)
+            Group {
+                if case let .publication(id) = selection {
+                    ChapterList(seriesID: id, selected: $store.currentItemID)
+                } else {
+                    list
+                }
+            }
+            .navigationSplitViewColumnWidth(min: 300, ideal: 360)
         } detail: {
             detail
         }
         .searchable(text: $query, placement: .toolbar, prompt: "搜索全文")
+        .onAppear { syncSelectionFromStore() }
+        .onChange(of: selection) { _, new in
+            if case let .publication(id) = new { store.currentSeriesID = id } else { store.currentSeriesID = nil }
+        }
+    }
+
+    /// Coming from reader mode: show the publication being read.
+    private func syncSelectionFromStore() {
+        if let series = store.currentSeriesID { selection = .publication(series) }
     }
 
     // MARK: Sidebar
@@ -52,21 +68,15 @@ struct ClassicView: View {
                 }
             }
             if !store.series.isEmpty {
-                Section("系列") {
+                Section("出版物") {
                     ForEach(store.series) { s in
-                        HStack {
-                            Label(s.title, systemImage: "books.vertical")
+                        HStack(spacing: 8) {
+                            Image(systemName: "book.closed").foregroundStyle(.secondary)
+                            Text(s.title).lineLimit(1)
                             Spacer()
-                            Text("\(Int(s.progress * 100))%").font(.caption).foregroundStyle(.secondary)
+                            ProgressRing(value: s.progress, size: 14)
                         }
-                        .tag(SidebarItem.series(s.id))
-                    }
-                }
-            }
-            if !store.tags.isEmpty {
-                Section("标签") {
-                    ForEach(store.tags) { t in
-                        Label(t.name, systemImage: "number").badge(Int(t.count)).tag(SidebarItem.tag(t.id))
+                        .tag(SidebarItem.publication(s.id))
                     }
                 }
             }
@@ -74,6 +84,13 @@ struct ClassicView: View {
                 Section(category) {
                     ForEach(store.sources.filter { !$0.saved && ($0.category ?? "订阅") == category }) { s in
                         Label(s.title, systemImage: "dot.radiowaves.up.forward").badge(Int(s.unread)).tag(SidebarItem.source(s.id))
+                    }
+                }
+            }
+            if !store.tags.isEmpty {
+                Section("标签") {
+                    ForEach(store.tags) { t in
+                        Label(t.name, systemImage: "number").badge(Int(t.count)).tag(SidebarItem.tag(t.id))
                     }
                 }
             }
@@ -90,17 +107,15 @@ struct ClassicView: View {
         store.sources.reduce(0) { $0 + Int($1.unread) }
     }
 
-    // MARK: List
+    // MARK: Article list
 
     private var filter: ItemFilterView {
         switch selection {
         case .smart(.starred): .starred
         case .smart(.continueReading): .continueReading
         case .smart(.saved): .saved
-        case let .series(id): .series(id: id)
         case let .tag(id): .tag(id: id)
         case let .source(id): .source(id: id)
-        case let .category(name): .category(name: name)
         default: .all
         }
     }
@@ -111,8 +126,9 @@ struct ClassicView: View {
     }
 
     private var list: some View {
-        List(rows, selection: $selectedItem) { item in
-            ClassicRow(item: item).tag(item.id)
+        @Bindable var store = store
+        return List(rows, selection: $store.currentItemID) { item in
+            ArticleRow(item: item).tag(item.id)
                 .contextMenu {
                     Button(item.starred ? "取消星标" : "加星标") { store.setStarred(item, !item.starred) }
                     Button(item.read ? "标为未读" : "标为已读") { store.setRead(item, !item.read) }
@@ -145,35 +161,40 @@ struct ClassicView: View {
         .frame(width: 0, height: 0)
     }
 
-    private var current: ItemView? { rows.first { $0.id == selectedItem } }
+    private var current: ItemView? { store.currentItemID.flatMap { store.item($0) } }
 
     private func move(_ delta: Int) {
         let ids = rows.map(\.id)
         guard !ids.isEmpty else { return }
-        let index = selectedItem.flatMap { ids.firstIndex(of: $0) } ?? -1
-        selectedItem = ids[min(max(index + delta, 0), ids.count - 1)]
+        let index = store.currentItemID.flatMap { ids.firstIndex(of: $0) } ?? -1
+        store.currentItemID = ids[min(max(index + delta, 0), ids.count - 1)]
     }
 
-    // MARK: Detail
+    // MARK: Reader
 
     @ViewBuilder
     private var detail: some View {
-        if let id = selectedItem, let item = store.item(id) {
+        if let id = store.currentItemID, let item = store.item(id) {
             ArticleView(itemID: id, mode: $mode)
                 .id(id)
+                .safeAreaInset(edge: .bottom) {
+                    if let seriesID = item.seriesId, let info = store.series.first(where: { $0.id == seriesID }) {
+                        SequenceBar(title: info.title, items: store.seriesChapters(seriesID), current: id) { store.currentItemID = $0 }
+                    }
+                }
                 .toolbar {
                     ToolbarItemGroup {
                         Picker("阅读模式", selection: $mode) {
                             ForEach(ReadingMode.allCases) { Text($0.rawValue).tag($0) }
                         }
                         .pickerStyle(.segmented)
-                        .frame(width: 160)
+                        .frame(width: 150)
                         Button { showSummary.toggle() } label: { Image(systemName: "sparkles") }
                             .help("AI 摘要")
                             .popover(isPresented: $showSummary) { SummaryCard(itemID: id) }
                         Button { Task { await store.fetchFullText(id) } } label: { Image(systemName: "doc.text.magnifyingglass") }
                             .help("抓取全文")
-                            .disabled(item.kind == .saved)
+                            .disabled(item.kind != .feed)
                         Button { store.setStarred(item, !item.starred) } label: { Image(systemName: item.starred ? "star.fill" : "star") }
                             .help("星标 (s)")
                         if let url = item.url.flatMap(URL.init(string:)) {
@@ -187,7 +208,66 @@ struct ClassicView: View {
     }
 }
 
-struct ClassicRow: View {
+/// Second column for a publication: overall progress and its chapters.
+struct ChapterList: View {
+    @Environment(DemoStore.self) private var store
+    let seriesID: String
+    @Binding var selected: String?
+
+    var body: some View {
+        let chapters = store.seriesChapters(seriesID)
+        let info = store.series.first { $0.id == seriesID }
+        List(selection: $selected) {
+            if let info {
+                Section {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(info.title).font(.title3.weight(.semibold))
+                        ProgressView(value: info.progress)
+                        HStack {
+                            Text("已读 \(info.finished) / \(info.chapters) 章").font(.caption).foregroundStyle(.secondary)
+                            Spacer()
+                            if let next = info.nextItemId, let chapter = chapters.first(where: { $0.id == next }) {
+                                Button("继续：\(chapter.title)") { selected = next }
+                                    .buttonStyle(.borderedProminent)
+                                    .controlSize(.small)
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 6)
+                }
+            }
+            Section("章节") {
+                ForEach(Array(chapters.enumerated()), id: \.element.id) { index, chapter in
+                    HStack(spacing: 10) {
+                        Text("\(index + 1)").font(.caption.monospacedDigit()).foregroundStyle(.secondary).frame(width: 22, alignment: .trailing)
+                        Text(Self.displayTitle(chapter.title, number: index + 1)).lineLimit(2).fontWeight(chapter.finished ? .regular : .medium).foregroundStyle(chapter.finished ? .secondary : .primary)
+                        Spacer()
+                        if chapter.finished {
+                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                        } else if chapter.progress > 0.02 {
+                            ProgressRing(value: chapter.progress, size: 14)
+                        }
+                    }
+                    .padding(.vertical, 3)
+                    .tag(chapter.id)
+                }
+            }
+        }
+        .listStyle(.inset)
+    }
+
+    /// Chapter titles often carry their own number ("2. Using …"); the list
+    /// already shows it.
+    static func displayTitle(_ title: String, number: Int) -> String {
+        for prefix in ["\(number). ", "\(number) ", "第\(number)章 ", "Chapter \(number): ", "Chapter \(number). "] where title.hasPrefix(prefix) {
+            return String(title.dropFirst(prefix.count))
+        }
+        return title
+    }
+}
+
+struct ArticleRow: View {
     let item: ItemView
 
     var body: some View {

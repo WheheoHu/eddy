@@ -1,17 +1,17 @@
 import EddyKit
 import SwiftUI
 
-enum Direction: String, CaseIterable, Identifiable {
-    case classic = "A · 经典三栏"
-    case shelf = "B · 阅读优先"
-    case magazine = "C · 信息流"
+enum AppMode: String, CaseIterable, Identifiable {
+    case threePane = "三栏"
+    case reader = "阅读器"
     var id: String { rawValue }
+    var icon: String { self == .threePane ? "rectangle.split.3x1" : "book" }
 }
 
 @main
 struct UXDemoApp: App {
     @State private var store: DemoStore
-    @AppStorage("direction") private var direction: Direction = .classic
+    @AppStorage("mode") private var mode: AppMode = .threePane
 
     init() {
         DemoStore.applyPendingReset()
@@ -20,15 +20,15 @@ struct UXDemoApp: App {
 
     var body: some Scene {
         WindowGroup("Eddy UX Demo") {
-            DemoRoot(direction: $direction)
+            DemoRoot(mode: $mode)
                 .environment(store)
                 .frame(minWidth: 1100, minHeight: 700)
         }
         .defaultSize(width: 1400, height: 880)
         .commands {
-            CommandMenu("方向") {
-                ForEach(Array(Direction.allCases.enumerated()), id: \.element) { index, d in
-                    Button(d.rawValue) { direction = d }.keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
+            CommandMenu("视图") {
+                ForEach(Array(AppMode.allCases.enumerated()), id: \.element) { index, m in
+                    Button("\(m.rawValue)模式") { mode = m }.keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
                 }
             }
         }
@@ -40,23 +40,22 @@ struct UXDemoApp: App {
 
 struct DemoRoot: View {
     @Environment(DemoStore.self) private var store
-    @Binding var direction: Direction
+    @Binding var mode: AppMode
 
     var body: some View {
         Group {
-            switch direction {
-            case .classic: ClassicView()
-            case .shelf: ShelfView()
-            case .magazine: MagazineView()
+            switch mode {
+            case .threePane: ThreePaneMode()
+            case .reader: ReaderMode()
             }
         }
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                Picker("方向", selection: $direction) {
-                    ForEach(Direction.allCases) { Text($0.rawValue).tag($0) }
+            ToolbarItem(placement: .navigation) {
+                Picker("模式", selection: $mode) {
+                    ForEach(AppMode.allCases) { Label($0.rawValue, systemImage: $0.icon).tag($0) }
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 360)
+                .help("三栏 ⌘1 · 阅读器 ⌘2")
             }
         }
         .overlay(alignment: .bottom) {
@@ -84,6 +83,7 @@ struct DemoSettings: View {
     @State private var llmKey = ""
     @State private var target = "简体中文"
     @State private var note = ""
+    @AppStorage("mode") private var defaultMode: AppMode = .threePane
 
     var body: some View {
         TabView {
@@ -107,6 +107,14 @@ struct DemoSettings: View {
                 Text(note).foregroundStyle(.secondary)
             }
             .tabItem { Label("AI", systemImage: "sparkles") }
+            Form {
+                Picker("启动时进入", selection: $defaultMode) {
+                    ForEach(AppMode.allCases) { Text("\($0.rawValue)模式").tag($0) }
+                }
+                Text("三栏适合浏览订阅；阅读器适合读书、教程和长文。随时可以用 ⌘1 / ⌘2 切换，切换时继续读同一篇。")
+                    .foregroundStyle(.secondary)
+            }
+            .tabItem { Label("阅读", systemImage: "book") }
             Form {
                 LabeledContent("数据目录", value: DemoStore.dataDirectory.path)
                 Text("demo 使用独立的数据目录和钥匙串条目，和正式版 Eddy 互不影响。")
