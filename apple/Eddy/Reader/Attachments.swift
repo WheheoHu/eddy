@@ -7,8 +7,10 @@ import SwiftUI
 enum MathRenderer {
     private static var cache: [String: (NSImage, CGFloat)] = [:]
 
+    /// Drawn in the current drawing appearance, which the key includes:
+    /// the formula's color is baked into the image.
     static func attachment(_ tex: String, size: CGFloat, display: Bool) -> MathAttachment {
-        let key = "\(display)|\(size)|\(tex)"
+        let key = "\(NSAppearance.currentDrawing().name.rawValue)|\(display)|\(size)|\(tex)"
         let rendered: (NSImage, CGFloat)? = cache[key] ?? {
             var image = MathImage(latex: normalized(tex), fontSize: size * 2, textColor: .labelColor, labelMode: display ? .display : .text)
             let (_, img, info) = image.asImage()

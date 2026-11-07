@@ -44,6 +44,9 @@ struct WebPageView: NSViewRepresentable {
     /// Keyboard focus belongs in the page.
     var focused = false
     var onFocus: (() -> Void)?
+    /// Pages that style themselves for dark mode follow it; nil inherits
+    /// the app's appearance.
+    var appearance: NSAppearance?
 
     func makeCoordinator() -> SwipeTracker { SwipeTracker() }
 
@@ -62,6 +65,7 @@ struct WebPageView: NSViewRepresentable {
         view.onEscape = onEscape
         view.onFocus = onFocus
         view.wantsFocus = focused
+        if view.appearance?.name != appearance?.name { view.appearance = appearance }
         if view.url?.absoluteString != url.absoluteString, !view.isLoading {
             view.load(URLRequest(url: url))
         }

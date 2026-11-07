@@ -40,6 +40,8 @@ struct ArticleTextView: NSViewRepresentable {
     /// or when it appears with it on.
     var focused = false
     var onFocus: (() -> Void)?
+    /// The content's own appearance; nil inherits the app's.
+    var appearance: NSAppearance?
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -85,6 +87,7 @@ struct ArticleTextView: NSViewRepresentable {
         c.pulls.onChange = onPull
         c.pulls.onRelease = onPullRelease
         c.swipes.onSwipe = onSwipe
+        if scroll.appearance?.name != appearance?.name { scroll.appearance = appearance }
         guard let textView = scroll.documentView as? ReaderTextView else { return }
         textView.onStep = onStep
         textView.onEscape = onEscape

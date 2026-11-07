@@ -1,6 +1,7 @@
 import AppKit
 import EddyKit
 import SwiftMath
+import SwiftUI
 
 /// Reader typography. Stored in user defaults by the reading settings.
 struct ReaderStyle: Equatable {
@@ -17,6 +18,40 @@ struct ReaderStyle: Equatable {
 
     func mono(scale: CGFloat = 0.86) -> NSFont {
         .monospacedSystemFont(ofSize: fontSize * scale, weight: .regular)
+    }
+}
+
+/// How the reader's content is colored: with the rest of the app, or
+/// always light or dark. Stored in user defaults as `reader.appearance`.
+enum ReaderAppearance: String, CaseIterable, Identifiable {
+    case app = "Follow App"
+    case light = "Light"
+    case dark = "Dark"
+    var id: String { rawValue }
+
+    /// The scheme the content uses inside an app showing `app`.
+    func scheme(in app: ColorScheme) -> ColorScheme {
+        switch self {
+        case .app: app
+        case .light: .light
+        case .dark: .dark
+        }
+    }
+
+    /// For the reader's AppKit views; nil inherits the app's.
+    var nsAppearance: NSAppearance? {
+        switch self {
+        case .app: nil
+        case .light: NSAppearance(named: .aqua)
+        case .dark: NSAppearance(named: .darkAqua)
+        }
+    }
+}
+
+extension ColorScheme {
+    /// What drawing in this scheme resolves dynamic colors against.
+    var drawingAppearance: NSAppearance {
+        NSAppearance(named: self == .dark ? .darkAqua : .aqua) ?? NSAppearance.currentDrawing()
     }
 }
 

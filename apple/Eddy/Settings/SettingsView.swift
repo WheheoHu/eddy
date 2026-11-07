@@ -262,6 +262,7 @@ private struct ReadingSettings: View {
     @AppStorage("reader.serif") private var serif = false
     @AppStorage("reader.width") private var width = 700.0
     @AppStorage("reader.lineHeight") private var lineHeight = 1.45
+    @AppStorage("reader.appearance") private var appearance: ReaderAppearance = .app
 
     var body: some View {
         Form {
@@ -275,6 +276,13 @@ private struct ReadingSettings: View {
                 Slider(value: $width, in: 520...900, step: 20) { Text("Line width") }
                 Slider(value: $lineHeight, in: 1.2...1.9, step: 0.05) { Text("Line spacing") }
                 Toggle("Serif typeface", isOn: $serif)
+            }
+            Section {
+                Picker("Content appearance", selection: $appearance) {
+                    ForEach(ReaderAppearance.allCases) { Text($0.rawValue).tag($0) }
+                }
+            } footer: {
+                Text("Articles, pages and PDFs can stay light or dark whatever the rest of Eddy uses.").foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

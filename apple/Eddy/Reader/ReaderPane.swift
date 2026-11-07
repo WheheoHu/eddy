@@ -48,10 +48,15 @@ struct ReaderPane: View {
     @AppStorage("reader.serif") private var serif = false
     @AppStorage("reader.width") private var width = 700.0
     @AppStorage("reader.lineHeight") private var lineHeight = 1.45
+    @AppStorage("reader.appearance") private var appearance: ReaderAppearance = .app
+    @Environment(\.colorScheme) private var appScheme
 
     private var style: ReaderStyle {
         ReaderStyle(fontSize: fontSize, serif: serif, lineHeight: lineHeight, maxWidth: width)
     }
+
+    /// The content's own scheme; the toolbar keeps the app's.
+    private var scheme: ColorScheme { appearance.scheme(in: appScheme) }
 
     private var item: ItemView? { model.item(itemID) }
 
@@ -69,23 +74,24 @@ struct ReaderPane: View {
                 }
         }
         .clipped()
+        .environment(\.colorScheme, scheme)
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { paneHeight = $0 }
         .toolbar { toolbar }
-            .task(id: itemID) { await load() }
-            .onDisappear(perform: flush)
-            .onChange(of: mode) { _, new in
-                guard new != .original else { return }
-                // Translations show in the reflowed text.
-                if rendererID == RendererRegistry.pdf.id {
-                    guard document?.blocks.isEmpty == false else {
-                        model.message = "This PDF has no text to translate."
-                        mode = .original
-                        return
-                    }
-                    rendererID = RendererRegistry.article.id
+        .task(id: itemID) { await load() }
+        .onDisappear(perform: flush)
+        .onChange(of: mode) { _, new in
+            guard new != .original else { return }
+            // Translations show in the reflowed text.
+            if rendererID == RendererRegistry.pdf.id {
+                guard document?.blocks.isEmpty == false else {
+                    model.message = "This PDF has no text to translate."
+                    mode = .original
+                    return
                 }
-                if translations.isEmpty { Task { await translate() } }
+                rendererID = RendererRegistry.article.id
             }
+            if translations.isEmpty { Task { await translate() } }
+        }
     }
 
     @ViewBuilder
@@ -96,7 +102,7 @@ struct ReaderPane: View {
                     PDFReaderView(url: pdfURL, target: pageTarget ?? resumePage, onPage: { page, count in
                         lastPage = (page, count)
                         model.recordPage(itemID, page: page, of: count)
-                    }, focused: focused, onFocus: onFocus, onEscape: onEscape)
+                    }, focused: focused, onFocus: onFocus, onEscape: onEscape, appearance: appearance.nsAppearance)
                     .accessibilityLabel(Text("PDF: \(item.title)"))
                 } else if loading {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -104,11 +110,16 @@ struct ReaderPane: View {
                     ContentUnavailableView("PDF Unavailable", systemImage: "doc.richtext", description: Text("The file isn’t on this Mac and couldn’t be downloaded."))
                 }
             } else if rendererID == RendererRegistry.web.id || (document == nil && !loading), let url = item.url.flatMap(URL.init(string:)) {
-                WebPageView(url: url, onSwipe: swipe, onEscape: onEscape, focused: focused, onFocus: onFocus)
+                WebPageView(url: url, onSwipe: swipe, onEscape: onEscape, focused: focused, onFocus: onFocus, appearance: appearance.nsAppearance)
             } else if let document {
-                let version = "\(document.contentHash)|\(mode.rawValue)|\(translations.count)|\(fontSize)|\(serif)|\(lineHeight)"
+                let version = "\(document.contentHash)|\(mode.rawValue)|\(translations.count)|\(fontSize)|\(serif)|\(lineHeight)|\(scheme)"
                 let article = cache.article(version) {
-                    ArticleBuilder.build(doc: document, item: item, translations: translations, mode: mode, style: style)
+                    // Formulas are images drawn now, in the content's colors.
+                    var built: BuiltArticle!
+                    scheme.drawingAppearance.performAsCurrentDrawingAppearance {
+                        built = ArticleBuilder.build(doc: document, item: item, translations: translations, mode: mode, style: style)
+                    }
+                    return built
                 }
                 ArticleTextView(
                     article: article,
@@ -131,7 +142,8 @@ struct ReaderPane: View {
                     onEscape: onEscape,
                     onSwipe: swipe,
                     focused: focused,
-                    onFocus: onFocus
+                    onFocus: onFocus,
+                    appearance: appearance.nsAppearance
                 )
                 .id(itemID)
                 .background(Color(nsColor: .textBackgroundColor))
@@ -215,6 +227,10 @@ struct ReaderPane: View {
             Slider(value: $width, in: 520...900, step: 20) { Text("Line Width") }
             Slider(value: $lineHeight, in: 1.2...1.9, step: 0.05) { Text("Line Spacing") }
             Toggle("Serif", isOn: $serif)
+            Picker("Appearance", selection: $appearance) {
+                ForEach(ReaderAppearance.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
         }
         .padding()
         .frame(width: 300)

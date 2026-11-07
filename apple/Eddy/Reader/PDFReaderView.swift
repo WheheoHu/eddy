@@ -17,6 +17,8 @@ struct PDFReaderView: NSViewRepresentable {
     var focused = false
     var onFocus: (() -> Void)?
     var onEscape: (() -> Void)?
+    /// The area around the pages; nil inherits the app's appearance.
+    var appearance: NSAppearance?
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -36,6 +38,7 @@ struct PDFReaderView: NSViewRepresentable {
         view.onFocus = onFocus
         view.onEscape = onEscape
         view.wantsFocus = focused
+        if view.appearance?.name != appearance?.name { view.appearance = appearance }
         if c.url != url {
             c.url = url
             c.settling = true
