@@ -6,8 +6,8 @@ use eddy_model::{
 };
 use eddy_source_greader::{GReaderClient, READ, READING_LIST, STARRED, UpstreamItem, history_path};
 
-use crate::Result;
 use crate::engine::{Inner, RefreshSummary};
+use crate::{LogLevel, Result};
 
 /// Where the engine gets content and sends local changes. Standalone mode
 /// talks to FreshRSS directly; server mode syncs with `eddy-server`. Every
@@ -36,6 +36,8 @@ pub(crate) struct DirectUpstream {
 
 const ID_CAP: usize = 50_000;
 const MISSING_FETCH_CAP: usize = 1_000;
+/// Older reading-list pages (100 items each) backfilled per sync.
+const HISTORY_PAGES_PER_SYNC: usize = 10;
 
 #[async_trait]
 impl Upstream for DirectUpstream {
@@ -189,13 +191,17 @@ impl Upstream for DirectUpstream {
         missing.truncate(MISSING_FETCH_CAP);
         incoming.extend(self.client.contents(&missing).await?);
 
+        let mut seen: HashSet<String> = known.into_keys().collect();
         let mut new_item_ids = Vec::new();
         for up in incoming {
+            seen.insert(up.id.clone());
             let source_id = feed_to_source.get(&up.feed_id).cloned();
             if let Some(id) = self.ingest(inner, &up, source_id)? {
                 new_item_ids.push(id);
             }
         }
+        self.backfill_history(inner, &feed_to_source, &mut seen, recent.continuation)
+            .await?;
 
         let mut state_changes = 0;
         for (id, up, _, _) in inner.store.upstream_items(account_id)? {
@@ -232,6 +238,65 @@ impl Upstream for DirectUpstream {
 }
 
 impl DirectUpstream {
+    /// Walks the reading list past its first page, a few pages per sync, so
+    /// articles already read upstream become local too. They are history, not
+    /// new arrivals, so automatic processing skips them. A failed page is
+    /// retried on the next sync from the saved cursor.
+    async fn backfill_history(
+        &self,
+        inner: &Inner,
+        feed_to_source: &HashMap<String, String>,
+        seen: &mut HashSet<String>,
+        after_first_page: Option<String>,
+    ) -> Result<()> {
+        // An empty value marks the end: it is never a valid continuation.
+        let key = format!("history_cursor:{}", self.account.id);
+        let mut cursor = match inner.store.meta_get(&key)? {
+            Some(saved) if saved.is_empty() => return Ok(()),
+            Some(saved) => saved,
+            None => match after_first_page {
+                Some(next) => next,
+                None => {
+                    inner.store.meta_set(&key, "")?;
+                    return Ok(());
+                }
+            },
+        };
+        for _ in 0..HISTORY_PAGES_PER_SYNC {
+            let page: eddy_source_greader::Result<_> = async {
+                let path = history_path("all", false, Some(&cursor))?;
+                self.client.stream_page(&path, Some(&cursor)).await
+            }
+            .await;
+            let page = match page {
+                Ok(page) => page,
+                Err(e) => {
+                    inner
+                        .platform
+                        .log(LogLevel::Warn, &format!("history backfill paused: {e}"));
+                    return Ok(());
+                }
+            };
+            for up in page.items {
+                if seen.insert(up.id.clone()) {
+                    let source_id = feed_to_source.get(&up.feed_id).cloned();
+                    self.ingest(inner, &up, source_id)?;
+                }
+            }
+            match page.continuation {
+                Some(next) => {
+                    inner.store.meta_set(&key, &next)?;
+                    cursor = next;
+                }
+                None => {
+                    inner.store.meta_set(&key, "")?;
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Stores a new upstream item. Returns its ID when it was new.
     fn ingest(
         &self,

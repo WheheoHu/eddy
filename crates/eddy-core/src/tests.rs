@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use eddy_model::BlockKind;
 use serde_json::json;
-use wiremock::matchers::{body_string_contains, method, path, path_regex, query_param};
+use wiremock::matchers::{
+    body_string_contains, method, path, path_regex, query_param, query_param_is_missing,
+};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::*;
@@ -151,6 +153,89 @@ async fn standalone_refresh_ingests_items_and_reconciles_state() {
     drop(engine);
     let engine = open_with(dir.path(), keychain);
     assert_eq!(engine.status().unwrap().mode, Mode::Standalone);
+}
+
+#[tokio::test]
+async fn standalone_refresh_backfills_read_history_across_syncs() {
+    let server = mock_freshrss().await;
+    let contents = "^/api/greader.php/reader/api/0/stream/contents/.*";
+    let item = |n: u64, title: &str| item_at("https://blog.example", n, title, true);
+    let page = |items: Vec<serde_json::Value>, next: Option<&str>| {
+        ResponseTemplate::new(200).set_body_json(json!({"items": items, "continuation": next}))
+    };
+    Mock::given(method("GET"))
+        .and(path_regex(contents))
+        .and(query_param_is_missing("c"))
+        .respond_with(page(
+            vec![
+                item_at("https://blog.example", 1, "Old post", true),
+                item_at("https://blog.example", 2, "New post", false),
+            ],
+            Some("p2"),
+        ))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(contents))
+        .and(query_param("c", "p2"))
+        .respond_with(page(vec![item(10, "Archived one")], Some("p3")))
+        .with_priority(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(contents))
+        .and(query_param("c", "p3"))
+        .respond_with(ResponseTemplate::new(500))
+        .with_priority(1)
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(contents))
+        .and(query_param("c", "p3"))
+        .respond_with(page(vec![item(11, "Archived two")], None))
+        .with_priority(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    engine
+        .configure_freshrss(&server.uri(), "me", "secret")
+        .await
+        .unwrap();
+    let titles = |engine: &Engine| -> Vec<String> {
+        engine
+            .items(&ItemQuery::default())
+            .unwrap()
+            .into_iter()
+            .map(|r| r.item.title)
+            .collect()
+    };
+
+    // A failing history page does not fail the refresh.
+    let summary = engine.refresh().await.unwrap();
+    assert_eq!(summary.new_items, 3, "history is not announced as new");
+    assert!(titles(&engine).contains(&"Archived one".to_string()));
+    assert!(!titles(&engine).contains(&"Archived two".to_string()));
+    let archived = engine
+        .items(&ItemQuery::default())
+        .unwrap()
+        .into_iter()
+        .find(|r| r.item.title == "Archived one")
+        .unwrap();
+    assert!(archived.item.read);
+    assert_eq!(archived.source_title.as_deref(), Some("Graphics Blog"));
+
+    // The next refresh resumes at the saved cursor and reaches the end.
+    assert_eq!(engine.refresh().await.unwrap().new_items, 0);
+    assert!(titles(&engine).contains(&"Archived two".to_string()));
+
+    // Once complete, older pages are not requested again.
+    engine.refresh().await.unwrap();
 }
 
 #[tokio::test]
