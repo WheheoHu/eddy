@@ -1,15 +1,21 @@
 import EddyKit
 import SwiftUI
 
-/// Three-pane mode: subscriptions browse as lists; publications and saved
-/// pages are sources too, with their chapters or pages in the middle column.
+/// Three-pane mode: filters in the sidebar, what they select in the middle
+/// (articles, or the entries of the collection), the reader on the right.
+/// A collection entry keeps its contents in a panel beside the text.
 struct ThreePaneView: View {
     @Environment(AppModel.self) private var model
+    @AppStorage("app.mode") private var mode: AppMode = .threePane
+    @AppStorage("threePane.contents") private var showContents = false
     @State private var selection: Selection? = .smart(.all)
+    /// The collection entry picked in the middle column.
+    @State private var entryID: String?
     @State private var unreadOnly = false
     @State private var query = ""
     @State private var results: [ItemView]?
     @State private var scrollTarget: ScrollTarget?
+    @State private var pageTarget: PageTarget?
 
     enum Smart: String, CaseIterable {
         case all = "All Articles", unread = "Unread", starred = "Starred", continueReading = "Continue Reading"
@@ -24,11 +30,19 @@ struct ThreePaneView: View {
     }
 
     enum Selection: Hashable {
-        case smart(Smart), savedAll, savedSite(String), publication(String), feed(String), tag(String)
+        case smart(Smart), saved, kind(CollectionKindView), feed(String), tag(String)
+
+        /// The collection kinds a selection lists, if it lists entries.
+        var kinds: [CollectionKindView]? {
+            switch self {
+            case .saved: CollectionKindView.all
+            case let .kind(kind): [kind]
+            default: nil
+            }
+        }
     }
 
     var body: some View {
-        @Bindable var model = model
         NavigationSplitView {
             sidebar.navigationSplitViewColumnWidth(min: 210, ideal: 240)
         } content: {
@@ -37,15 +51,19 @@ struct ThreePaneView: View {
             detail
         }
         .searchable(text: $query, placement: .toolbar, prompt: "Search")
+        .toolbar { ModeToolbar(mode: $mode, model: model) }
+        .toolbar(removing: .title)
+        .onAppear(perform: showCurrentEntry)
         .onChange(of: model.revealed) { _, revealed in
-            switch revealed {
-            case let .publication(id): selection = .publication(id)
-            case let .document(id): selection = model.item(id).map { .savedSite($0.host) } ?? .savedAll
-            case nil: return
-            }
-            query = ""
+            guard let revealed else { return }
             model.revealed = nil
+            query = ""
+            show(entryID: revealed)
         }
+        .onChange(of: model.revision) {
+            if let entryID, model.entry(entryID) == nil { self.entryID = nil }
+        }
+        .onChange(of: model.currentItemID) { pageTarget = nil }
         .task(id: query) {
             guard !query.isEmpty else { results = nil; return }
             try? await Task.sleep(for: .milliseconds(250))
@@ -56,33 +74,22 @@ struct ThreePaneView: View {
     // MARK: Sidebar
 
     private var sidebar: some View {
-        List(selection: $selection) {
+        List(selection: Binding(get: { selection }, set: choose)) {
             Section("Library") {
                 ForEach(Smart.allCases, id: \.self) { smart in
                     Label(smart.rawValue, systemImage: smart.icon)
                         .badge(smart == .unread ? model.unreadTotal : 0)
                         .tag(Selection.smart(smart))
                 }
+                Label("Saved", systemImage: "bookmark").badge(model.collection.count).tag(Selection.saved)
             }
-            let sites = model.savedSites
-            if !sites.isEmpty {
-                Section("Saved") {
-                    Label("All Saved Pages", systemImage: "bookmark").badge(sites.reduce(0) { $0 + $1.count }).tag(Selection.savedAll)
-                    ForEach(sites, id: \.host) { site in
-                        Label(site.host, systemImage: site.pdf ? "doc.richtext" : "globe").badge(site.count).tag(Selection.savedSite(site.host))
-                    }
-                }
-            }
-            if !model.series.isEmpty {
-                Section("Publications") {
-                    ForEach(model.series) { s in
-                        HStack(spacing: 8) {
-                            Image(systemName: "book.closed").foregroundStyle(.secondary)
-                            Text(s.title).lineLimit(1)
-                            Spacer()
-                            ProgressRing(value: s.progress)
-                        }
-                        .tag(Selection.publication(s.id))
+            let kinds = CollectionKindView.all.filter { kind in model.collection.contains { $0.kind == kind } }
+            if !kinds.isEmpty {
+                Section("Collection") {
+                    ForEach(kinds) { kind in
+                        Label(kind.title, systemImage: kind.icon)
+                            .badge(model.collection.filter { $0.kind == kind }.count)
+                            .tag(Selection.kind(kind))
                     }
                 }
             }
@@ -109,46 +116,74 @@ struct ThreePaneView: View {
         Array(Set(model.feeds.map { $0.category ?? "Subscriptions" })).sorted()
     }
 
+    /// A click in the sidebar starts over: nothing is open until something
+    /// is picked in the middle column.
+    private func choose(_ new: Selection?) {
+        selection = new
+        entryID = nil
+        model.currentItemID = nil
+    }
+
+    /// Coming from the library mode, the entry being read stays in view.
+    private func showCurrentEntry() {
+        if let entry = model.entry(containing: model.currentItemID) { show(entryID: entry.id) }
+    }
+
+    private func show(entryID id: String) {
+        guard let entry = model.entry(id) else { return }
+        selection = .kind(entry.kind)
+        entryID = entry.id
+    }
+
     // MARK: Middle column
 
     @ViewBuilder
     private var middle: some View {
-        @Bindable var model = model
-        if results == nil, case let .publication(id) = selection {
-            ChapterList(seriesID: id, selected: $model.currentItemID)
+        if results == nil, let kinds = selection?.kinds {
+            CollectionList(kinds: kinds, selection: Binding(get: { entryID }, set: openEntry))
+                .toolbar { refreshItem }
         } else {
-            let rows = results ?? rowsForSelection
-            List(rows, selection: $model.currentItemID) { item in
-                ArticleRow(item: item).tag(item.id)
-                    .contextMenu {
-                        Button(item.starred ? "Unstar" : "Star") { model.setStarred(item, !item.starred) }
-                        Button(item.read ? "Mark as Unread" : "Mark as Read") { model.setRead(item, !item.read) }
-                        if let url = item.url.flatMap(URL.init(string:)) {
-                            Button("Open in Browser") { NSWorkspace.shared.open(url) }
-                            Button("Copy Link") {
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(url.absoluteString, forType: .string)
-                            }
+            articles
+        }
+    }
+
+    private var articles: some View {
+        @Bindable var model = model
+        let rows = results ?? rowsForSelection
+        return List(rows, selection: $model.currentItemID) { item in
+            ArticleRow(item: item).tag(item.id)
+                .contextMenu {
+                    Button(item.starred ? "Unstar" : "Star") { model.setStarred(item, !item.starred) }
+                    Button(item.read ? "Mark as Unread" : "Mark as Read") { model.setRead(item, !item.read) }
+                    if let url = item.url.flatMap(URL.init(string:)) {
+                        Button("Open in Browser") { NSWorkspace.shared.open(url) }
+                        Button("Copy Link") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(url.absoluteString, forType: .string)
                         }
                     }
-            }
-            .listStyle(.inset)
-            .overlay {
-                if rows.isEmpty {
-                    ContentUnavailableView(results != nil ? "No Results" : "Nothing Here", systemImage: results != nil ? "magnifyingglass" : "tray")
                 }
+        }
+        .listStyle(.inset)
+        .overlay {
+            if rows.isEmpty {
+                ContentUnavailableView(results != nil ? "No Results" : "Nothing Here", systemImage: results != nil ? "magnifyingglass" : "tray")
             }
-            .toolbar {
-                ToolbarItem {
-                    Toggle(isOn: $unreadOnly) { Label("Unread Only", systemImage: "line.3.horizontal.decrease.circle") }.help("Show unread only")
-                }
-                ToolbarItem {
-                    Button { Task { await model.refresh() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
-                        .help("Refresh (⌘R)")
-                        .disabled(model.busy)
-                }
+        }
+        .toolbar {
+            ToolbarItem {
+                Toggle(isOn: $unreadOnly) { Label("Unread Only", systemImage: "line.3.horizontal.decrease.circle") }.help("Show unread only")
             }
-            .background { keyboard(rows) }
+            refreshItem
+        }
+        .background { keyboard(rows) }
+    }
+
+    private var refreshItem: some ToolbarContent {
+        ToolbarItem {
+            Button { Task { await model.refresh() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
+                .help("Refresh (⌘R)")
+                .disabled(model.busy)
         }
     }
 
@@ -157,12 +192,23 @@ struct ThreePaneView: View {
         case .smart(.unread): model.items(.all, unreadOnly: true)
         case .smart(.starred): model.items(.starred, unreadOnly: unreadOnly)
         case .smart(.continueReading): model.items(.continueReading)
-        case .savedAll: model.items(.saved, unreadOnly: unreadOnly)
-        case let .savedSite(host): model.items(.saved, unreadOnly: unreadOnly).filter { $0.host == host }
         case let .feed(id): model.items(.source(id: id), unreadOnly: unreadOnly)
         case let .tag(id): model.items(.tag(id: id), unreadOnly: unreadOnly)
         default: model.items(.all, unreadOnly: unreadOnly)
         }
+    }
+
+    /// Opens an entry where reading stopped; the reader restores the position.
+    private func openEntry(_ id: String?) {
+        entryID = id
+        guard let id, let entry = model.entry(id) else { return }
+        open(entry.resumeItemId)
+    }
+
+    private func open(_ itemID: String?) {
+        scrollTarget = nil
+        pageTarget = nil
+        model.currentItemID = itemID
     }
 
     /// j/k move through the list, s stars, m toggles read.
@@ -193,14 +239,20 @@ struct ThreePaneView: View {
     @ViewBuilder
     private var detail: some View {
         if let id = model.currentItemID, let item = model.item(id) {
-            VStack(spacing: 0) {
-                ReaderPane(itemID: id, scrollTarget: $scrollTarget)
-                    .id(id)
-                if let seriesID = item.seriesId, let info = model.series.first(where: { $0.id == seriesID }) {
+            let entry = model.entry(containing: item)
+            HStack(spacing: 0) {
+                if let entry, showContents {
+                    EntryContents(entry: entry, currentItemID: id, open: open, jump: jump)
+                        .frame(width: 260)
+                        .background(.background.secondary)
                     Divider()
-                    SequenceBar(title: info.title, items: model.chapters(seriesID), current: id) { next in
-                        scrollTarget = nil
-                        model.currentItemID = next
+                }
+                VStack(spacing: 0) {
+                    ReaderPane(itemID: id, scrollTarget: $scrollTarget, pageTarget: pageTarget, openItem: open, showContents: entry == nil ? nil : $showContents)
+                        .id(id)
+                    if let seriesID = item.seriesId, let info = model.series.first(where: { $0.id == seriesID }) {
+                        Divider()
+                        SequenceBar(title: info.title, items: model.chapters(seriesID), current: id) { open($0) }
                     }
                 }
             }
@@ -208,66 +260,63 @@ struct ThreePaneView: View {
             ContentUnavailableView("No Article Selected", systemImage: "text.alignleft", description: Text("J and K move through the list."))
         }
     }
+
+    private func jump(_ target: OutlineEntry.Target) {
+        switch target {
+        case let .block(id): scrollTarget = ScrollTarget(blockID: id)
+        case let .page(page): pageTarget = PageTarget(page: page)
+        }
+    }
 }
 
-/// Middle column for a publication: progress and chapters.
-struct ChapterList: View {
+/// Middle column for Saved and the collection kinds; Saved groups its
+/// entries by kind.
+struct CollectionList: View {
     @Environment(AppModel.self) private var model
-    let seriesID: String
-    @Binding var selected: String?
+    let kinds: [CollectionKindView]
+    @Binding var selection: String?
 
     var body: some View {
-        let chapters = model.chapters(seriesID)
-        let info = model.series.first { $0.id == seriesID }
-        List(selection: $selected) {
-            if let info {
-                Section {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(info.title).font(.title3.weight(.semibold))
-                        if let author = info.author { Text(author).foregroundStyle(.secondary) }
-                        ProgressView(value: info.progress)
-                        HStack {
-                            Text("\(info.finished) of \(info.chapters) chapters read").font(.caption).foregroundStyle(.secondary)
-                            Spacer()
-                            if let next = info.nextItemId {
-                                Button("Continue") { selected = next }
-                                    .buttonStyle(.borderedProminent)
-                                    .controlSize(.small)
-                            }
-                        }
+        let entries = model.collection.filter { kinds.contains($0.kind) }.sorted(by: CollectionEntryView.byRecency)
+        List(selection: $selection) {
+            if kinds.count == 1 {
+                rows(entries)
+            } else {
+                ForEach(kinds) { kind in
+                    let group = entries.filter { $0.kind == kind }
+                    if !group.isEmpty {
+                        Section(kind.title) { rows(group) }
                     }
-                    .padding(.vertical, 6)
-                }
-            }
-            Section("Chapters") {
-                ForEach(Array(chapters.enumerated()), id: \.element.id) { index, chapter in
-                    HStack(spacing: 10) {
-                        Text("\(index + 1)").font(.caption.monospacedDigit()).foregroundStyle(.secondary).frame(width: 22, alignment: .trailing)
-                        Text(Self.displayTitle(chapter.title, number: index + 1))
-                            .lineLimit(2)
-                            .fontWeight(chapter.finished ? .regular : .medium)
-                            .foregroundStyle(chapter.finished ? .secondary : .primary)
-                        Spacer()
-                        if chapter.finished {
-                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green).accessibilityLabel("Finished")
-                        } else if chapter.inProgress {
-                            ProgressRing(value: chapter.progress)
-                        }
-                    }
-                    .padding(.vertical, 3)
-                    .tag(chapter.id)
                 }
             }
         }
         .listStyle(.inset)
+        .contextMenu(forSelectionType: String.self) { ids in
+            if let id = ids.first, let entry = model.entry(id) {
+                Button("Delete…", role: .destructive) { model.requestDelete(entry) }
+            }
+        }
+        .onDeleteCommand(perform: deleteSelected)
+        .onKeyPress(keys: [.delete], phases: .down) { press in
+            guard press.modifiers.contains(.command) else { return .ignored }
+            deleteSelected()
+            return .handled
+        }
+        .overlay {
+            if entries.isEmpty {
+                ContentUnavailableView("Nothing Here", systemImage: "tray", description: Text("Save a page with ⌘L, or import an EPUB or PDF with ⌘O."))
+            }
+        }
     }
 
-    /// Chapter titles often carry their own number; the list shows it already.
-    static func displayTitle(_ title: String, number: Int) -> String {
-        for prefix in ["\(number). ", "\(number) ", "Chapter \(number): ", "Chapter \(number). "] where title.hasPrefix(prefix) {
-            return String(title.dropFirst(prefix.count))
+    private func rows(_ entries: [CollectionEntryView]) -> some View {
+        ForEach(entries) { entry in
+            CollectionRow(entry: entry).tag(entry.id)
         }
-        return title
+    }
+
+    private func deleteSelected() {
+        if let selection, let entry = model.entry(selection) { model.requestDelete(entry) }
     }
 }
 

@@ -21,6 +21,8 @@ final class AppModel {
     var sources: [SourceView] = []
     var stats: [String: SourceStatsView] = [:]
     var series: [SeriesView] = []
+    /// Everything that is not a subscription article.
+    var collection: [CollectionEntryView] = []
     var tags: [TagView] = []
     var revision = 0
     var busy = false
@@ -32,13 +34,14 @@ final class AppModel {
     /// What is being read; shared by both modes so switching keeps context.
     var currentItemID: String?
 
-    /// Something just imported, for the current mode to bring into view.
-    var revealed: Revealed?
+    /// A collection entry just imported, for the current mode to bring into view.
+    var revealed: String?
 
-    enum Revealed: Equatable {
-        case publication(String)
-        case document(String)
-    }
+    /// A collection entry waiting for the user to confirm its deletion.
+    var pendingDeletion: CollectionEntryView?
+
+    var savingURL = false
+    var importing = false
 
     private var leadImages: [String: String?] = [:]
     private var imageCache = NSCache<NSString, NSImage>()
@@ -73,6 +76,7 @@ final class AppModel {
         sources = (try? engine.sources()) ?? []
         stats = Dictionary(uniqueKeysWithValues: ((try? engine.sourceOverview()) ?? []).map { ($0.sourceId, $0) })
         series = (try? engine.seriesList()) ?? []
+        collection = (try? engine.collection()) ?? []
         tags = (try? engine.tags()) ?? []
         revision += 1
     }
@@ -91,11 +95,20 @@ final class AppModel {
     var savedSourceID: String? { sources.first { $0.saved }?.id }
     var unreadTotal: Int { feeds.reduce(0) { $0 + Int($1.unread) } }
 
-    /// Saved pages grouped by site; imported PDFs form their own group.
-    var savedSites: [(host: String, count: Int, pdf: Bool)] {
-        let saved = items(.saved, limit: 5000)
-        let groups = Dictionary(grouping: saved, by: \.host)
-        return groups.map { ($0.key, $0.value.count, $0.value.first?.format == .pdf) }.sorted { $0.host < $1.host }
+    func entry(_ id: String) -> CollectionEntryView? {
+        collection.first { $0.id == id }
+    }
+
+    /// The collection entry an item belongs to: its series, or the saved
+    /// page or PDF itself. Subscription articles belong to none.
+    func entry(containing item: ItemView) -> CollectionEntryView? {
+        if let seriesID = item.seriesId { return collection.first { $0.seriesId == seriesID } }
+        return item.kind == .feed ? nil : entry(item.id)
+    }
+
+    func entry(containing itemID: String?) -> CollectionEntryView? {
+        guard let itemID, let item = item(itemID) else { return nil }
+        return entry(containing: item)
     }
 
     func chapters(_ seriesID: String) -> [ItemView] {
@@ -216,7 +229,25 @@ final class AppModel {
             message = last.existing ? "“\(last.title)” is already in your library" : "Imported “\(last.title)”"
         }
         currentItemID = last.itemId
-        revealed = last.seriesId.map(Revealed.publication) ?? .document(last.itemId)
+        revealed = last.seriesId ?? last.itemId
+    }
+
+    func requestDelete(_ entry: CollectionEntryView) {
+        pendingDeletion = entry
+    }
+
+    /// Deletes a collection entry on every device.
+    func delete(_ entry: CollectionEntryView) async {
+        guard let engine else { return }
+        let reading = self.entry(containing: currentItemID)?.id == entry.id
+        do {
+            try await engine.deleteEntry(id: entry.id)
+            if reading { currentItemID = nil }
+            message = "Deleted “\(entry.title)”"
+        } catch {
+            message = error.localizedDescription
+        }
+        reload()
     }
 
     func refresh() async {

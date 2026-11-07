@@ -1,27 +1,35 @@
 import EddyKit
 import SwiftUI
 
-/// One shelf item: a subscription, a publication, or a saved page.
+/// One shelf item: a subscription or a collection entry.
 struct Book: Identifiable, Equatable {
     enum Kind: Equatable {
         case feed(sourceID: String)
-        case publication(seriesID: String)
-        case saved(itemID: String)
+        case entry(CollectionEntryView)
     }
 
     let id: String
     let kind: Kind
     let title: String
     var subtitle: String?
+    /// Author, site or category.
+    let byline: String
+    let typeName: String
+    var category: String?
     let detail: String
     let symbol: String
-    let coverItemID: String?
+    var coverItemID: String?
     var coverURL: String?
     var pdfItemID: String?
     let updated: Int64
     let lastRead: Int64
+    let added: Int64
     let unread: Int
     let progress: Double
+
+    var entry: CollectionEntryView? {
+        if case let .entry(entry) = kind { entry } else { nil }
+    }
 }
 
 enum ShelfSort: String, CaseIterable, Identifiable {
@@ -33,26 +41,84 @@ enum ShelfSort: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-enum ShelfFilter: String, CaseIterable, Identifiable {
-    case all = "All"
-    case feeds = "Subscriptions"
-    case publications = "Publications"
-    case saved = "Saved"
-    var id: String { rawValue }
+enum ShelfLayout: String {
+    case covers, list
 }
 
-/// Library mode: the whole collection as one dense bookshelf.
+/// What the library sidebar shows.
+enum LibraryFilter: Hashable, RawRepresentable {
+    case all, continueReading, saved, kind(CollectionKindView), subscriptions, category(String)
+
+    init?(rawValue: String) {
+        switch rawValue {
+        case "all": self = .all
+        case "continue": self = .continueReading
+        case "saved": self = .saved
+        case "subscriptions": self = .subscriptions
+        default:
+            if rawValue.hasPrefix("kind:"), let kind = CollectionKindView.all.first(where: { "kind:\($0.key)" == rawValue }) {
+                self = .kind(kind)
+            } else if rawValue.hasPrefix("category:") {
+                self = .category(String(rawValue.dropFirst("category:".count)))
+            } else {
+                return nil
+            }
+        }
+    }
+
+    var rawValue: String {
+        switch self {
+        case .all: "all"
+        case .continueReading: "continue"
+        case .saved: "saved"
+        case let .kind(kind): "kind:\(kind.key)"
+        case .subscriptions: "subscriptions"
+        case let .category(name): "category:\(name)"
+        }
+    }
+
+    /// Subscriptions have no covers, so they start as a list.
+    var defaultLayout: ShelfLayout {
+        switch self {
+        case .subscriptions, .category: .list
+        default: .covers
+        }
+    }
+
+    func contains(_ book: Book) -> Bool {
+        switch (self, book.kind) {
+        case (.all, _), (.saved, .entry), (.subscriptions, .feed): true
+        case let (.continueReading, .entry(entry)): entry.inProgress
+        case let (.kind(kind), .entry(entry)): entry.kind == kind
+        case let (.category(name), .feed): book.category == name
+        default: false
+        }
+    }
+}
+
+/// Library mode: filters in the sidebar, the matching books as covers or a
+/// list; opening one swaps in its contents and the text.
 struct LibraryView: View {
     @Environment(AppModel.self) private var model
+    @AppStorage("app.mode") private var mode: AppMode = .threePane
     @AppStorage("library.sort") private var sort: ShelfSort = .updated
-    @AppStorage("library.filter") private var filter: ShelfFilter = .all
+    @AppStorage("library.filter") private var filter: LibraryFilter = .all
+    @AppStorage("library.sidebar") private var showSidebar = true
+    /// Covers or list, per filter.
+    @AppStorage("library.layouts") private var layoutsJSON = "{}"
+    @AppStorage("library.columns") private var columnsData = Data()
+    @State private var columns = TableColumnCustomization<Book>()
+    @State private var tableSort = [KeyPathComparator(\Book.updated, order: .reverse)]
+    @State private var tableSelection: Set<Book.ID> = []
     @State private var query = ""
     @State private var open: Book?
+    /// Scrolled back into view when the shelf returns.
+    @State private var lastOpened: String?
 
     var body: some View {
         Group {
             if let open {
-                LibraryReader(book: open) { self.open = nil }
+                LibraryReader(book: open, mode: $mode, close: close)
                     .id(open.id)
             } else {
                 shelf
@@ -60,107 +126,233 @@ struct LibraryView: View {
         }
         .onAppear(perform: openCurrent)
         .onChange(of: model.revealed) { _, revealed in
-            guard revealed != nil else { return }
+            guard let revealed else { return }
             model.revealed = nil
-            open = nil
-            openCurrent()
+            if let book = allBooks.first(where: { $0.entry?.id == revealed }) { show(book) }
+        }
+        .onChange(of: model.revision) {
+            if let entry = open?.entry, model.entry(entry.id) == nil { open = nil }
         }
     }
 
+    // MARK: Shelf
+
     private var shelf: some View {
-        let books = sortedBooks
-        return ScrollView {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 118, maximum: 150), spacing: 18, alignment: .top)], alignment: .leading, spacing: 22) {
-                ForEach(books) { book in
-                    BookTile(book: book)
-                        .onTapGesture { open = book }
-                        .accessibilityAddTraits(.isButton)
-                        .accessibilityLabel(Text("\(book.title), \(book.detail)"))
+        LeadingColumn(visible: showSidebar, width: 220) {
+            LibrarySidebar(selection: $filter)
+        } content: {
+            let books = shelfBooks
+            Group {
+                if layout == .list {
+                    table(books)
+                } else {
+                    covers(books)
                 }
             }
-            .padding(28)
-        }
-        .overlay {
-            if books.isEmpty {
-                ContentUnavailableView("Your Library Is Empty", systemImage: "books.vertical", description: Text("Save a page with ⌘L, import an EPUB or PDF with ⌘O, or connect FreshRSS in Settings."))
+            .overlay {
+                if books.isEmpty {
+                    if allBooks.isEmpty {
+                        ContentUnavailableView("Your Library Is Empty", systemImage: "books.vertical", description: Text("Save a page with ⌘L, import an EPUB or PDF with ⌘O, or connect FreshRSS in Settings."))
+                    } else {
+                        ContentUnavailableView("Nothing Here", systemImage: "tray")
+                    }
+                }
             }
         }
         .searchable(text: $query, placement: .toolbar, prompt: "Filter")
         .toolbar {
+            ColumnToggle(visible: $showSidebar)
+            ModeToolbar(mode: $mode, model: model)
             ToolbarItem {
-                Picker("Show", selection: $filter) { ForEach(ShelfFilter.allCases) { Text($0.rawValue).tag($0) } }
-                    .pickerStyle(.menu)
-                    .help("Which books to show")
+                Picker("Layout", selection: layoutBinding) {
+                    Label("Covers", systemImage: "square.grid.2x2").tag(ShelfLayout.covers)
+                    Label("List", systemImage: "list.bullet").tag(ShelfLayout.list)
+                }
+                .pickerStyle(.segmented)
+                .help("Show covers or a list")
             }
-            ToolbarItem {
-                Picker("Sort By", selection: $sort) { ForEach(ShelfSort.allCases) { Text($0.rawValue).tag($0) } }
-                    .pickerStyle(.menu)
-                    .help("Sort order")
+            if layout == .covers {
+                ToolbarItem {
+                    Picker("Sort By", selection: $sort) { ForEach(ShelfSort.allCases) { Text($0.rawValue).tag($0) } }
+                        .pickerStyle(.menu)
+                        .help("Sort order")
+                }
             }
             ToolbarItem {
                 Button { Task { await model.refresh() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }.disabled(model.busy)
             }
         }
+        .toolbar(removing: .title)
+        .onAppear {
+            columns = (try? JSONDecoder().decode(TableColumnCustomization<Book>.self, from: columnsData)) ?? columns
+        }
+        .onChange(of: columns) {
+            columnsData = (try? JSONEncoder().encode(columns)) ?? columnsData
+        }
+    }
+
+    private func covers(_ books: [Book]) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 118, maximum: 150), spacing: 18, alignment: .top)], alignment: .leading, spacing: 22) {
+                    ForEach(books) { book in
+                        BookTile(book: book)
+                            .onTapGesture { show(book) }
+                            .contextMenu { menu(for: book) }
+                            .accessibilityAddTraits(.isButton)
+                            .accessibilityLabel(Text("\(book.title), \(book.detail)"))
+                    }
+                }
+                .padding(28)
+            }
+            .onAppear {
+                if let lastOpened { proxy.scrollTo(lastOpened, anchor: .center) }
+            }
+        }
+    }
+
+    private func table(_ books: [Book]) -> some View {
+        let rows = books.sorted(using: tableSort)
+        return ScrollViewReader { proxy in
+            Table(rows, selection: $tableSelection, sortOrder: $tableSort, columnCustomization: $columns) {
+                TableColumn("Title", value: \.title) { book in
+                    Label { Text(book.title).lineLimit(1) } icon: { Image(systemName: book.symbol).foregroundStyle(.secondary) }
+                }
+                .width(min: 180, ideal: 320)
+                .customizationID("title")
+                .disabledCustomizationBehavior(.visibility)
+                TableColumn("Type", value: \.typeName)
+                    .width(min: 60, ideal: 90)
+                    .customizationID("type")
+                TableColumn("Author/Site", value: \.byline)
+                    .width(min: 80, ideal: 160)
+                    .customizationID("byline")
+                TableColumn("Unread", value: \.unread) { book in
+                    Text(book.unread > 0 ? "\(book.unread)" : "–").monospacedDigit()
+                }
+                .width(min: 44, ideal: 60)
+                .customizationID("unread")
+                TableColumn("Progress", value: \.progress) { book in
+                    ProgressView(value: book.progress).frame(maxWidth: 80)
+                }
+                .width(min: 60, ideal: 90)
+                .customizationID("progress")
+                TableColumn("Last Read", value: \.lastRead) { book in DateCell(ms: book.lastRead) }
+                    .width(min: 70, ideal: 110)
+                    .customizationID("lastRead")
+                TableColumn("Updated", value: \.updated) { book in DateCell(ms: book.updated) }
+                    .width(min: 70, ideal: 110)
+                    .customizationID("updated")
+                TableColumn("Added", value: \.added) { book in DateCell(ms: book.added) }
+                    .width(min: 70, ideal: 110)
+                    .customizationID("added")
+            }
+            .contextMenu(forSelectionType: Book.ID.self) { ids in
+                if ids.count == 1, let book = rows.first(where: { ids.contains($0.id) }) {
+                    Button("Open") { show(book) }
+                    menu(for: book)
+                }
+            } primaryAction: { ids in
+                if let book = rows.first(where: { ids.contains($0.id) }) { show(book) }
+            }
+            .onDeleteCommand {
+                if tableSelection.count == 1, let entry = rows.first(where: { tableSelection.contains($0.id) })?.entry {
+                    model.requestDelete(entry)
+                }
+            }
+            .onAppear {
+                if let lastOpened {
+                    tableSelection = [lastOpened]
+                    proxy.scrollTo(lastOpened, anchor: .center)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func menu(for book: Book) -> some View {
+        if let entry = book.entry {
+            Button("Delete…", role: .destructive) { model.requestDelete(entry) }
+        }
+    }
+
+    private var layouts: [String: String] {
+        (try? JSONDecoder().decode([String: String].self, from: Data(layoutsJSON.utf8))) ?? [:]
+    }
+
+    private var layout: ShelfLayout {
+        layouts[filter.rawValue].flatMap(ShelfLayout.init(rawValue:)) ?? filter.defaultLayout
+    }
+
+    private var layoutBinding: Binding<ShelfLayout> {
+        Binding {
+            layout
+        } set: { new in
+            var all = layouts
+            all[filter.rawValue] = new.rawValue
+            layoutsJSON = (try? String(data: JSONEncoder().encode(all), encoding: .utf8)) ?? layoutsJSON
+        }
+    }
+
+    // MARK: Navigation
+
+    private func show(_ book: Book) {
+        lastOpened = book.id
+        open = book
+    }
+
+    private func close() {
+        open = nil
     }
 
     /// Switching from three-pane mode keeps reading the same item.
     private func openCurrent() {
         guard open == nil, let id = model.currentItemID, let item = model.item(id) else { return }
-        open = allBooks.first { book in
-            switch book.kind {
-            case let .feed(sourceID): item.kind == .feed && item.sourceId == sourceID
-            case let .publication(seriesID): item.seriesId == seriesID
-            case let .saved(itemID): itemID == id
-            }
+        let target: Book? = if let entry = model.entry(containing: item) {
+            allBooks.first { $0.entry?.id == entry.id }
+        } else if let sourceID = item.sourceId, item.kind == .feed {
+            allBooks.first { $0.kind == .feed(sourceID: sourceID) }
+        } else {
+            nil
         }
+        if let target { show(target) }
     }
+
+    // MARK: Books
 
     private var allBooks: [Book] {
         _ = model.revision
         var books: [Book] = []
         for feed in model.feeds {
             let s = model.stats[feed.id]
+            let total = Int(s?.total ?? 0)
             books.append(Book(
                 id: "feed:\(feed.id)", kind: .feed(sourceID: feed.id), title: feed.title,
-                detail: feed.unread > 0 ? "\(feed.unread) unread" : "\(s?.total ?? 0) articles",
-                symbol: "dot.radiowaves.up.forward", coverItemID: nil,
-                updated: s?.latestPublishedAt ?? 0, lastRead: s?.lastReadAt ?? 0, unread: Int(feed.unread),
-                progress: (s?.total ?? 0) > 0 ? 1 - Double(feed.unread) / Double(s!.total) : 0
+                byline: feed.category ?? feed.siteUrl.flatMap { URL(string: $0)?.host() } ?? "",
+                typeName: String(localized: "Subscription"), category: feed.category ?? "Subscriptions",
+                detail: feed.unread > 0 ? String(localized: "\(feed.unread) unread") : String(localized: "\(total) articles"),
+                symbol: "dot.radiowaves.up.forward",
+                updated: s?.latestPublishedAt ?? 0, lastRead: s?.lastReadAt ?? 0, added: 0, unread: Int(feed.unread),
+                progress: total > 0 ? 1 - Double(feed.unread) / Double(total) : 0
             ))
         }
-        for series in model.series {
-            let chapters = model.chapters(series.id)
+        for entry in model.collection {
             books.append(Book(
-                id: "pub:\(series.id)", kind: .publication(seriesID: series.id), title: series.title,
-                subtitle: series.author,
-                detail: "\(series.finished)/\(series.chapters) chapters", symbol: "book.closed",
-                coverItemID: nil, coverURL: series.cover,
-                updated: chapters.map(\.publishedAt).max() ?? 0, lastRead: chapters.compactMap(\.lastReadAt).max() ?? 0,
-                unread: Int(series.chapters - series.finished), progress: series.progress
-            ))
-        }
-        for item in model.items(.saved, limit: 5000) {
-            let pdf = item.format == .pdf
-            let size = pdf && item.textLen == 0 ? "PDF" : "\(item.readingMinutes) min · \(item.host)"
-            let left = pdf ? "read" : "· \(item.minutesLeft) min left"
-            books.append(Book(
-                id: "saved:\(item.id)", kind: .saved(itemID: item.id), title: item.title,
-                subtitle: pdf ? item.author : nil,
-                detail: item.finished ? "Finished" : item.inProgress ? "\(Int(item.progress * 100))% \(left)" : size,
-                symbol: pdf ? "doc.richtext" : "bookmark", coverItemID: item.id, pdfItemID: pdf ? item.id : nil,
-                updated: item.publishedAt, lastRead: item.lastReadAt ?? 0, unread: item.read ? 0 : 1, progress: item.progress
+                id: "entry:\(entry.id)", kind: .entry(entry), title: entry.title,
+                subtitle: entry.kind == .book || entry.kind == .pdf ? entry.author : nil,
+                byline: entry.byline ?? "", typeName: entry.kind.name,
+                detail: entry.progressText, symbol: entry.kind.icon,
+                coverItemID: entry.kind == .webPage ? entry.id : nil, coverURL: entry.cover,
+                pdfItemID: entry.kind == .pdf ? entry.id : nil,
+                updated: entry.updatedAt, lastRead: entry.lastReadAt ?? 0, added: entry.addedAt,
+                unread: Int(entry.chapters) - Int(entry.finished), progress: entry.progress
             ))
         }
         return books
     }
 
-    private var sortedBooks: [Book] {
-        var books = allBooks.filter { book in
-            switch (filter, book.kind) {
-            case (.all, _), (.feeds, .feed), (.publications, .publication), (.saved, .saved): true
-            default: false
-            }
-        }
+    private var shelfBooks: [Book] {
+        var books = allBooks.filter(filter.contains)
         if !query.isEmpty {
             books = books.filter { $0.title.localizedCaseInsensitiveContains(query) }
         }
@@ -172,6 +364,66 @@ struct LibraryView: View {
         case .progress: books.sort { ($0.progress, $0.lastRead) > ($1.progress, $1.lastRead) }
         }
         return books
+    }
+}
+
+/// Library filters: everything, reading in progress, the collection and
+/// its kinds, subscriptions and their categories.
+private struct LibrarySidebar: View {
+    @Environment(AppModel.self) private var model
+    @Binding var selection: LibraryFilter
+
+    var body: some View {
+        List(selection: Binding(get: { selection }, set: { if let new = $0 { selection = new } })) {
+            Section("Library") {
+                Label("All", systemImage: "books.vertical").tag(LibraryFilter.all)
+                Label("Continue Reading", systemImage: "book")
+                    .badge(model.collection.filter(\.inProgress).count)
+                    .tag(LibraryFilter.continueReading)
+                Label("Saved", systemImage: "bookmark").badge(model.collection.count).tag(LibraryFilter.saved)
+            }
+            let kinds = CollectionKindView.all.filter { kind in model.collection.contains { $0.kind == kind } }
+            if !kinds.isEmpty {
+                Section("Collection") {
+                    ForEach(kinds) { kind in
+                        Label(kind.title, systemImage: kind.icon)
+                            .badge(model.collection.filter { $0.kind == kind }.count)
+                            .tag(LibraryFilter.kind(kind))
+                    }
+                }
+            }
+            if !model.feeds.isEmpty {
+                Section("Subscriptions") {
+                    Label("All Subscriptions", systemImage: "dot.radiowaves.up.forward")
+                        .badge(model.feeds.count)
+                        .tag(LibraryFilter.subscriptions)
+                    if categories.count > 1 {
+                        ForEach(categories, id: \.self) { category in
+                            Label(category, systemImage: "folder").tag(LibraryFilter.category(category))
+                        }
+                    }
+                }
+            }
+        }
+        .listStyle(.sidebar)
+        .safeAreaInset(edge: .bottom) { StatusFooter() }
+    }
+
+    private var categories: [String] {
+        Array(Set(model.feeds.map { $0.category ?? "Subscriptions" })).sorted()
+    }
+}
+
+private struct DateCell: View {
+    let ms: Int64
+
+    var body: some View {
+        if ms > 0 {
+            Text(Date(timeIntervalSince1970: TimeInterval(ms) / 1000), format: .relative(presentation: .named))
+                .foregroundStyle(.secondary)
+        } else {
+            Text("–").foregroundStyle(.tertiary)
+        }
     }
 }
 
