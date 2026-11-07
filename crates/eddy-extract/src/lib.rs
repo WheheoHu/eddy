@@ -192,15 +192,14 @@ fn main_heading(doc: &Html) -> Option<String> {
         .filter(|h| !h.is_empty())
         .collect();
     let title = page_title(doc).map(|t| t.to_lowercase());
-    if let Some(title) = &title {
-        if let Some((_, h)) = headings
+    if let Some(title) = &title
+        && let Some((_, h)) = headings
             .iter()
             .filter_map(|h| title.find(&h.to_lowercase()).map(|i| (i, h)))
             .min_by_key(|(i, _)| *i)
         {
             return Some(h.clone());
         }
-    }
     headings.into_iter().next()
 }
 
@@ -215,11 +214,10 @@ fn clean_title(title: String, heading: Option<&str>) -> String {
         return title;
     };
     for sep in TITLE_SEPARATORS {
-        if let Some((rest, last)) = title.rsplit_once(sep) {
-            if last.trim().eq_ignore_ascii_case(h) && !rest.trim().is_empty() {
+        if let Some((rest, last)) = title.rsplit_once(sep)
+            && last.trim().eq_ignore_ascii_case(h) && !rest.trim().is_empty() {
                 return rest.trim().to_string();
             }
-        }
     }
     if h.len() < title.len() && title.to_lowercase().contains(&h.to_lowercase()) {
         return h.to_string();
