@@ -32,6 +32,15 @@ impl Inner {
         }
     }
 
+    pub(crate) fn unindex_item(&self, item_id: &str) {
+        if let Some(index) = &self.search
+            && let Err(e) = index.delete(item_id)
+        {
+            self.platform
+                .log(LogLevel::Warn, &format!("unindexing failed: {e}"));
+        }
+    }
+
     pub(crate) fn commit_index(&self) {
         if let Some(index) = &self.search
             && let Err(e) = index.commit()

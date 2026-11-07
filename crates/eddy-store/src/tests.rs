@@ -356,3 +356,79 @@ fn blobs_round_trip_and_eviction_protects_unread_content() {
     assert!(s.has_blob(&pinned).unwrap());
     assert!(s.put_blob_keyed("../escape", b"x", "x", false).is_err());
 }
+
+#[test]
+fn deleted_items_hide_everywhere_and_release_files_only_they_use() {
+    let (_d, s) = store();
+    for id in ["gone", "kept"] {
+        let mut saved = item(id, 1);
+        saved.kind = ItemKind::Saved;
+        s.insert_item(&saved).unwrap();
+    }
+    let book = s
+        .put_blob(b"the whole book", "application/epub+zip", true)
+        .unwrap();
+    let only_gone = s
+        .put_blob(b"gone's document", "application/json", false)
+        .unwrap();
+    for (item_id, doc) in [("gone", Some(&only_gone)), ("kept", None)] {
+        s.insert_content_version(&ContentVersion {
+            hash: format!("v-{item_id}"),
+            item_id: item_id.into(),
+            origin: ContentOrigin::Imported,
+            source_url: None,
+            raw_blob: book.clone(),
+            raw_mime: "application/epub+zip".into(),
+            doc_blob: doc.cloned(),
+            doc_schema: Some(1),
+            text_len: 0,
+            created_at: 0,
+        })
+        .unwrap();
+    }
+
+    // A deletion synced from another device.
+    assert!(
+        s.apply_remote(&op(
+            3,
+            "dev2",
+            Entity::Item,
+            "gone",
+            fields::DELETED,
+            json!(true)
+        ))
+        .unwrap()
+    );
+    let saved = s
+        .items(&ItemQuery {
+            filter: ItemFilter::Saved,
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].item.id, "kept");
+    assert!(s.items_with_raw_blob(&book).unwrap() == ["kept"]);
+
+    assert_eq!(s.purge_orphan_blobs().unwrap(), 15);
+    assert!(!s.has_blob(&only_gone).unwrap());
+    assert!(s.has_blob(&book).unwrap(), "still used by a live item");
+
+    s.record_local(
+        &op(
+            4,
+            "dev1",
+            Entity::Item,
+            "kept",
+            fields::DELETED,
+            json!(true),
+        ),
+        false,
+    )
+    .unwrap();
+    s.purge_orphan_blobs().unwrap();
+    assert!(
+        !s.has_blob(&book).unwrap(),
+        "pinned originals go with their last item"
+    );
+    assert_eq!(s.blob_usage().unwrap(), 0);
+}

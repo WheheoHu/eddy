@@ -1294,3 +1294,168 @@ async fn imports_without_text_and_unsupported_files() {
     assert!(err.contains("DRM"), "{err}");
     assert!(engine.series_list().unwrap().is_empty());
 }
+
+fn entry<'a>(entries: &'a [CollectionEntry], title: &str) -> &'a CollectionEntry {
+    entries
+        .iter()
+        .find(|e| e.title == title)
+        .unwrap_or_else(|| panic!("no entry {title}"))
+}
+
+#[tokio::test]
+async fn the_collection_holds_books_pdfs_pages_and_series_and_deletes_them() {
+    let pages = mock_pages().await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(&dir.path().join("data"));
+    engine.set_pdf_reader(Some(Arc::new(FakePdfReader)));
+    let epub = dir.path().join("sampling.epub");
+    std::fs::write(&epub, sample_epub()).unwrap();
+    let book = engine.import_file(&epub).await.unwrap();
+    let pdf = dir.path().join("Paper Draft.pdf");
+    std::fs::write(&pdf, b"%PDF-1.7\n1 0 obj<<>>endobj\n%%EOF\n").unwrap();
+    let paper = engine.import_file(&pdf).await.unwrap();
+    let essay = engine
+        .save_url(&format!("{}/essay", pages.uri()))
+        .await
+        .unwrap();
+    let adopted = engine
+        .save_url(&format!("{}/1", pages.uri()))
+        .await
+        .unwrap();
+    let series_id = engine
+        .create_series(
+            "Notes",
+            Some(&format!("{}/notes", pages.uri())),
+            &[
+                ("One".into(), format!("{}/1", pages.uri())),
+                ("Two".into(), format!("{}/2", pages.uri())),
+            ],
+        )
+        .unwrap();
+
+    let entries = engine.collection().unwrap();
+    assert_eq!(
+        entries.len(),
+        4,
+        "a page that joined a series is not listed on its own"
+    );
+    let sampling = entry(&entries, "Sampling Book");
+    assert_eq!(
+        (
+            sampling.kind,
+            sampling.chapters,
+            sampling.series_id.as_deref()
+        ),
+        (CollectionKind::Book, 3, book.series_id.as_deref())
+    );
+    assert_eq!(
+        sampling.resume_item_id.as_deref(),
+        Some(book.item_id.as_str()),
+        "an unread book opens at its first chapter"
+    );
+    assert!(sampling.text_len > 0 && sampling.cover.is_some());
+    let draft = entry(&entries, "Paper Draft");
+    assert_eq!((draft.kind, draft.chapters), (CollectionKind::Pdf, 1));
+    assert_eq!(draft.id, paper.item_id);
+    assert_eq!(
+        draft.resume_item_id.as_deref(),
+        Some(paper.item_id.as_str())
+    );
+    let page = entry(&entries, "An Essay");
+    assert_eq!(
+        (page.kind, page.id.as_str()),
+        (CollectionKind::WebPage, essay.item.id.as_str())
+    );
+    assert!(page.url.as_deref().unwrap().ends_with("/essay"));
+    let notes = entry(&entries, "Notes");
+    assert_eq!((notes.kind, notes.chapters), (CollectionKind::WebSeries, 2));
+
+    // Reading part of the book resumes there.
+    let chapters = engine
+        .items(&ItemQuery {
+            filter: ItemFilter::Series(book.series_id.clone().unwrap()),
+            ..Default::default()
+        })
+        .unwrap();
+    let second = &chapters[1].item.id;
+    let doc = engine.document(second).await.unwrap().unwrap().document;
+    engine
+        .record_progress(second, &doc.blocks[0].id, 0, true)
+        .unwrap();
+    let entries = engine.collection().unwrap();
+    let sampling = entry(&entries, "Sampling Book");
+    assert_eq!(sampling.resume_item_id.as_deref(), Some(second.as_str()));
+    assert!(sampling.last_read_at.is_some());
+
+    // Deleting a book removes its chapters, their search entries and the file.
+    let book_blob = engine
+        .document(&book.item_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .version
+        .raw_blob;
+    assert!(!engine.search("combines strategies", 10).unwrap().is_empty());
+    engine.delete_entry(&sampling.id).await.unwrap();
+    assert!(engine.series_info(&sampling.id).unwrap().is_none());
+    assert!(
+        engine
+            .items(&ItemQuery {
+                filter: ItemFilter::Series(sampling.id.clone()),
+                ..Default::default()
+            })
+            .unwrap()
+            .is_empty()
+    );
+    assert!(engine.search("combines strategies", 10).unwrap().is_empty());
+    assert!(!engine.inner.store.has_blob(&book_blob).unwrap());
+    let reimported = engine.import_file(&epub).await.unwrap();
+    assert!(!reimported.existing, "a deleted book imports afresh");
+    assert_ne!(reimported.series_id, book.series_id);
+
+    // A web series takes the pages that joined it along.
+    engine.delete_series(&series_id).unwrap();
+    let saved = engine
+        .items(&ItemQuery {
+            filter: ItemFilter::Saved,
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(saved.iter().all(|r| r.item.id != adopted.item.id));
+
+    engine.delete_entry(&paper.item_id).await.unwrap();
+    assert!(engine.content_file(&paper.item_id).await.unwrap().is_none());
+    engine.delete_entry(&essay.item.id).await.unwrap();
+    let left: Vec<_> = engine
+        .collection()
+        .unwrap()
+        .into_iter()
+        .map(|e| e.title)
+        .collect();
+    assert_eq!(left, ["Sampling Book"]);
+    assert!(matches!(
+        engine.delete_entry("missing").await,
+        Err(EngineError::NotFound)
+    ));
+}
+
+#[tokio::test]
+async fn subscription_articles_cannot_be_deleted() {
+    let server = mock_freshrss().await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    engine
+        .configure_freshrss(&server.uri(), "me", "secret")
+        .await
+        .unwrap();
+    engine.refresh().await.unwrap();
+    let article = engine.items(&ItemQuery::default()).unwrap()[0]
+        .item
+        .id
+        .clone();
+    assert!(matches!(
+        engine.delete_entry(&article).await,
+        Err(EngineError::Invalid(_))
+    ));
+    assert!(engine.collection().unwrap().is_empty());
+}

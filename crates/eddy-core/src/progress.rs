@@ -49,10 +49,20 @@ pub struct SeriesInfo {
     pub progress: f64,
     /// The chapter to continue with.
     pub next_item_id: Option<String>,
+    /// The chapter to open: the one reading stopped in, or the next
+    /// unfinished one after it; the first one when none was read.
+    pub resume_item_id: Option<String>,
+    pub created_at: i64,
+    /// Latest publication date among the chapters.
+    pub updated_at: i64,
+    pub last_read_at: Option<i64>,
+    /// Characters across all chapters.
+    pub text_len: u32,
+    pub lang: Option<String>,
 }
 
 impl Inner {
-    fn chapters(&self, series_id: &str) -> Result<Vec<ItemRow>> {
+    pub(crate) fn chapters(&self, series_id: &str) -> Result<Vec<ItemRow>> {
         Ok(self.store.items(&ItemQuery {
             filter: ItemFilter::Series(series_id.into()),
             unread_only: false,
@@ -61,7 +71,7 @@ impl Inner {
         })?)
     }
 
-    fn series_info(&self, series: eddy_model::Series) -> Result<SeriesInfo> {
+    pub(crate) fn series_info(&self, series: eddy_model::Series) -> Result<SeriesInfo> {
         let chapters = self.chapters(&series.id)?;
         let total = chapters.len() as u32;
         let finished = chapters.iter().filter(|r| r.item.finished).count() as u32;
@@ -87,6 +97,10 @@ impl Inner {
             .and_then(|i| chapters[i..].iter().find(|r| !r.item.finished))
             .or_else(|| chapters.iter().find(|r| !r.item.finished))
             .map(|r| r.item.id.clone());
+        let resume = next
+            .clone()
+            .or_else(|| last_touched.map(|i| chapters[i].item.id.clone()))
+            .or_else(|| chapters.first().map(|r| r.item.id.clone()));
         Ok(SeriesInfo {
             id: series.id,
             title: series.title,
@@ -97,6 +111,16 @@ impl Inner {
             finished,
             progress,
             next_item_id: next,
+            resume_item_id: resume,
+            created_at: series.created_at,
+            updated_at: chapters
+                .iter()
+                .map(|r| r.item.published_at)
+                .max()
+                .unwrap_or(series.created_at),
+            last_read_at: chapters.iter().filter_map(|r| r.item.last_read_at).max(),
+            text_len: chapters.iter().map(|r| r.item.text_len).sum(),
+            lang: chapters.iter().find_map(|r| r.item.lang.clone()),
         })
     }
 
@@ -422,14 +446,12 @@ impl Engine {
         )
     }
 
+    /// Deletes a series together with its chapters.
     pub fn delete_series(&self, series_id: &str) -> Result<()> {
-        self.inner.record(
-            Entity::Series,
-            series_id,
-            fields::DELETED,
-            true.into(),
-            false,
-        )
+        if self.inner.store.series(series_id)?.is_none() {
+            return Err(EngineError::NotFound);
+        }
+        self.inner.delete_entry(series_id)
     }
 
     pub fn series_list(&self) -> Result<Vec<SeriesInfo>> {

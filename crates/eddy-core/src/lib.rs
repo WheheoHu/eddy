@@ -2,6 +2,7 @@
 //! or the sync server) and exposes the operations the native apps call.
 
 mod ai;
+mod collection;
 mod content;
 mod engine;
 mod fulltext;
@@ -17,6 +18,7 @@ mod server;
 mod upstream;
 
 pub use ai::{BatchCallback, ItemTagsResult, SummaryResult, TagInfo, TranslationResult};
+pub use collection::{CollectionEntry, CollectionKind};
 pub use content::LoadedDocument;
 pub use eddy_ai::{AiSettings, AutoAction, AutoRule, ProviderSettings, RuleScope, Summary};
 pub use eddy_extract::{ChapterLink, SeriesProposal};

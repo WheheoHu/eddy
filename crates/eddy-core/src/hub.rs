@@ -215,6 +215,7 @@ impl Upstream for HubUpstream {
             .unwrap_or(0);
         let mut new_item_ids = Vec::new();
         let mut versions = Vec::new();
+        let mut deleted = Vec::new();
         let mut state_changes = 0;
         loop {
             let page = self.client.pull(cursor, PULL_BATCH).await?;
@@ -231,6 +232,9 @@ impl Upstream for HubUpstream {
                         versions.push(op.value.as_str().unwrap_or_default().to_string())
                     }
                     (Entity::Item, fields::READ | fields::STARRED) if applied => state_changes += 1,
+                    (Entity::Item, fields::DELETED) if applied && op.value == true => {
+                        deleted.push(op.entity_id.clone())
+                    }
                     _ => {}
                 }
             }
@@ -240,6 +244,7 @@ impl Upstream for HubUpstream {
                 break;
             }
         }
+        inner.forget_deleted(&deleted);
         if let Err(e) = self.sync_rule_packs(inner).await {
             inner
                 .platform

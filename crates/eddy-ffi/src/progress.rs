@@ -94,6 +94,74 @@ impl From<core::SeriesInfo> for SeriesView {
     }
 }
 
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CollectionKindView {
+    Book,
+    Pdf,
+    WebPage,
+    WebSeries,
+}
+
+impl From<core::CollectionKind> for CollectionKindView {
+    fn from(k: core::CollectionKind) -> Self {
+        match k {
+            core::CollectionKind::Book => CollectionKindView::Book,
+            core::CollectionKind::Pdf => CollectionKindView::Pdf,
+            core::CollectionKind::WebPage => CollectionKindView::WebPage,
+            core::CollectionKind::WebSeries => CollectionKindView::WebSeries,
+        }
+    }
+}
+
+/// Anything that is not a subscription article: a book, a PDF, a saved
+/// page or a web series.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct CollectionEntryView {
+    /// The series ID, or the item ID of a page or PDF saved on its own.
+    pub id: String,
+    pub kind: CollectionKindView,
+    pub series_id: Option<String>,
+    pub title: String,
+    pub author: Option<String>,
+    /// A book's own cover image URL for `image`.
+    pub cover: Option<String>,
+    /// The page, or a series' table of contents.
+    pub url: Option<String>,
+    pub chapters: u32,
+    pub finished: u32,
+    pub progress: f64,
+    /// The chapter to open: where reading stopped.
+    pub resume_item_id: Option<String>,
+    pub added_at: i64,
+    pub updated_at: i64,
+    pub last_read_at: Option<i64>,
+    pub text_len: u32,
+    pub lang: Option<String>,
+}
+
+impl From<core::CollectionEntry> for CollectionEntryView {
+    fn from(e: core::CollectionEntry) -> Self {
+        CollectionEntryView {
+            id: e.id,
+            kind: e.kind.into(),
+            series_id: e.series_id,
+            title: e.title,
+            author: e.author,
+            cover: e.cover,
+            url: e.url,
+            chapters: e.chapters,
+            finished: e.finished,
+            progress: e.progress,
+            resume_item_id: e.resume_item_id,
+            added_at: e.added_at,
+            updated_at: e.updated_at,
+            last_read_at: e.last_read_at,
+            text_len: e.text_len,
+            lang: e.lang,
+        }
+    }
+}
+
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct TextRangeView {
     pub start: u32,
@@ -209,8 +277,25 @@ impl EddyEngine {
         Ok(self.engine.rename_series(&series_id, &title)?)
     }
 
+    /// Deletes a series together with its chapters.
     pub fn delete_series(&self, series_id: String) -> R<()> {
         Ok(self.engine.delete_series(&series_id)?)
+    }
+
+    pub fn collection(&self) -> R<Vec<CollectionEntryView>> {
+        Ok(self
+            .engine
+            .collection()?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
+    /// Deletes a collection entry on every device: a series with its
+    /// chapters, or a saved page or PDF. Subscription articles cannot be
+    /// deleted.
+    pub async fn delete_entry(&self, id: String) -> R<()> {
+        Ok(self.engine.delete_entry(&id).await?)
     }
 
     pub fn series_list(&self) -> R<Vec<SeriesView>> {

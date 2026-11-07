@@ -104,6 +104,47 @@ impl Store {
         })
     }
 
+    /// Deletes the content blobs that only deleted items use, original files
+    /// of imported books and PDFs included. Returns bytes freed.
+    pub fn purge_orphan_blobs(&self) -> Result<u64> {
+        let orphans: Vec<(String, u64)> = self.with(|c| {
+            let mut stmt = c.prepare(
+                "SELECT b.key, b.size FROM blobs b WHERE EXISTS (
+                    SELECT 1 FROM content_versions cv JOIN items i ON i.id=cv.item_id
+                    WHERE (cv.raw_blob=b.key OR cv.doc_blob=b.key) AND i.deleted=1)
+                 AND NOT EXISTS (
+                    SELECT 1 FROM content_versions cv JOIN items i ON i.id=cv.item_id
+                    WHERE (cv.raw_blob=b.key OR cv.doc_blob=b.key) AND i.deleted=0)",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))
+            })?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })?;
+        let mut freed = 0;
+        for (key, size) in orphans {
+            self.remove_blob(&key)?;
+            freed += size;
+        }
+        Ok(freed)
+    }
+
+    fn remove_blob(&self, key: &str) -> Result<()> {
+        match std::fs::remove_file(self.blob_path(key)?) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        self.with(|c| {
+            c.execute("DELETE FROM blobs WHERE key=?", [key])?;
+            c.execute(
+                "UPDATE content_versions SET doc_blob=NULL, doc_schema=NULL WHERE doc_blob=?",
+                [key],
+            )?;
+            Ok(())
+        })
+    }
+
     /// Deletes least recently used blobs until usage is at most `limit` bytes.
     /// Pinned blobs and content of items that are unread, starred, in progress
     /// or not plain subscription articles are kept. Returns bytes freed.
@@ -128,20 +169,7 @@ impl Store {
             if usage <= limit {
                 break;
             }
-            let path = self.blob_path(&key)?;
-            match std::fs::remove_file(&path) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e.into()),
-            }
-            self.with(|c| {
-                c.execute("DELETE FROM blobs WHERE key=?", [&key])?;
-                c.execute(
-                    "UPDATE content_versions SET doc_blob=NULL, doc_schema=NULL WHERE doc_blob=?",
-                    [&key],
-                )?;
-                Ok(())
-            })?;
+            self.remove_blob(&key)?;
             usage = usage.saturating_sub(size);
             freed += size;
         }
