@@ -180,12 +180,16 @@ final class AppModel {
         setRead(item, true)
     }
 
-    func recordProgress(_ itemID: String, blockID: String, offset: Int) {
-        _ = try? engine?.recordProgress(itemId: itemID, blockId: blockID, offset: UInt32(max(0, offset)), force: false)
+    /// `atEnd`: the end of the text is on screen, which finishes the item.
+    /// Lists refresh when that happens so it leaves Continue Reading at once.
+    func recordProgress(_ itemID: String, blockID: String, offset: Int, atEnd: Bool) {
+        let finishing = atEnd && item(itemID)?.finished == false
+        _ = try? engine?.recordProgress(itemId: itemID, blockId: blockID, offset: UInt32(max(0, offset)), atEnd: atEnd, force: false)
+        if finishing { reload() }
     }
 
-    func flushProgress(_ itemID: String, blockID: String, offset: Int) {
-        _ = try? engine?.recordProgress(itemId: itemID, blockId: blockID, offset: UInt32(max(0, offset)), force: true)
+    func flushProgress(_ itemID: String, blockID: String, offset: Int, atEnd: Bool) {
+        _ = try? engine?.recordProgress(itemId: itemID, blockId: blockID, offset: UInt32(max(0, offset)), atEnd: atEnd, force: true)
         reload()
     }
 

@@ -27,7 +27,7 @@ struct ReaderPane: View {
     @State private var showSummary = false
     @State private var showType = false
     @State private var resumeNote: ResumePointView?
-    @State private var lastPosition: (String, Int)?
+    @State private var lastPosition: (block: String, offset: Int, atEnd: Bool)?
     @State private var cache = ArticleCache()
     @State private var paneHeight: CGFloat = 600
 
@@ -100,9 +100,9 @@ struct ReaderPane: View {
                     style: style,
                     scrollTarget: scrollTarget,
                     loadImage: { url in await model.image(url) },
-                    onPosition: { block, offset, _ in
-                        lastPosition = (block, offset)
-                        model.recordProgress(itemID, blockID: block, offset: offset)
+                    onPosition: { block, offset, atEnd in
+                        lastPosition = (block, offset, atEnd)
+                        model.recordProgress(itemID, blockID: block, offset: offset, atEnd: atEnd)
                     },
                     onBookLink: { url in
                         guard let target = model.item(forLink: url) else { return }
@@ -228,7 +228,7 @@ struct ReaderPane: View {
     }
 
     private func flush() {
-        if let (block, offset) = lastPosition { model.flushProgress(itemID, blockID: block, offset: offset) }
+        if let lastPosition { model.flushProgress(itemID, blockID: lastPosition.block, offset: lastPosition.offset, atEnd: lastPosition.atEnd) }
         if let lastPage { model.recordPage(itemID, page: lastPage.page, of: lastPage.count, force: true) }
     }
 

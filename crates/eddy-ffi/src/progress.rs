@@ -204,18 +204,20 @@ impl EddyEngine {
 
 #[uniffi::export(async_runtime = "tokio")]
 impl EddyEngine {
-    /// Reports the top visible block and UTF-16 offset; returns the overall
-    /// progression. Throttled unless `force`.
+    /// Reports the top visible block and UTF-16 offset, and whether the end
+    /// of the text is on screen; returns the overall progression. Throttled
+    /// unless `force`.
     pub fn record_progress(
         &self,
         item_id: String,
         block_id: String,
         offset: u32,
+        at_end: bool,
         force: bool,
     ) -> R<Option<f64>> {
         Ok(self
             .engine
-            .record_progress(&item_id, &block_id, offset, force)?
+            .record_progress(&item_id, &block_id, offset, at_end, force)?
             .map(|l| l.progression))
     }
 

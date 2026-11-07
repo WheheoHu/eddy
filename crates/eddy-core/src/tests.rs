@@ -724,7 +724,7 @@ async fn progress_is_throttled_finishes_and_feeds_continue_reading() {
     };
 
     let mid = engine
-        .record_progress(&row.item.id, &paras[paras.len() / 2], 3, false)
+        .record_progress(&row.item.id, &paras[paras.len() / 2], 3, false, false)
         .unwrap()
         .unwrap();
     assert!(
@@ -733,7 +733,7 @@ async fn progress_is_throttled_finishes_and_feeds_continue_reading() {
         mid.progression
     );
     engine
-        .record_progress(&row.item.id, &paras[paras.len() / 2 + 1], 0, false)
+        .record_progress(&row.item.id, &paras[paras.len() / 2 + 1], 0, false, false)
         .unwrap();
     assert_eq!(
         ops(&engine),
@@ -741,7 +741,7 @@ async fn progress_is_throttled_finishes_and_feeds_continue_reading() {
         "scrolling within the interval is throttled"
     );
     engine
-        .record_progress(&row.item.id, &paras[paras.len() / 2 + 1], 0, true)
+        .record_progress(&row.item.id, &paras[paras.len() / 2 + 1], 0, false, true)
         .unwrap();
     assert_eq!(ops(&engine), 2);
     let shelf = engine
@@ -761,7 +761,7 @@ async fn progress_is_throttled_finishes_and_feeds_continue_reading() {
 
     let last = doc.blocks.last().unwrap().id.clone();
     engine
-        .record_progress(&row.item.id, &last, 0, true)
+        .record_progress(&row.item.id, &last, 0, false, true)
         .unwrap();
     assert!(engine.item(&row.item.id).unwrap().unwrap().item.finished);
     assert!(
@@ -773,6 +773,49 @@ async fn progress_is_throttled_finishes_and_feeds_continue_reading() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn end_on_screen_finishes_without_waiting_for_the_last_block() {
+    let pages = mock_pages().await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let row = engine
+        .save_url(&format!("{}/essay", pages.uri()))
+        .await
+        .unwrap();
+    let doc = engine
+        .document(&row.item.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .document;
+    let paras = para_ids(&doc);
+    let top = &paras[paras.len() / 2];
+    engine
+        .record_progress(&row.item.id, top, 0, false, false)
+        .unwrap();
+    assert!(!engine.item(&row.item.id).unwrap().unwrap().item.finished);
+
+    // Within the throttle interval: finishing is never held back.
+    let locator = engine
+        .record_progress(&row.item.id, top, 0, true, false)
+        .unwrap()
+        .unwrap();
+    assert!(locator.progression >= 0.98);
+    assert!(engine.item(&row.item.id).unwrap().unwrap().item.finished);
+    assert!(
+        engine
+            .items(&ItemQuery {
+                filter: ItemFilter::ContinueReading,
+                ..Default::default()
+            })
+            .unwrap()
+            .is_empty()
+    );
+    // Reading resumes where the text was, not at the end.
+    let resume = engine.resume_point(&row.item.id).unwrap().unwrap();
+    assert_eq!(resume.block_id.as_deref(), Some(top.as_str()));
 }
 
 #[tokio::test]
@@ -840,7 +883,7 @@ async fn resume_point_follows_the_switch_to_full_text() {
         .document;
     let shared_id = para_ids(&feed_doc)[1].clone();
     engine
-        .record_progress(&item.item.id, &shared_id, 13, true)
+        .record_progress(&item.item.id, &shared_id, 13, false, true)
         .unwrap();
 
     let full = engine.fetch_full_text(&item.item.id).await.unwrap();
@@ -907,7 +950,7 @@ async fn series_from_a_table_of_contents() {
     // Opening a chapter fetches its content on demand.
     let doc = engine.document(&first).await.unwrap().unwrap().document;
     let last = doc.blocks.last().unwrap().id.clone();
-    engine.record_progress(&first, &last, 0, true).unwrap();
+    engine.record_progress(&first, &last, 0, false, true).unwrap();
     let second = engine
         .items(&ItemQuery {
             filter: ItemFilter::Series(series_id.clone()),
@@ -918,7 +961,7 @@ async fn series_from_a_table_of_contents() {
         .id
         .clone();
     let mid = para_ids(&engine.document(&second).await.unwrap().unwrap().document)[5].clone();
-    engine.record_progress(&second, &mid, 0, true).unwrap();
+    engine.record_progress(&second, &mid, 0, false, true).unwrap();
 
     let info = engine.series_info(&series_id).unwrap().unwrap();
     assert_eq!(info.finished, 1);
@@ -1216,7 +1259,7 @@ async fn pdf_import_reads_text_through_the_platform_and_tracks_pages() {
     let first_block = doc.blocks[0].id.clone();
     assert_eq!(
         engine
-            .record_progress(&imported.item_id, &first_block, 0, true)
+            .record_progress(&imported.item_id, &first_block, 0, false, true)
             .unwrap(),
         None,
         "the text view does not replace the page"
@@ -1384,7 +1427,7 @@ async fn the_collection_holds_books_pdfs_pages_and_series_and_deletes_them() {
     let second = &chapters[1].item.id;
     let doc = engine.document(second).await.unwrap().unwrap().document;
     engine
-        .record_progress(second, &doc.blocks[0].id, 0, true)
+        .record_progress(second, &doc.blocks[0].id, 0, false, true)
         .unwrap();
     let entries = engine.collection().unwrap();
     let sampling = entry(&entries, "Sampling Book");

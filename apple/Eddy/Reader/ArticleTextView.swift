@@ -19,7 +19,9 @@ struct ArticleTextView: NSViewRepresentable {
     let style: ReaderStyle
     let scrollTarget: ScrollTarget?
     let loadImage: (String) async -> NSImage?
-    let onPosition: (_ blockID: String, _ offset: Int, _ fraction: Double) -> Void
+    /// The block at the top of the view, and whether the end of the text is
+    /// on screen.
+    let onPosition: (_ blockID: String, _ offset: Int, _ atEnd: Bool) -> Void
     /// Links inside an imported book (`epub://`); others open in the browser.
     var onBookLink: (URL) -> Void = { _ in }
 
@@ -90,10 +92,10 @@ struct ArticleTextView: NSViewRepresentable {
         var version: String?
         var lastTarget: ScrollTarget?
         var hasShown = false
-        var onPosition: ((String, Int, Double) -> Void)?
+        var onPosition: ((String, Int, Bool) -> Void)?
         var loadImage: ((String) async -> NSImage?)?
         var onBookLink: ((URL) -> Void)?
-        private var lastReported: (String, Int)?
+        private var lastReported: (String, Int, Bool)?
         private var reportTask: Task<Void, Never>?
         private var imageTask: Task<Void, Never>?
         /// Position set by the app (resume, outline jump) that images loading
@@ -122,6 +124,7 @@ struct ArticleTextView: NSViewRepresentable {
                 scroll?.contentView.scroll(to: .zero)
             }
             loadImages(article.images)
+            report(onlyAtEnd: true)
         }
 
         private func loadImages(_ images: [ImageAttachment]) {
@@ -148,6 +151,7 @@ struct ArticleTextView: NSViewRepresentable {
             guard let range = found else { return }
             storage.edited(.editedAttributes, range: range, changeInLength: 0)
             if let anchor { scroll(to: ScrollTarget(blockID: anchor.0, offset: anchor.1), animated: false, report: false) }
+            report(onlyAtEnd: true)
         }
 
         /// Block and offset at the top of the visible area.
@@ -160,18 +164,30 @@ struct ArticleTextView: NSViewRepresentable {
         }
 
         @objc func scrolled() {
-            guard let scroll, let textView else { return }
             if !scrollingProgrammatically { anchor = nil }
-            let visible = scroll.contentView.bounds
-            let total = max(textView.frame.height - visible.height, 1)
-            let fraction = min(max(visible.minY / total, 0), 1)
+            report(onlyAtEnd: false)
+        }
+
+        /// Whether the last line of the text is inside the visible area,
+        /// which includes text shorter than the view.
+        var atEnd: Bool {
+            guard let scroll, let textView else { return false }
+            return scroll.contentView.bounds.maxY >= textView.frame.height - textView.textContainerInset.height - 8
+        }
+
+        /// Reports the position once the view settles. Text that never
+        /// scrolls reports from `show` and image loads, but only when its
+        /// end is on screen: opening an article is not reading it.
+        private func report(onlyAtEnd: Bool) {
             reportTask?.cancel()
             reportTask = Task { [weak self] in
                 try? await Task.sleep(for: .milliseconds(250))
                 guard let self, !Task.isCancelled, let position = self.currentPosition() else { return }
-                if let last = self.lastReported, last.0 == position.0, last.1 == position.1 { return }
-                self.lastReported = position
-                self.onPosition?(position.0, position.1, fraction)
+                let atEnd = self.atEnd
+                if onlyAtEnd, !atEnd { return }
+                if let last = self.lastReported, last.0 == position.0, last.1 == position.1, last.2 == atEnd { return }
+                self.lastReported = (position.0, position.1, atEnd)
+                self.onPosition?(position.0, position.1, atEnd)
             }
         }
 
@@ -206,7 +222,7 @@ struct ArticleTextView: NSViewRepresentable {
                 scroll.reflectScrolledClipView(scroll.contentView)
                 DispatchQueue.main.async { [weak self] in self?.scrollingProgrammatically = false }
             }
-            if !report { lastReported = (target.blockID, target.offset) }
+            if !report { lastReported = (target.blockID, target.offset, lastReported?.2 ?? false) }
         }
 
         // Code backgrounds and quote bars.
