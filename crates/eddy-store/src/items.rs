@@ -184,6 +184,22 @@ impl Store {
         })
     }
 
+    /// Per-source totals for library views: (source_id, total, unread,
+    /// latest published_at, latest last_read_at). Chapters are excluded.
+    #[allow(clippy::type_complexity)]
+    pub fn source_overview(&self) -> Result<Vec<(String, u32, u32, Option<i64>, Option<i64>)>> {
+        self.with(|c| {
+            let mut stmt = c.prepare(
+                "SELECT s.id, COUNT(i.id), COALESCE(SUM(CASE WHEN i.read=0 THEN 1 ELSE 0 END),0),
+                        MAX(i.published_at), MAX(i.last_read_at)
+                 FROM sources s LEFT JOIN items i ON i.source_id=s.id AND i.deleted=0 AND i.kind!='chapter'
+                 GROUP BY s.id",
+            )?;
+            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
     /// Unread counts per source (id → count).
     pub fn unread_counts(&self) -> Result<Vec<(String, u32)>> {
         self.with(|c| {

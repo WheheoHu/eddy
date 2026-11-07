@@ -37,8 +37,14 @@ pub struct Extracted {
 
 /// Extracts the article from a full page fetched from `url`.
 pub fn extract(html: &str, url: &str, rule: Option<&SiteRule>) -> Result<Extracted, ExtractError> {
+    let has_tex_scripts = html.contains("math/tex");
     let html = preserve_math(html);
     let mut doc = Html::parse_document(&html);
+    if has_tex_scripts {
+        // MathJax v2 keeps its rendered output next to the TeX scripts, which
+        // are now delimiters; the rendering would show every formula twice.
+        strip(&mut doc, &[MATHJAX_V2_OUTPUT.to_string()]);
+    }
     let heading = main_heading(&doc);
     let title = rule
         .and_then(|r| r.title.as_deref())
@@ -270,6 +276,8 @@ fn text_len_of(html: &str) -> usize {
         .filter(|c| !c.is_whitespace())
         .count()
 }
+
+const MATHJAX_V2_OUTPUT: &str = ".MathJax_Preview, .MathJax, .MathJax_Display, .MathJax_CHTML, .mjx-chtml, .MathJax_SVG, .MathJax_SVG_Display, .MathJax_MathML";
 
 static MATH_SCRIPT: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(

@@ -23,7 +23,36 @@ impl From<eddy_core::ServerStatus> for ServerStatusView {
     }
 }
 
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct SourceStatsView {
+    pub source_id: String,
+    pub total: u32,
+    pub unread: u32,
+    pub latest_published_at: Option<i64>,
+    pub last_read_at: Option<i64>,
+}
+
 type R<T> = Result<T, EddyError>;
+
+#[uniffi::export]
+impl EddyEngine {
+    /// Per-source totals (articles, unread, latest update, last read) for
+    /// library shelves.
+    pub fn source_overview(&self) -> R<Vec<SourceStatsView>> {
+        Ok(self
+            .engine
+            .source_overview()?
+            .into_iter()
+            .map(|s| SourceStatsView {
+                source_id: s.source_id,
+                total: s.total,
+                unread: s.unread,
+                latest_published_at: s.latest_published_at,
+                last_read_at: s.last_read_at,
+            })
+            .collect())
+    }
+}
 
 #[uniffi::export(async_runtime = "tokio")]
 impl EddyEngine {

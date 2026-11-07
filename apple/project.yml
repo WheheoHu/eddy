@@ -4,7 +4,7 @@ options:
   deploymentTarget:
     macOS: "15.0"
   createIntermediateGroups: true
-  developmentLanguage: zh-Hans
+  developmentLanguage: en
 packages:
   EddyKit:
     path: EddyKit
@@ -28,8 +28,12 @@ targets:
     platform: macOS
     sources:
       - path: Eddy
+      - path: ../extensions/chrome
+        type: folder
+        buildPhase: resources
     dependencies:
       - package: EddyKit
+      - package: SwiftMath
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.eddy.Eddy
@@ -48,19 +52,3 @@ targets:
             cp "$HELPER" "$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Helpers/"
             codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" --options runtime "$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Helpers/eddy-capture-host"
           fi
-  UXDemo:
-    type: application
-    platform: macOS
-    sources:
-      - path: UXDemo
-    dependencies:
-      - package: EddyKit
-      - package: SwiftMath
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.eddy.UXDemo
-        PRODUCT_NAME: Eddy UX Demo
-        GENERATE_INFOPLIST_FILE: NO
-        INFOPLIST_FILE: UXDemo/Info.plist
-        CODE_SIGN_ENTITLEMENTS: Eddy/Eddy.entitlements
-        COMBINE_HIDPI_IMAGES: YES

@@ -20,7 +20,9 @@ pub use content::LoadedDocument;
 pub use eddy_ai::{AiSettings, AutoAction, AutoRule, ProviderSettings, RuleScope, Summary};
 pub use eddy_extract::{ChapterLink, SeriesProposal};
 pub use eddy_fetch::WebRenderer;
-pub use engine::{Engine, EngineOptions, EngineStatus, Mode, RefreshSummary, SourceInfo};
+pub use engine::{
+    Engine, EngineOptions, EngineStatus, Mode, RefreshSummary, SourceInfo, SourceStats,
+};
 pub use hub::{ServerStatus, plausible_hlc};
 pub use native_host::{CHROME_EXTENSION_ID, NATIVE_HOST_NAME, install_native_host};
 pub use platform::{LogLevel, MemoryPlatform, Platform};

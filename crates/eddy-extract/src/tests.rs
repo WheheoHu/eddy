@@ -79,6 +79,25 @@ fn wikipedia_style_mathml_survives_readability() {
 }
 
 #[test]
+fn mathjax_v2_rendered_output_is_not_duplicated() {
+    let filler: String = (0..10).map(|i| format!("<p>Filler paragraph {i} with enough words to look like an article body for scoring purposes.</p>")).collect();
+    let page = format!(
+        r#"<html><head><title>T</title></head><body><article>{filler}
+        <p>Reflectance <span class="MathJax_Preview"></span><span class="mjx-chtml MathJax_CHTML" id="MathJax-Element-1-Frame"><span class="mjx-mi">R</span></span><script type="math/tex" id="MathJax-Element-1">R</script> scatters.</p>
+        </article></body></html>"#
+    );
+    let out = extract(&page, "https://raytracing.example/book.html", None).unwrap();
+    let doc = html_to_document(&out.content_html, &ConvertOptions::default());
+    assert!(
+        doc.blocks
+            .iter()
+            .any(|b| b.plain_text() == "Reflectance $R$ scatters."),
+        "{:?}",
+        doc.plain_text()
+    );
+}
+
+#[test]
 fn titles_drop_site_names() {
     let body: String = (0..12).map(|i| format!("<p>Ownership paragraph {i} explains moves, borrows and lifetimes in enough words to count.</p>")).collect();
     let page = format!(

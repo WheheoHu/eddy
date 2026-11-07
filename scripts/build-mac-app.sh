@@ -2,7 +2,6 @@
 # Builds the Rust core, regenerates the Xcode project and builds Eddy.app.
 #
 # Usage: scripts/build-mac-app.sh [debug|release]
-# SCHEME=UXDemo scripts/build-mac-app.sh builds the UX demo instead.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

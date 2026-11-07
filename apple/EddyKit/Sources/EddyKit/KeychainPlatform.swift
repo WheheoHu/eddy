@@ -58,7 +58,13 @@ public final class KeychainPlatform: PlatformServices, @unchecked Sendable {
 
 public enum EddyPaths {
     /// `~/Library/Application Support/Eddy`, created on first use.
+    /// Development builds can point elsewhere with `EDDY_DATA_DIR`.
     public static var dataDirectory: URL {
+        if let override = ProcessInfo.processInfo.environment["EDDY_DATA_DIR"], !override.isEmpty {
+            let dir = URL(fileURLWithPath: override, isDirectory: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            return dir
+        }
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let dir = base.appendingPathComponent("Eddy", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

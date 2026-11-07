@@ -61,6 +61,15 @@ pub struct RefreshSummary {
     pub new_item_ids: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceStats {
+    pub source_id: String,
+    pub total: u32,
+    pub unread: u32,
+    pub latest_published_at: Option<i64>,
+    pub last_read_at: Option<i64>,
+}
+
 #[derive(Clone, Debug)]
 pub struct SourceInfo {
     pub source: Source,
@@ -274,6 +283,25 @@ impl Engine {
                 unread: counts.get(&s.id).copied().unwrap_or(0),
                 source: s,
             })
+            .collect())
+    }
+
+    /// Per-source totals for library views.
+    pub fn source_overview(&self) -> Result<Vec<SourceStats>> {
+        Ok(self
+            .inner
+            .store
+            .source_overview()?
+            .into_iter()
+            .map(
+                |(source_id, total, unread, latest_published_at, last_read_at)| SourceStats {
+                    source_id,
+                    total,
+                    unread,
+                    latest_published_at,
+                    last_read_at,
+                },
+            )
             .collect())
     }
 
