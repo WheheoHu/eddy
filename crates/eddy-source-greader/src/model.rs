@@ -138,8 +138,16 @@ pub(crate) struct RawItemRef {
 impl From<RawSubscription> for Subscription {
     fn from(s: RawSubscription) -> Self {
         Subscription {
-            title: if s.title.trim().is_empty() { "未命名订阅".into() } else { s.title },
-            category: s.categories.into_iter().find_map(|c| c.label).filter(|l| !l.is_empty()),
+            title: if s.title.trim().is_empty() {
+                "未命名订阅".into()
+            } else {
+                s.title
+            },
+            category: s
+                .categories
+                .into_iter()
+                .find_map(|c| c.label)
+                .filter(|l| !l.is_empty()),
             site_url: s.html_url.filter(|u| !u.is_empty()),
             feed_url: s.url.filter(|u| !u.is_empty()),
             id: s.id,
@@ -164,13 +172,25 @@ impl RawItem {
             .chain(self.canonical)
             .find_map(|l| l.href)
             .filter(|h| !h.is_empty());
-        let html = self.content.and_then(|c| c.content).or_else(|| self.summary.and_then(|c| c.content)).unwrap_or_default();
+        let html = self
+            .content
+            .and_then(|c| c.content)
+            .or_else(|| self.summary.and_then(|c| c.content))
+            .unwrap_or_default();
         let origin = self.origin;
         Some(UpstreamItem {
             id,
-            feed_id: origin.as_ref().and_then(|o| o.stream_id.clone()).unwrap_or_default(),
-            feed_title: origin.and_then(|o| o.title).unwrap_or_else(|| "未命名订阅".into()),
-            title: self.title.filter(|t| !t.trim().is_empty()).unwrap_or_else(|| "无标题".into()),
+            feed_id: origin
+                .as_ref()
+                .and_then(|o| o.stream_id.clone())
+                .unwrap_or_default(),
+            feed_title: origin
+                .and_then(|o| o.title)
+                .unwrap_or_else(|| "未命名订阅".into()),
+            title: self
+                .title
+                .filter(|t| !t.trim().is_empty())
+                .unwrap_or_else(|| "无标题".into()),
             url,
             author: self.author.filter(|a| !a.is_empty()),
             published_ms,

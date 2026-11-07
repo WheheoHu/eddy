@@ -13,6 +13,7 @@ eddy-extract = { path = "../eddy-extract" }
 eddy-fetch = { path = "../eddy-fetch" }
 eddy-model = { workspace = true }
 eddy-search = { path = "../eddy-search" }
+eddy-sync = { path = "../eddy-sync" }
 eddy-source-greader = { workspace = true }
 eddy-store = { workspace = true }
 futures = { workspace = true }

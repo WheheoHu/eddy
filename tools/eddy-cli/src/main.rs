@@ -1,6 +1,6 @@
 //! Headless developer tool around the engine. Uses its own data directory
-//! (default `./build/cli-data`) and an in-memory keychain, so it never touches
-//! the app's data or secrets.
+//! (default `./build/cli-data`) with a plain-file keychain inside it, so it
+//! never touches the app's data or the system keychain.
 //!
 //! eddy-cli [--data DIR] save URL
 //! eddy-cli [--data DIR] items
@@ -10,8 +10,54 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use eddy_core::{Engine, EngineOptions, ItemQuery, MemoryPlatform};
+use eddy_core::{Engine, EngineOptions, ItemQuery, Platform};
 use eddy_model::{BlockKind, Document};
+
+/// Development-only keychain: secrets in `cli-secrets.json` (mode 0600)
+/// inside the CLI's own data directory.
+struct FileSecrets(PathBuf);
+
+impl FileSecrets {
+    fn load(&self) -> std::collections::HashMap<String, String> {
+        std::fs::read(&self.0)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
+    }
+
+    fn save(&self, map: &std::collections::HashMap<String, String>) -> bool {
+        use std::os::unix::fs::OpenOptionsExt;
+        let Ok(bytes) = serde_json::to_vec(map) else {
+            return false;
+        };
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&self.0)
+            .and_then(|mut f| std::io::Write::write_all(&mut f, &bytes))
+            .is_ok()
+    }
+}
+
+impl Platform for FileSecrets {
+    fn secret_get(&self, key: &str) -> Option<String> {
+        self.load().get(key).cloned()
+    }
+
+    fn secret_set(&self, key: &str, value: &str) -> bool {
+        let mut map = self.load();
+        map.insert(key.into(), value.into());
+        self.save(&map)
+    }
+
+    fn secret_delete(&self, key: &str) {
+        let mut map = self.load();
+        map.remove(key);
+        self.save(&map);
+    }
+}
 
 fn summarize(doc: &Document) {
     let mut counts = std::collections::BTreeMap::new();
@@ -19,13 +65,25 @@ fn summarize(doc: &Document) {
         *counts.entry(b.kind.tag()).or_insert(0) += 1;
     }
     println!("blocks: {counts:?}, text_len: {}", doc.text_len());
-    for b in doc.blocks.iter().filter(|b| matches!(b.kind, BlockKind::Math { .. })).take(3) {
+    for b in doc
+        .blocks
+        .iter()
+        .filter(|b| matches!(b.kind, BlockKind::Math { .. }))
+        .take(3)
+    {
         println!("  math block: {}", b.plain_text());
     }
     let inline: Vec<_> = doc
         .blocks
         .iter()
-        .flat_map(|b| b.kind.runs().unwrap_or(&[]).iter().filter(|r| r.math).map(|r| r.text.clone()))
+        .flat_map(|b| {
+            b.kind
+                .runs()
+                .unwrap_or(&[])
+                .iter()
+                .filter(|r| r.math)
+                .map(|r| r.text.clone())
+        })
         .take(3)
         .collect();
     if !inline.is_empty() {
@@ -42,8 +100,15 @@ async fn main() {
         data = PathBuf::from(args.remove(1));
         args.remove(0);
     }
-    let engine = Engine::open(&data, Arc::new(MemoryPlatform::default()), EngineOptions::default()).expect("open engine");
-    let result = match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+    std::fs::create_dir_all(&data).expect("data dir");
+    let secrets = Arc::new(FileSecrets(data.join("cli-secrets.json")));
+    let engine = Engine::open(&data, secrets, EngineOptions::default()).expect("open engine");
+    let result = match args
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
         ["save", url] => engine.save_url(url).await.map(|row| {
             println!("saved {} — {}", row.item.id, row.item.title);
         }),
@@ -56,9 +121,31 @@ async fn main() {
             Some(d) => summarize(&d.document),
             None => println!("no content"),
         }),
-        ["fulltext", id] => engine.fetch_full_text(id).await.map(|d| summarize(&d.document)),
+        ["fulltext", id] => engine
+            .fetch_full_text(id)
+            .await
+            .map(|d| summarize(&d.document)),
+        ["connect", url, code] => engine.connect_server(url, code, "eddy-cli").await.map(|s| {
+            println!(
+                "connected to {} (server {}), cursor {}",
+                s.url, s.server_id, s.cursor
+            );
+        }),
+        ["sync"] => engine.refresh().await.map(|s| {
+            println!(
+                "new items {}, state changes {}",
+                s.new_items, s.state_changes
+            )
+        }),
+        ["search", query] => engine.search_all(query, 10).await.map(|hits| {
+            for h in hits {
+                println!("{}  {}  …{}…", h.item.item.id, h.item.item.title, h.snippet);
+            }
+        }),
         _ => {
-            eprintln!("usage: eddy-cli [--data DIR] save URL | items | doc ID | fulltext ID");
+            eprintln!(
+                "usage: eddy-cli [--data DIR] save URL | items | doc ID | fulltext ID | connect URL CODE | sync | search QUERY"
+            );
             std::process::exit(2);
         }
     };

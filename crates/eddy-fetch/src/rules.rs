@@ -35,7 +35,8 @@ pub struct RulePack {
 
 impl RulePack {
     pub fn parse_toml(text: &str) -> Result<RulePack, FetchError> {
-        let mut pack: RulePack = toml::from_str(text).map_err(|e| FetchError::Rules(e.to_string()))?;
+        let mut pack: RulePack =
+            toml::from_str(text).map_err(|e| FetchError::Rules(e.to_string()))?;
         for site in &mut pack.sites {
             site.body = site.body.iter().filter_map(|s| to_css(s)).collect();
             site.strip = site.strip.iter().filter_map(|s| to_css(s)).collect();
@@ -64,10 +65,10 @@ impl RulePack {
                 } else {
                     (host == d.trim_start_matches("www.")).then_some(d.len() + 1000)
                 };
-                if let Some(score) = score {
-                    if best.is_none_or(|b| score > b.0) {
-                        best = Some((score, site));
-                    }
+                if let Some(score) = score
+                    && best.is_none_or(|b| score > b.0)
+                {
+                    best = Some((score, site));
                 }
             }
         }
@@ -78,20 +79,28 @@ impl RulePack {
 /// Parses a Full-Text RSS (ftr-site-config) file for `domain`. File names
 /// starting with a dot apply to all subdomains, as in ftr.
 pub fn parse_ftr(domain: &str, text: &str) -> SiteRule {
-    let mut rule = SiteRule { domains: vec![domain.to_string()], ..Default::default() };
+    let mut rule = SiteRule {
+        domains: vec![domain.to_string()],
+        ..Default::default()
+    };
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let Some((key, value)) = line.split_once(':') else { continue };
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
         let (key, value) = (key.trim().to_lowercase(), value.trim().to_string());
         match key.as_str() {
             "body" => rule.body.extend(to_css(&value)),
             "strip" => rule.strip.extend(to_css(&value)),
             "strip_id_or_class" => {
                 let v = value.trim_matches(['"', '\'']);
-                if !v.is_empty() && v.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+                if !v.is_empty()
+                    && v.chars()
+                        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+                {
                     rule.strip.push(format!("[id*=\"{v}\"], [class*=\"{v}\"]"));
                 }
             }
@@ -103,7 +112,8 @@ pub fn parse_ftr(domain: &str, text: &str) -> SiteRule {
             "http_header(cookie)" => {
                 for pair in value.split(';') {
                     if let Some((k, v)) = pair.split_once('=') {
-                        rule.cookies.insert(k.trim().to_string(), v.trim().to_string());
+                        rule.cookies
+                            .insert(k.trim().to_string(), v.trim().to_string());
                     }
                 }
             }
@@ -116,15 +126,18 @@ pub fn parse_ftr(domain: &str, text: &str) -> SiteRule {
     rule
 }
 
-static ATTR_EQ: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"^@([\w:-]+)\s*=\s*['"]([^'"]*)['"]$"#).unwrap());
+static ATTR_EQ: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"^@([\w:-]+)\s*=\s*['"]([^'"]*)['"]$"#).unwrap());
 static CONTAINS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"^contains\(\s*(?:concat\(\s*['"] ['"]\s*,\s*normalize-space\(\s*)?@([\w:-]+)\s*\)?\s*(?:,\s*['"] ['"]\s*\))?\s*,\s*['"]\s*([^'"]*?)\s*['"]\s*\)$"#)
         .unwrap()
 });
-static STARTS_WITH: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"^starts-with\(\s*@([\w:-]+)\s*,\s*['"]([^'"]*)['"]\s*\)$"#).unwrap());
+static STARTS_WITH: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"^starts-with\(\s*@([\w:-]+)\s*,\s*['"]([^'"]*)['"]\s*\)$"#).unwrap()
+});
 static HAS_ATTR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^@([\w:-]+)$").unwrap());
-static STEP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^([\w*-]+)((?:\[[^\]]+\])*)$").unwrap());
+static STEP: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^([\w*-]+)((?:\[[^\]]+\])*)$").unwrap());
 
 /// Accepts a CSS selector as is, or translates the common XPath subset used
 /// by site rules (`//tag[@attr='v']`, `contains(@class,'x')`, `//a//b`,
@@ -152,11 +165,10 @@ fn xpath_path(path: &str) -> Option<String> {
         let combinator = if let Some(r) = rest.strip_prefix("//") {
             rest = r;
             " "
-        } else if let Some(r) = rest.strip_prefix('/') {
+        } else {
+            let r = rest.strip_prefix('/')?;
             rest = r;
             " > "
-        } else {
-            return None;
         };
         let end = step_end(rest);
         let step = &rest[..end];
@@ -189,7 +201,11 @@ fn step_end(s: &str) -> usize {
 fn xpath_step(step: &str) -> Option<String> {
     let caps = STEP.captures(step)?;
     let tag = &caps[1];
-    let mut css = if tag == "*" { String::new() } else { tag.to_string() };
+    let mut css = if tag == "*" {
+        String::new()
+    } else {
+        tag.to_string()
+    };
     let preds = &caps[2];
     for pred in preds.split(']').filter(|p| !p.is_empty()) {
         let pred = pred.trim_start_matches('[').trim();
@@ -222,6 +238,8 @@ fn xpath_step(step: &str) -> Option<String> {
 }
 
 fn css_ident(v: &str) -> Option<String> {
-    let ok = !v.is_empty() && v.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_');
+    let ok = !v.is_empty()
+        && v.chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_');
     ok.then(|| v.to_string())
 }

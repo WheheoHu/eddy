@@ -2,10 +2,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use eddy_fetch::{Fetcher, WebRenderer};
 use eddy_model::{
     Account, Entity, FullTextMode, HlcClock, Op, Source, SourceKind, fields, ids, now_ms,
 };
-use eddy_fetch::{Fetcher, WebRenderer};
 use eddy_source_greader::{Credentials, GReaderClient, normalize_base};
 use eddy_store::{ItemQuery, ItemRow, Store};
 use parking_lot::RwLock;
@@ -19,11 +19,18 @@ use crate::{EngineError, Result};
 pub struct EngineOptions {
     /// Cache limit used until the user sets one (bytes).
     pub default_cache_limit: u64,
+    /// Running inside eddy-server: everything pulled from FreshRSS is
+    /// published as ops for clients, and client-side processing (full text,
+    /// AI) is off.
+    pub server_role: bool,
 }
 
 impl Default for EngineOptions {
     fn default() -> Self {
-        EngineOptions { default_cache_limit: 2 * 1024 * 1024 * 1024 }
+        EngineOptions {
+            default_cache_limit: 2 * 1024 * 1024 * 1024,
+            server_role: false,
+        }
     }
 }
 
@@ -72,8 +79,10 @@ pub(crate) struct Inner {
     pub options: EngineOptions,
     pub fetcher: RwLock<Arc<Fetcher>>,
     pub web_renderer: RwLock<Option<Arc<dyn WebRenderer>>>,
-    pub progress_throttle: parking_lot::Mutex<std::collections::HashMap<String, (std::time::Instant, f64)>>,
+    pub progress_throttle:
+        parking_lot::Mutex<std::collections::HashMap<String, (std::time::Instant, f64)>>,
     pub search: Option<eddy_search::SearchIndex>,
+    pub live: std::sync::atomic::AtomicBool,
 }
 
 /// Cheap to clone; all clones share one engine.
@@ -83,13 +92,20 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub fn open(data_dir: &Path, platform: Arc<dyn Platform>, options: EngineOptions) -> Result<Engine> {
+    pub fn open(
+        data_dir: &Path,
+        platform: Arc<dyn Platform>,
+        options: EngineOptions,
+    ) -> Result<Engine> {
         let store = Store::open(data_dir)?;
         let device_id = store.device_id()?;
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(15))
-            .user_agent(concat!("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Eddy/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Eddy/",
+                env!("CARGO_PKG_VERSION")
+            ))
             .build()
             .map_err(|e| EngineError::Network(e.to_string()))?;
         let inner = Arc::new(Inner {
@@ -103,11 +119,13 @@ impl Engine {
             data_dir: data_dir.to_path_buf(),
             options,
             fetcher: RwLock::new(Arc::new(
-                Fetcher::new(Default::default(), None).map_err(|e| EngineError::Network(e.to_string()))?,
+                Fetcher::new(Default::default(), None)
+                    .map_err(|e| EngineError::Network(e.to_string()))?,
             )),
             web_renderer: RwLock::new(None),
             progress_throttle: parking_lot::Mutex::new(Default::default()),
             search: eddy_search::SearchIndex::open(&data_dir.join("index")).ok(),
+            live: std::sync::atomic::AtomicBool::new(false),
         });
         inner.rebuild_fetcher()?;
         inner.store.upsert_source(&Source {
@@ -121,7 +139,9 @@ impl Engine {
             full_text: FullTextMode::Never,
             truncated: false,
         })?;
-        inner.restore_upstream()?;
+        if !inner.restore_hub()? {
+            inner.restore_upstream()?;
+        }
         Ok(Engine { inner })
     }
 
@@ -140,16 +160,28 @@ impl Engine {
         Ok(EngineStatus {
             mode,
             account,
-            last_refresh: inner.store.meta_get("last_refresh")?.and_then(|v| v.parse().ok()),
+            last_refresh: inner
+                .store
+                .meta_get("last_refresh")?
+                .and_then(|v| v.parse().ok()),
             last_error: inner.store.meta_get("last_error")?,
         })
     }
 
     /// Verifies the FreshRSS credentials, stores the password in the platform
     /// keychain and switches to standalone mode.
-    pub async fn configure_freshrss(&self, url: &str, username: &str, password: &str) -> Result<Account> {
+    pub async fn configure_freshrss(
+        &self,
+        url: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<Account> {
         let base = normalize_base(url)?;
-        let client = GReaderClient::new(Credentials { base_url: base.clone(), username: username.into(), password: password.into() })?;
+        let client = GReaderClient::new(Credentials {
+            base_url: base.clone(),
+            username: username.into(),
+            password: password.into(),
+        })?;
         client.login().await?;
         client.subscriptions().await?;
         let account = Account {
@@ -159,23 +191,34 @@ impl Engine {
             username: username.trim().to_string(),
             created_at: now_ms(),
         };
-        if !self.inner.platform.secret_set(&account_secret_key(&account.id), password) {
+        if !self
+            .inner
+            .platform
+            .secret_set(&account_secret_key(&account.id), password)
+        {
             return Err(EngineError::Invalid("无法把密码保存到钥匙串。".into()));
         }
         for old in self.inner.store.accounts()? {
             if old.id != account.id {
-                self.inner.platform.secret_delete(&account_secret_key(&old.id));
+                self.inner
+                    .platform
+                    .secret_delete(&account_secret_key(&old.id));
                 self.inner.store.delete_account(&old.id)?;
             }
         }
         self.inner.store.upsert_account(&account)?;
-        self.inner.set_direct(DirectUpstream { account: account.clone(), client });
+        self.inner.set_direct(DirectUpstream {
+            account: account.clone(),
+            client,
+        });
         Ok(account)
     }
 
     pub fn remove_account(&self) -> Result<()> {
         for account in self.inner.store.accounts()? {
-            self.inner.platform.secret_delete(&account_secret_key(&account.id));
+            self.inner
+                .platform
+                .secret_delete(&account_secret_key(&account.id));
             self.inner.store.delete_account(&account.id)?;
         }
         *self.inner.direct.write() = None;
@@ -187,34 +230,50 @@ impl Engine {
     pub async fn refresh(&self) -> Result<RefreshSummary> {
         let inner = &self.inner;
         let _guard = inner.refresh_lock.lock().await;
-        let upstream = inner.upstream.read().clone().ok_or(EngineError::NotConfigured)?;
+        let upstream = inner
+            .upstream
+            .read()
+            .clone()
+            .ok_or(EngineError::NotConfigured)?;
         let result = upstream.sync(inner).await;
         match &result {
             Ok(summary) => {
-                inner.store.meta_set("last_refresh", &now_ms().to_string())?;
+                inner
+                    .store
+                    .meta_set("last_refresh", &now_ms().to_string())?;
                 inner.store.meta_delete("last_error")?;
-                inner.auto_process(summary.new_item_ids.clone());
+                if !inner.options.server_role {
+                    inner.auto_process(summary.new_item_ids.clone());
+                }
             }
             Err(e) => {
                 inner.store.meta_set("last_error", &e.to_string())?;
-                inner.platform.log(LogLevel::Warn, &format!("refresh failed: {e}"));
+                inner
+                    .platform
+                    .log(LogLevel::Warn, &format!("refresh failed: {e}"));
             }
         }
         if let Err(e) = inner.store.evict(self.cache_limit()?) {
-            inner.platform.log(LogLevel::Warn, &format!("cache eviction failed: {e}"));
+            inner
+                .platform
+                .log(LogLevel::Warn, &format!("cache eviction failed: {e}"));
         }
         inner.commit_index();
         result
     }
 
     pub fn sources(&self) -> Result<Vec<SourceInfo>> {
-        let counts: std::collections::HashMap<String, u32> = self.inner.store.unread_counts()?.into_iter().collect();
+        let counts: std::collections::HashMap<String, u32> =
+            self.inner.store.unread_counts()?.into_iter().collect();
         Ok(self
             .inner
             .store
             .sources()?
             .into_iter()
-            .map(|s| SourceInfo { unread: counts.get(&s.id).copied().unwrap_or(0), source: s })
+            .map(|s| SourceInfo {
+                unread: counts.get(&s.id).copied().unwrap_or(0),
+                source: s,
+            })
             .collect())
     }
 
@@ -231,15 +290,24 @@ impl Engine {
         if let Some(doc) = self.inner.current_document(item_id)? {
             return Ok(Some(doc));
         }
+        if self.fetch_missing_blobs(item_id).await?
+            && let Some(doc) = self.inner.current_document(item_id)?
+        {
+            return Ok(Some(doc));
+        }
         if self.inner.ensure_page_content(item_id).await? {
             return self.inner.current_document(item_id);
         }
-        let row = self.inner.store.item(item_id)?.ok_or(EngineError::NotFound)?;
+        let row = self
+            .inner
+            .store
+            .item(item_id)?
+            .ok_or(EngineError::NotFound)?;
         let direct = self.inner.direct.read().clone();
-        if let (Some(direct), Some(up)) = (direct, row.item.upstream_id.as_deref()) {
-            if direct.refetch(&self.inner, item_id, up).await? {
-                return self.inner.current_document(item_id);
-            }
+        if let (Some(direct), Some(up)) = (direct, row.item.upstream_id.as_deref())
+            && direct.refetch(&self.inner, item_id, up).await?
+        {
+            return self.inner.current_document(item_id);
         }
         Ok(None)
     }
@@ -253,13 +321,27 @@ impl Engine {
     }
 
     async fn set_item_flag(&self, item_id: &str, field: &str, value: bool) -> Result<()> {
-        let row = self.inner.store.item(item_id)?.ok_or(EngineError::NotFound)?;
-        let current = if field == fields::READ { row.item.read } else { row.item.starred };
+        let row = self
+            .inner
+            .store
+            .item(item_id)?
+            .ok_or(EngineError::NotFound)?;
+        let current = if field == fields::READ {
+            row.item.read
+        } else {
+            row.item.starred
+        };
         if current == value {
             return Ok(());
         }
         let upstream_pending = row.item.upstream_id.is_some();
-        self.inner.record(Entity::Item, item_id, field, serde_json::Value::Bool(value), upstream_pending)?;
+        self.inner.record(
+            Entity::Item,
+            item_id,
+            field,
+            serde_json::Value::Bool(value),
+            upstream_pending,
+        )?;
         self.inner.push_in_background();
         Ok(())
     }
@@ -279,7 +361,9 @@ impl Engine {
     }
 
     pub fn set_cache_limit(&self, bytes: u64) -> Result<()> {
-        self.inner.store.meta_set("cache_limit", &bytes.to_string())?;
+        self.inner
+            .store
+            .meta_set("cache_limit", &bytes.to_string())?;
         self.inner.store.evict(bytes)?;
         Ok(())
     }
@@ -289,21 +373,31 @@ impl Engine {
     }
 
     pub fn set_source_full_text(&self, source_id: &str, mode: FullTextMode) -> Result<()> {
-        self.inner.record(Entity::Source, source_id, fields::FULL_TEXT, mode.as_str().into(), false)
+        self.inner.record(
+            Entity::Source,
+            source_id,
+            fields::FULL_TEXT,
+            mode.as_str().into(),
+            false,
+        )
     }
 }
 
 impl Inner {
     fn restore_upstream(&self) -> Result<()> {
-        if let Some(account) = self.store.accounts()?.into_iter().find(|a| a.kind == "greader") {
-            if let Some(password) = self.platform.secret_get(&account_secret_key(&account.id)) {
-                let client = GReaderClient::new(Credentials {
-                    base_url: account.base_url.clone(),
-                    username: account.username.clone(),
-                    password,
-                })?;
-                self.set_direct(DirectUpstream { account, client });
-            }
+        if let Some(account) = self
+            .store
+            .accounts()?
+            .into_iter()
+            .find(|a| a.kind == "greader")
+            && let Some(password) = self.platform.secret_get(&account_secret_key(&account.id))
+        {
+            let client = GReaderClient::new(Credentials {
+                base_url: account.base_url.clone(),
+                username: account.username.clone(),
+                password,
+            })?;
+            self.set_direct(DirectUpstream { account, client });
         }
         Ok(())
     }
@@ -312,6 +406,21 @@ impl Inner {
         let direct = Arc::new(direct);
         *self.direct.write() = Some(direct.clone());
         *self.upstream.write() = Some(direct);
+    }
+
+    /// On a server, records an op so clients receive a change that was
+    /// applied directly (items and sources from FreshRSS). No-op on clients.
+    pub(crate) fn publish(
+        &self,
+        entity: Entity,
+        entity_id: &str,
+        field: &str,
+        value: serde_json::Value,
+    ) -> Result<()> {
+        if self.options.server_role {
+            self.record(entity, entity_id, field, value, false)?;
+        }
+        Ok(())
     }
 
     /// Records a local change as an op and applies it.
@@ -331,17 +440,25 @@ impl Inner {
             field: field.to_string(),
             value,
         };
-        let direct = self.upstream.read().as_ref().is_some_and(|u| u.kind() == "direct");
+        let direct = self
+            .upstream
+            .read()
+            .as_ref()
+            .is_some_and(|u| u.kind() == "direct");
         self.store.record_local(&op, upstream_pending && direct)?;
         Ok(())
     }
 
     pub(crate) fn push_in_background(self: &Arc<Self>) {
-        let Some(upstream) = self.upstream.read().clone() else { return };
+        let Some(upstream) = self.upstream.read().clone() else {
+            return;
+        };
         let inner = self.clone();
         tokio::spawn(async move {
             if let Err(e) = upstream.push(&inner).await {
-                inner.platform.log(LogLevel::Warn, &format!("push failed: {e}"));
+                inner
+                    .platform
+                    .log(LogLevel::Warn, &format!("push failed: {e}"));
             }
         });
     }

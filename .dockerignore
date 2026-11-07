@@ -1,0 +1,9 @@
+target
+build
+apple
+extensions
+docs
+deploy/data
+deploy/.env
+.git
+**/.DS_Store

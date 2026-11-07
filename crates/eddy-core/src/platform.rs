@@ -27,7 +27,9 @@ impl Platform for MemoryPlatform {
     }
 
     fn secret_set(&self, key: &str, value: &str) -> bool {
-        self.secrets.lock().insert(key.to_string(), value.to_string());
+        self.secrets
+            .lock()
+            .insert(key.to_string(), value.to_string());
         true
     }
 

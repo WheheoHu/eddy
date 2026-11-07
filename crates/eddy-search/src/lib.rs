@@ -7,7 +7,9 @@ use std::path::Path;
 use parking_lot::Mutex;
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
-use tantivy::schema::{Field, IndexRecordOption, STORED, STRING, Schema, TextFieldIndexing, TextOptions, Value};
+use tantivy::schema::{
+    Field, IndexRecordOption, STORED, STRING, Schema, TextFieldIndexing, TextOptions, Value,
+};
 use tantivy::snippet::SnippetGenerator;
 use tantivy::tokenizer::{LowerCaser, TextAnalyzer};
 use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term, doc};
@@ -64,7 +66,11 @@ pub struct SearchIndex {
 fn schema() -> (Schema, Fields) {
     let mut b = Schema::builder();
     let text = TextOptions::default()
-        .set_indexing_options(TextFieldIndexing::default().set_tokenizer(TOKENIZER).set_index_option(IndexRecordOption::WithFreqsAndPositions))
+        .set_indexing_options(
+            TextFieldIndexing::default()
+                .set_tokenizer(TOKENIZER)
+                .set_index_option(IndexRecordOption::WithFreqsAndPositions),
+        )
         .set_stored();
     let fields = Fields {
         item_id: b.add_text_field("item_id", STRING | STORED),
@@ -81,7 +87,8 @@ impl SearchIndex {
     pub fn open(dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(dir).map_err(|e| SearchError::Dir(e.to_string()))?;
         let (schema, fields) = schema();
-        let directory = tantivy::directory::MmapDirectory::open(dir).map_err(|e| SearchError::Dir(e.to_string()))?;
+        let directory = tantivy::directory::MmapDirectory::open(dir)
+            .map_err(|e| SearchError::Dir(e.to_string()))?;
         let index = Index::open_or_create(directory, schema)?;
         Self::with_index(index, fields)
     }
@@ -92,11 +99,22 @@ impl SearchIndex {
     }
 
     fn with_index(index: Index, fields: Fields) -> Result<Self> {
-        let analyzer = TextAnalyzer::builder(tantivy_jieba::JiebaTokenizer::new()).filter(LowerCaser).build();
+        let analyzer = TextAnalyzer::builder(tantivy_jieba::JiebaTokenizer::new())
+            .filter(LowerCaser)
+            .build();
         index.tokenizers().register(TOKENIZER, analyzer);
-        let reader = index.reader_builder().reload_policy(ReloadPolicy::Manual).try_into()?;
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()?;
         let writer = index.writer(WRITER_HEAP)?;
-        Ok(SearchIndex { index, reader, writer: Mutex::new(writer), fields, dirty: Mutex::new(false) })
+        Ok(SearchIndex {
+            index,
+            reader,
+            writer: Mutex::new(writer),
+            fields,
+            dirty: Mutex::new(false),
+        })
     }
 
     /// Adds or replaces an item. Visible to searches after the next commit
@@ -118,7 +136,9 @@ impl SearchIndex {
     }
 
     pub fn delete(&self, item_id: &str) -> Result<()> {
-        self.writer.lock().delete_term(Term::from_field_text(self.fields.item_id, item_id));
+        self.writer
+            .lock()
+            .delete_term(Term::from_field_text(self.fields.item_id, item_id));
         *self.dirty.lock() = true;
         Ok(())
     }
@@ -168,10 +188,20 @@ impl SearchIndex {
         let mut hits = Vec::new();
         for (score, address) in top {
             let doc: TantivyDocument = searcher.doc(address)?;
-            let Some(item_id) = doc.get_first(f.item_id).and_then(|v| v.as_str()).map(str::to_string) else { continue };
+            let Some(item_id) = doc
+                .get_first(f.item_id)
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+            else {
+                continue;
+            };
             let snippet = snippets.snippet_from_doc(&doc);
             let fragment = snippet.fragment().to_string();
-            let mut ranges: Vec<(usize, usize)> = snippet.highlighted().iter().map(|r| (r.start, r.end)).collect();
+            let mut ranges: Vec<(usize, usize)> = snippet
+                .highlighted()
+                .iter()
+                .map(|r| (r.start, r.end))
+                .collect();
             ranges.sort_unstable();
             // Search-mode segmentation yields overlapping sub-words; merge them.
             let mut merged: Vec<(usize, usize)> = Vec::new();
@@ -181,8 +211,16 @@ impl SearchIndex {
                     _ => merged.push((s, e)),
                 }
             }
-            let highlights = merged.into_iter().map(|(s, e)| (utf16_at(&fragment, s), utf16_at(&fragment, e))).collect();
-            hits.push(Hit { item_id, score, snippet: fragment, highlights });
+            let highlights = merged
+                .into_iter()
+                .map(|(s, e)| (utf16_at(&fragment, s), utf16_at(&fragment, e)))
+                .collect();
+            hits.push(Hit {
+                item_id,
+                score,
+                snippet: fragment,
+                highlights,
+            });
         }
         Ok(hits)
     }
@@ -197,23 +235,49 @@ mod tests {
     use super::*;
 
     fn doc(id: &str, title: &str, body: &str) -> IndexDoc {
-        IndexDoc { item_id: id.into(), title: title.into(), body: body.into(), source: "Blog".into(), published_at: 0 }
+        IndexDoc {
+            item_id: id.into(),
+            title: title.into(),
+            body: body.into(),
+            source: "Blog".into(),
+            published_at: 0,
+        }
     }
 
     #[test]
     fn chinese_and_english_search_with_snippets() {
         let dir = tempfile::tempdir().unwrap();
         let index = SearchIndex::open(dir.path()).unwrap();
-        index.upsert(&doc("a", "路径追踪入门", "路径追踪是一种基于蒙特卡洛积分的渲染算法，通过重要性采样降低方差。")).unwrap();
-        index.upsert(&doc("b", "Rust ownership", "Ownership and borrowing in Rust explained with examples.")).unwrap();
-        index.upsert(&doc("c", "Cooking", "A recipe for dumplings.")).unwrap();
+        index
+            .upsert(&doc(
+                "a",
+                "路径追踪入门",
+                "路径追踪是一种基于蒙特卡洛积分的渲染算法，通过重要性采样降低方差。",
+            ))
+            .unwrap();
+        index
+            .upsert(&doc(
+                "b",
+                "Rust ownership",
+                "Ownership and borrowing in Rust explained with examples.",
+            ))
+            .unwrap();
+        index
+            .upsert(&doc("c", "Cooking", "A recipe for dumplings."))
+            .unwrap();
 
         let hits = index.search("蒙特卡洛", 10).unwrap();
-        assert_eq!(hits.iter().map(|h| h.item_id.as_str()).collect::<Vec<_>>(), ["a"]);
+        assert_eq!(
+            hits.iter().map(|h| h.item_id.as_str()).collect::<Vec<_>>(),
+            ["a"]
+        );
         assert!(hits[0].snippet.contains("蒙特卡洛"));
         let (s, e) = hits[0].highlights[0];
         let units: Vec<u16> = hits[0].snippet.encode_utf16().collect();
-        assert_eq!(String::from_utf16(&units[s as usize..e as usize]).unwrap(), "蒙特卡洛");
+        assert_eq!(
+            String::from_utf16(&units[s as usize..e as usize]).unwrap(),
+            "蒙特卡洛"
+        );
 
         assert_eq!(index.search("渲染 算法", 10).unwrap()[0].item_id, "a");
         assert_eq!(index.search("BORROWING", 10).unwrap()[0].item_id, "b");
@@ -221,7 +285,9 @@ mod tests {
         assert!(index.search("nothing-matches-this", 10).unwrap().is_empty());
 
         // Upsert replaces, delete removes, data survives reopening.
-        index.upsert(&doc("c", "Cooking", "A recipe for noodles.")).unwrap();
+        index
+            .upsert(&doc("c", "Cooking", "A recipe for noodles."))
+            .unwrap();
         assert!(index.search("dumplings", 10).unwrap().is_empty());
         index.delete("b").unwrap();
         assert_eq!(index.len().unwrap(), 2);
@@ -233,8 +299,16 @@ mod tests {
     #[test]
     fn title_matches_rank_above_body_matches() {
         let index = SearchIndex::in_memory().unwrap();
-        index.upsert(&doc("body", "Notes", "a long article that mentions denoising once")).unwrap();
-        index.upsert(&doc("title", "Denoising", "about filters")).unwrap();
+        index
+            .upsert(&doc(
+                "body",
+                "Notes",
+                "a long article that mentions denoising once",
+            ))
+            .unwrap();
+        index
+            .upsert(&doc("title", "Denoising", "about filters"))
+            .unwrap();
         let hits = index.search("denoising", 10).unwrap();
         assert_eq!(hits[0].item_id, "title");
     }

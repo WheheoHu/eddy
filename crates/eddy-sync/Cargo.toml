@@ -1,0 +1,17 @@
+[package]
+name = "eddy-sync"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+eddy-model = { workspace = true }
+futures = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
+url = { workspace = true }

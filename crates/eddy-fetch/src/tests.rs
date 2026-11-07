@@ -6,15 +6,30 @@ use super::*;
 #[test]
 fn xpath_subset_translates_to_css() {
     assert_eq!(to_css("article .body").unwrap(), "article .body");
-    assert_eq!(to_css("//div[@id='content']").unwrap(), "div[id=\"content\"]");
-    assert_eq!(to_css("//div[contains(@class, 'post-body')]").unwrap(), "div.post-body");
+    assert_eq!(
+        to_css("//div[@id='content']").unwrap(),
+        "div[id=\"content\"]"
+    );
+    assert_eq!(
+        to_css("//div[contains(@class, 'post-body')]").unwrap(),
+        "div.post-body"
+    );
     assert_eq!(
         to_css("//div[contains(concat(' ',normalize-space(@class),' '),' entry ')]").unwrap(),
         "div.entry"
     );
-    assert_eq!(to_css("//article//p | //aside").unwrap(), "article p, aside");
-    assert_eq!(to_css("//div[@class='a']/span[2]").unwrap(), "div[class=\"a\"] > span:nth-of-type(2)");
-    assert_eq!(to_css("//*[@itemprop='articleBody']").unwrap(), "[itemprop=\"articleBody\"]");
+    assert_eq!(
+        to_css("//article//p | //aside").unwrap(),
+        "article p, aside"
+    );
+    assert_eq!(
+        to_css("//div[@class='a']/span[2]").unwrap(),
+        "div[class=\"a\"] > span:nth-of-type(2)"
+    );
+    assert_eq!(
+        to_css("//*[@itemprop='articleBody']").unwrap(),
+        "[itemprop=\"articleBody\"]"
+    );
     assert!(to_css("//div[text()='x']").is_none());
 }
 
@@ -37,8 +52,14 @@ fn rule_packs_parse_and_match_most_specific_domain() {
     )
     .unwrap();
     assert_eq!(pack.sites[0].body, ["div[id=\"a\"]"]);
-    assert_eq!(pack.rule_for("www.news.example.com").unwrap().strategies, ["headers"]);
-    assert_eq!(pack.rule_for("blog.example.com").unwrap().strategies, ["archive"]);
+    assert_eq!(
+        pack.rule_for("www.news.example.com").unwrap().strategies,
+        ["headers"]
+    );
+    assert_eq!(
+        pack.rule_for("blog.example.com").unwrap().strategies,
+        ["archive"]
+    );
     assert!(pack.rule_for("example.com").is_none());
     assert!(pack.rule_for("notexample.com").is_none());
     assert!(RulePack::parse_toml("site = 3").is_err());
@@ -59,7 +80,10 @@ fn ftr_files_parse_supported_directives() {
 }
 
 fn long_page() -> String {
-    format!("<html><body><article>{}</article></body></html>", "<p>Long enough paragraph of text.</p>".repeat(40))
+    format!(
+        "<html><body><article>{}</article></body></html>",
+        "<p>Long enough paragraph of text.</p>".repeat(40)
+    )
 }
 
 #[tokio::test]
@@ -68,13 +92,21 @@ async fn falls_through_strategies_until_accepted() {
     Mock::given(method("GET"))
         .and(path("/story"))
         .and(header("referer", "https://ref.example/"))
-        .respond_with(ResponseTemplate::new(200).insert_header("content-type", "text/html; charset=utf-8").set_body_string(long_page()))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/html; charset=utf-8")
+                .set_body_string(long_page()),
+        )
         .with_priority(1)
         .mount(&server)
         .await;
     Mock::given(method("GET"))
         .and(path("/story"))
-        .respond_with(ResponseTemplate::new(200).insert_header("content-type", "text/html").set_body_string("<p>Subscribe to read</p>"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/html")
+                .set_body_string("<p>Subscribe to read</p>"),
+        )
         .with_priority(5)
         .mount(&server)
         .await;
@@ -88,12 +120,18 @@ async fn falls_through_strategies_until_accepted() {
         ..Default::default()
     };
     let fetcher = Fetcher::new(pack, None).unwrap();
-    let page = fetcher.fetch(&format!("{}/story", server.uri()), |p| p.html.len() > 500).await.unwrap();
+    let page = fetcher
+        .fetch(&format!("{}/story", server.uri()), |p| p.html.len() > 500)
+        .await
+        .unwrap();
     assert_eq!(page.strategy, "headers");
 
     // Without a rule, the best (only) page is returned even if not accepted.
     let plain = Fetcher::new(RulePack::default(), None).unwrap();
-    let page = plain.fetch(&format!("{}/story", server.uri()), |p| p.html.len() > 500).await.unwrap();
+    let page = plain
+        .fetch(&format!("{}/story", server.uri()), |p| p.html.len() > 500)
+        .await
+        .unwrap();
     assert_eq!(page.strategy, "direct");
 }
 
@@ -111,10 +149,16 @@ async fn archive_strategy_uses_the_original_snapshot() {
         .await;
     Mock::given(method("GET"))
         .and(path("/web/20240101000000id_/https://paper.example/a"))
-        .respond_with(ResponseTemplate::new(200).insert_header("content-type", "text/html").set_body_string(long_page()))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/html")
+                .set_body_string(long_page()),
+        )
         .mount(&server)
         .await;
-    let fetcher = Fetcher::new(RulePack::default(), None).unwrap().with_archive_base(server.uri());
+    let fetcher = Fetcher::new(RulePack::default(), None)
+        .unwrap()
+        .with_archive_base(server.uri());
     let page = fetcher.archive(&Url::parse(target).unwrap()).await.unwrap();
     assert_eq!(page.strategy, "archive");
     assert_eq!(page.final_url, target);

@@ -6,7 +6,10 @@ const QUOTE_CHARS: usize = 48;
 
 fn weight(block: &Block) -> u32 {
     match block.kind {
-        BlockKind::Image { .. } | BlockKind::Media { .. } | BlockKind::Math { .. } | BlockKind::Rule => 80,
+        BlockKind::Image { .. }
+        | BlockKind::Media { .. }
+        | BlockKind::Math { .. }
+        | BlockKind::Rule => 80,
         _ => utf16_len(&block.layout_text()).max(1),
     }
 }
@@ -21,7 +24,13 @@ pub fn progression_at(doc: &Document, block_id: &str, offset: u32) -> f64 {
     for block in &doc.blocks {
         let w = weight(block) as u64;
         if block.id == block_id {
-            let within = if matches!(block.kind, BlockKind::Image { .. } | BlockKind::Media { .. } | BlockKind::Math { .. } | BlockKind::Rule) {
+            let within = if matches!(
+                block.kind,
+                BlockKind::Image { .. }
+                    | BlockKind::Media { .. }
+                    | BlockKind::Math { .. }
+                    | BlockKind::Rule
+            ) {
                 0
             } else {
                 (offset as u64).min(w)
@@ -46,30 +55,50 @@ fn char_index(text: &str, offset: u32) -> usize {
 }
 
 /// Builds a full locator for a position reported by a renderer.
-pub fn locator_at(doc: &Document, content_hash: &str, block_id: &str, offset: u32) -> Option<Locator> {
+pub fn locator_at(
+    doc: &Document,
+    content_hash: &str,
+    block_id: &str,
+    offset: u32,
+) -> Option<Locator> {
     let idx = doc.blocks.iter().position(|b| b.id == block_id)?;
     let chars: Vec<char> = doc.blocks[idx].layout_text().chars().collect();
     let start = char_index(&chars.iter().collect::<String>(), offset).min(chars.len());
     let exact_end = (start + QUOTE_CHARS).min(chars.len());
     let exact: String = chars[start..exact_end].iter().collect();
 
-    let mut prefix: String = chars[start.saturating_sub(QUOTE_CHARS)..start].iter().collect();
+    let mut prefix: String = chars[start.saturating_sub(QUOTE_CHARS)..start]
+        .iter()
+        .collect();
     if prefix.chars().count() < QUOTE_CHARS && idx > 0 {
         let prev: Vec<char> = doc.blocks[idx - 1].layout_text().chars().collect();
         let need = QUOTE_CHARS - prefix.chars().count();
         let tail: String = prev[prev.len().saturating_sub(need)..].iter().collect();
         prefix = format!("{tail}\n{prefix}");
     }
-    let mut suffix: String = chars[exact_end..(exact_end + QUOTE_CHARS).min(chars.len())].iter().collect();
+    let mut suffix: String = chars[exact_end..(exact_end + QUOTE_CHARS).min(chars.len())]
+        .iter()
+        .collect();
     if suffix.chars().count() < QUOTE_CHARS && idx + 1 < doc.blocks.len() {
-        let next: String = doc.blocks[idx + 1].layout_text().chars().take(QUOTE_CHARS - suffix.chars().count()).collect();
+        let next: String = doc.blocks[idx + 1]
+            .layout_text()
+            .chars()
+            .take(QUOTE_CHARS - suffix.chars().count())
+            .collect();
         suffix = format!("{suffix}\n{next}");
     }
     let clamped = utf16_len(&chars[..start].iter().collect::<String>());
     Some(Locator {
         content_hash: content_hash.to_string(),
-        position: Position::Block { block_id: block_id.to_string(), offset: clamped },
-        quote: TextQuote { exact, prefix, suffix },
+        position: Position::Block {
+            block_id: block_id.to_string(),
+            offset: clamped,
+        },
+        quote: TextQuote {
+            exact,
+            prefix,
+            suffix,
+        },
         progression: progression_at(doc, block_id, clamped),
     })
 }
@@ -81,28 +110,31 @@ pub fn remap_locator(doc: &Document, content_hash: &str, loc: &Locator) -> Locat
     if loc.content_hash == content_hash {
         return loc.clone();
     }
-    if let Position::Block { block_id, offset } = &loc.position {
-        if let Some(block) = doc.block(block_id) {
-            let offset = (*offset).min(utf16_len(&block.layout_text()));
-            if let Some(l) = locator_at(doc, content_hash, block_id, offset) {
-                return l;
-            }
-        }
-    }
-    if let Some((block_id, offset)) = find_quote(doc, &loc.quote) {
-        if let Some(l) = locator_at(doc, content_hash, &block_id, offset) {
+    if let Position::Block { block_id, offset } = &loc.position
+        && let Some(block) = doc.block(block_id)
+    {
+        let offset = (*offset).min(utf16_len(&block.layout_text()));
+        if let Some(l) = locator_at(doc, content_hash, block_id, offset) {
             return l;
         }
     }
-    if let Some(block_id) = fuzzy_block(doc, &loc.quote) {
-        if let Some(l) = locator_at(doc, content_hash, &block_id, 0) {
-            return l;
-        }
+    if let Some((block_id, offset)) = find_quote(doc, &loc.quote)
+        && let Some(l) = locator_at(doc, content_hash, &block_id, offset)
+    {
+        return l;
+    }
+    if let Some(block_id) = fuzzy_block(doc, &loc.quote)
+        && let Some(l) = locator_at(doc, content_hash, &block_id, 0)
+    {
+        return l;
     }
     let block_id = block_at_progression(doc, loc.progression);
     match block_id.and_then(|id| locator_at(doc, content_hash, &id, 0)) {
         Some(l) => l,
-        None => Locator { content_hash: content_hash.to_string(), ..loc.clone() },
+        None => Locator {
+            content_hash: content_hash.to_string(),
+            ..loc.clone()
+        },
     }
 }
 
@@ -137,7 +169,11 @@ fn find_quote(doc: &Document, quote: &TextQuote) -> Option<(String, u32)> {
 }
 
 fn trigrams(s: &str) -> HashSet<[char; 3]> {
-    let chars: Vec<char> = s.chars().filter(|c| !c.is_whitespace()).flat_map(char::to_lowercase).collect();
+    let chars: Vec<char> = s
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect();
     chars.windows(3).map(|w| [w[0], w[1], w[2]]).collect()
 }
 

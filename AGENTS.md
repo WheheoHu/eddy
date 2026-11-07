@@ -8,7 +8,8 @@ Eddy 是本地优先的个人阅读器：Rust 内核（`crates/`）通过 UniFFI
 - Mac 应用：`scripts/build-mac-app.sh`。它先跑 `scripts/build-apple.sh` 生成 XCFramework 和 Swift 绑定，再用 XcodeGen 生成工程并构建。
 - 生成物不进仓库：`apple/Eddy.xcodeproj`、`apple/EddyKit/EddyFFI.xcframework`、`apple/EddyKit/Sources/EddyKit/Generated/`。改了 `eddy-ffi` 的导出接口就重新跑构建脚本。
 - 本机的 `xcode-select` 可能指向命令行工具；`scripts/env.sh` 会自动设置 `DEVELOPER_DIR`，手动调用 `xcodebuild` 时也先 source 它。
-- 服务端：`deploy/compose.yaml`，端口只映射到 `127.0.0.1`。
+- 服务端：`deploy/compose.yaml`，端口只映射到 `127.0.0.1`；部署步骤见 `deploy/README.md`。
+- 不开界面验证真实网络行为（保存网页、连服务端、搜索）用 `tools/eddy-cli`，它的数据和密钥都在 `build/` 下自己的目录里，和应用数据隔离。
 
 ## 数据与安全
 

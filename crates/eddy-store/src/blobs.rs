@@ -7,7 +7,11 @@ use crate::{Result, Store, StoreError};
 
 impl Store {
     fn blob_path(&self, key: &str) -> Result<PathBuf> {
-        if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        if key.is_empty()
+            || !key
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
             return Err(StoreError::Invalid(format!("invalid blob key {key:?}")));
         }
         let shard = &key[key.len().saturating_sub(2)..];
@@ -46,7 +50,10 @@ impl Store {
         match std::fs::read(&path) {
             Ok(bytes) => {
                 self.with(|c| {
-                    c.execute("UPDATE blobs SET last_access=? WHERE key=?", params![now_ms(), key])?;
+                    c.execute(
+                        "UPDATE blobs SET last_access=? WHERE key=?",
+                        params![now_ms(), key],
+                    )?;
                     Ok(())
                 })?;
                 Ok(Some(bytes))
@@ -57,7 +64,13 @@ impl Store {
     }
 
     pub fn blob_mime(&self, key: &str) -> Result<Option<String>> {
-        self.with(|c| Ok(c.query_row("SELECT mime FROM blobs WHERE key=?", [key], |r| r.get(0)).optional()?.flatten()))
+        self.with(|c| {
+            Ok(
+                c.query_row("SELECT mime FROM blobs WHERE key=?", [key], |r| r.get(0))
+                    .optional()?
+                    .flatten(),
+            )
+        })
     }
 
     pub fn has_blob(&self, key: &str) -> Result<bool> {
@@ -66,13 +79,22 @@ impl Store {
 
     pub fn pin_blob(&self, key: &str, pinned: bool) -> Result<()> {
         self.with(|c| {
-            c.execute("UPDATE blobs SET pinned=? WHERE key=?", params![pinned as i64, key])?;
+            c.execute(
+                "UPDATE blobs SET pinned=? WHERE key=?",
+                params![pinned as i64, key],
+            )?;
             Ok(())
         })
     }
 
     pub fn blob_usage(&self) -> Result<u64> {
-        self.with(|c| Ok(c.query_row("SELECT COALESCE(SUM(size),0) FROM blobs", [], |r| r.get::<_, i64>(0))? as u64))
+        self.with(|c| {
+            Ok(
+                c.query_row("SELECT COALESCE(SUM(size),0) FROM blobs", [], |r| {
+                    r.get::<_, i64>(0)
+                })? as u64,
+            )
+        })
     }
 
     /// Deletes least recently used blobs until usage is at most `limit` bytes.
@@ -107,7 +129,10 @@ impl Store {
             }
             self.with(|c| {
                 c.execute("DELETE FROM blobs WHERE key=?", [&key])?;
-                c.execute("UPDATE content_versions SET doc_blob=NULL, doc_schema=NULL WHERE doc_blob=?", [&key])?;
+                c.execute(
+                    "UPDATE content_versions SET doc_blob=NULL, doc_schema=NULL WHERE doc_blob=?",
+                    [&key],
+                )?;
                 Ok(())
             })?;
             usage = usage.saturating_sub(size);

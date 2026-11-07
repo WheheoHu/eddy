@@ -69,21 +69,23 @@ pub enum AutoAction {
 /// name, so `only_foreign` can compare them.
 pub fn lang_code_for(target: &str) -> Option<&'static str> {
     let t = target.to_lowercase();
-    Some(if t.contains("中文") || t.contains("chinese") || t.starts_with("zh") {
-        "cmn"
-    } else if t.contains("english") || t.contains("英") || t == "en" {
-        "eng"
-    } else if t.contains("日本") || t.contains("japanese") || t == "ja" {
-        "jpn"
-    } else if t.contains("한국") || t.contains("korean") || t.contains("韩") || t == "ko" {
-        "kor"
-    } else if t.contains("français") || t.contains("french") || t.contains("法") {
-        "fra"
-    } else if t.contains("deutsch") || t.contains("german") || t.contains("德") {
-        "deu"
-    } else if t.contains("español") || t.contains("spanish") || t.contains("西班牙") {
-        "spa"
-    } else {
-        return None;
-    })
+    Some(
+        if t.contains("中文") || t.contains("chinese") || t.starts_with("zh") {
+            "cmn"
+        } else if t.contains("english") || t.contains("英") || t == "en" {
+            "eng"
+        } else if t.contains("日本") || t.contains("japanese") || t == "ja" {
+            "jpn"
+        } else if t.contains("한국") || t.contains("korean") || t.contains("韩") || t == "ko" {
+            "kor"
+        } else if t.contains("français") || t.contains("french") || t.contains("法") {
+            "fra"
+        } else if t.contains("deutsch") || t.contains("german") || t.contains("德") {
+            "deu"
+        } else if t.contains("español") || t.contains("spanish") || t.contains("西班牙") {
+            "spa"
+        } else {
+            return None;
+        },
+    )
 }

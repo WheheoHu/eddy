@@ -30,7 +30,9 @@ pub fn normalize_tex(tex: &str) -> String {
 fn raw_tex_in(el: ElementRef) -> Option<String> {
     let annotation = el.descendants().filter_map(ElementRef::wrap).find(|e| {
         e.value().name() == "annotation"
-            && e.value().attr("encoding").is_some_and(|enc| enc.eq_ignore_ascii_case("application/x-tex") || enc.eq_ignore_ascii_case("tex"))
+            && e.value().attr("encoding").is_some_and(|enc| {
+                enc.eq_ignore_ascii_case("application/x-tex") || enc.eq_ignore_ascii_case("tex")
+            })
     });
     if let Some(a) = annotation {
         return Some(a.text().collect::<String>().trim().to_string());
@@ -38,12 +40,17 @@ fn raw_tex_in(el: ElementRef) -> Option<String> {
     let math = if el.value().name() == "math" {
         Some(el)
     } else {
-        el.descendants().filter_map(ElementRef::wrap).find(|e| e.value().name() == "math")
+        el.descendants()
+            .filter_map(ElementRef::wrap)
+            .find(|e| e.value().name() == "math")
     };
     if let Some(alt) = math.and_then(|m| m.value().attr("alttext")) {
         return Some(alt.trim().to_string());
     }
-    if let Some(tex) = math.and_then(|m| m.value().attr("data-mw")).and_then(tex_from_data_mw) {
+    if let Some(tex) = math
+        .and_then(|m| m.value().attr("data-mw"))
+        .and_then(tex_from_data_mw)
+    {
         return Some(tex);
     }
     let text = math.unwrap_or(el).text().collect::<String>();
@@ -68,12 +75,27 @@ pub fn split_raw_tex(blocks: Vec<(u8, BlockKind)>) -> Vec<(u8, BlockKind)> {
                 Split::Display(tex) => (depth, BlockKind::Math { tex }),
                 Split::Runs(runs) => (depth, BlockKind::Paragraph { runs }),
             },
-            BlockKind::ListItem { ordered, depth: d, index, marker, runs } => {
+            BlockKind::ListItem {
+                ordered,
+                depth: d,
+                index,
+                marker,
+                runs,
+            } => {
                 let runs = match split_runs(runs) {
                     Split::Display(tex) => vec![Run::math(tex)],
                     Split::Runs(runs) => runs,
                 };
-                (depth, BlockKind::ListItem { ordered, depth: d, index, marker, runs })
+                (
+                    depth,
+                    BlockKind::ListItem {
+                        ordered,
+                        depth: d,
+                        index,
+                        marker,
+                        runs,
+                    },
+                )
             }
             BlockKind::Heading { level, runs } => {
                 let runs = match split_runs(runs) {
@@ -93,7 +115,10 @@ enum Split {
 }
 
 fn split_runs(runs: Vec<Run>) -> Split {
-    if !runs.iter().any(|r| !r.math && r.style & style::CODE == 0 && r.text.contains(['$', '\\'])) {
+    if !runs
+        .iter()
+        .any(|r| !r.math && r.style & style::CODE == 0 && r.text.contains(['$', '\\']))
+    {
         return Split::Runs(runs);
     }
     let mut out = Vec::new();
@@ -105,18 +130,29 @@ fn split_runs(runs: Vec<Run>) -> Split {
         }
         for piece in split_text(&run.text) {
             match piece {
-                Piece::Text(text) => out.push(Run { text, ..run.clone() }),
+                Piece::Text(text) => out.push(Run {
+                    text,
+                    ..run.clone()
+                }),
                 Piece::Math { tex, display } => {
                     if display {
                         displays.push(out.len());
                     }
-                    out.push(Run { text: tex, style: 0, link: run.link.clone(), math: true });
+                    out.push(Run {
+                        text: tex,
+                        style: 0,
+                        link: run.link.clone(),
+                        math: true,
+                    });
                 }
             }
         }
     }
     let only_display = displays.len() == 1
-        && out.iter().enumerate().all(|(i, r)| i == displays[0] || (!r.math && r.text.trim().is_empty()));
+        && out
+            .iter()
+            .enumerate()
+            .all(|(i, r)| i == displays[0] || (!r.math && r.text.trim().is_empty()));
     if only_display {
         return Split::Display(out.swap_remove(displays[0]).text);
     }
@@ -154,7 +190,11 @@ fn split_text(text: &str) -> Vec<Piece> {
 }
 
 fn match_math(s: &str) -> Option<(String, bool, usize)> {
-    for (open, close, display) in [("$$", "$$", true), ("\\[", "\\]", true), ("\\(", "\\)", false)] {
+    for (open, close, display) in [
+        ("$$", "$$", true),
+        ("\\[", "\\]", true),
+        ("\\(", "\\)", false),
+    ] {
         if let Some(body) = s.strip_prefix(open) {
             let end = body.find(close)?;
             let tex = normalize_tex(&body[..end]);
@@ -175,6 +215,8 @@ fn match_math(s: &str) -> Option<(String, bool, usize)> {
         && !tex.ends_with(char::is_whitespace)
         && !after.is_some_and(|c| c.is_ascii_digit())
         && (tex.contains(['\\', '^', '_', '{', '}', '='])
-            || (tex.chars().count() <= 3 && tex.chars().all(|c| c.is_ascii_alphanumeric()) && tex.chars().next().unwrap().is_ascii_alphabetic()));
+            || (tex.chars().count() <= 3
+                && tex.chars().all(|c| c.is_ascii_alphanumeric())
+                && tex.chars().next().unwrap().is_ascii_alphabetic()));
     plausible.then(|| (tex.to_string(), false, 1 + end + 1))
 }

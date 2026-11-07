@@ -14,13 +14,17 @@ pub fn highlight(code: &str, language: &str) -> Vec<HighlightSpan> {
     if code.len() > MAX_HIGHLIGHT_BYTES {
         return Vec::new();
     }
-    let Some(syntax) = find_syntax(language) else { return Vec::new() };
+    let Some(syntax) = find_syntax(language) else {
+        return Vec::new();
+    };
     let mut state = ParseState::new(syntax);
     let mut stack = ScopeStack::new();
     let mut spans: Vec<HighlightSpan> = Vec::new();
     let mut offset = 0u32;
     for line in LinesWithEndings::from(code) {
-        let Ok(ops) = state.parse_line(line, &SYNTAXES) else { return Vec::new() };
+        let Ok(ops) = state.parse_line(line, &SYNTAXES) else {
+            return Vec::new();
+        };
         let mut last = 0usize;
         for (byte, op) in ops {
             if byte > last {
@@ -56,7 +60,9 @@ fn find_syntax(language: &str) -> Option<&'static SyntaxReference> {
         "html" | "xml" | "svg" => "html",
         other => other,
     };
-    SYNTAXES.find_syntax_by_token(alias).or_else(|| SYNTAXES.find_syntax_by_token(&lang))
+    SYNTAXES
+        .find_syntax_by_token(alias)
+        .or_else(|| SYNTAXES.find_syntax_by_token(&lang))
 }
 
 fn emit(spans: &mut Vec<HighlightSpan>, text: &str, class: Option<TokenClass>, start: u32) -> u32 {
@@ -65,11 +71,12 @@ fn emit(spans: &mut Vec<HighlightSpan>, text: &str, class: Option<TokenClass>, s
         if text.trim().is_empty() {
             return end;
         }
-        if let Some(last) = spans.last_mut() {
-            if last.class == class && last.end == start {
-                last.end = end;
-                return end;
-            }
+        if let Some(last) = spans.last_mut()
+            && last.class == class
+            && last.end == start
+        {
+            last.end = end;
+            return end;
         }
         spans.push(HighlightSpan { start, end, class });
     }
@@ -96,9 +103,17 @@ fn class_of(scope: Scope) -> Option<TokenClass> {
         TokenClass::Number
     } else if starts("constant") || starts("support.constant") {
         TokenClass::Constant
-    } else if starts("entity.name.function") || starts("support.function") || starts("meta.function-call") && name.contains("identifier") {
+    } else if starts("entity.name.function")
+        || starts("support.function")
+        || starts("meta.function-call") && name.contains("identifier")
+    {
         TokenClass::Function
-    } else if starts("entity.name.type") || starts("entity.name.class") || starts("support.type") || starts("support.class") || starts("storage.type") {
+    } else if starts("entity.name.type")
+        || starts("entity.name.class")
+        || starts("support.type")
+        || starts("support.class")
+        || starts("storage.type")
+    {
         TokenClass::Type
     } else if starts("keyword.operator") {
         TokenClass::Operator

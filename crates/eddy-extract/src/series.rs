@@ -39,17 +39,29 @@ pub fn detect_series(html: &str, url: &str) -> Option<SeriesProposal> {
         let mut seen = HashSet::new();
         let mut chapters = Vec::new();
         for a in &all {
-            let Some(href) = a.value().attr("href") else { continue };
-            let Ok(mut target) = base.join(href) else { continue };
+            let Some(href) = a.value().attr("href") else {
+                continue;
+            };
+            let Ok(mut target) = base.join(href) else {
+                continue;
+            };
             target.set_fragment(None);
             if target.host_str() != base.host_str() || !target.path().starts_with(&prefix) {
                 continue;
             }
-            let title = a.text().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ");
+            let title = a
+                .text()
+                .collect::<String>()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
             if title.is_empty() || !seen.insert(target.to_string()) {
                 continue;
             }
-            chapters.push(ChapterLink { title, url: target.to_string() });
+            chapters.push(ChapterLink {
+                title,
+                url: target.to_string(),
+            });
             if chapters.len() >= MAX_CHAPTERS {
                 break;
             }
@@ -67,8 +79,13 @@ pub fn detect_series(html: &str, url: &str) -> Option<SeriesProposal> {
         }
     }
     let (_, chapters) = best?;
-    let title = crate::page_title(&doc).unwrap_or_else(|| base.host_str().unwrap_or("Series").to_string());
-    Some(SeriesProposal { title, toc_url: url.to_string(), chapters })
+    let title =
+        crate::page_title(&doc).unwrap_or_else(|| base.host_str().unwrap_or("Series").to_string());
+    Some(SeriesProposal {
+        title,
+        toc_url: url.to_string(),
+        chapters,
+    })
 }
 
 /// Directory of the page path, but at least its first segment: links to
@@ -84,15 +101,29 @@ fn section_prefix(url: &Url) -> String {
     }
     let first = path.trim_start_matches('/').split('/').next().unwrap_or("");
     let first_dir = format!("/{first}/");
-    if dir.len() > first_dir.len() { first_dir } else { dir.to_string() }
+    if dir.len() > first_dir.len() {
+        first_dir
+    } else {
+        dir.to_string()
+    }
 }
 
 fn looks_like_toc(el: ElementRef) -> bool {
     let mut node = Some(el);
     let mut depth = 0;
     while let Some(e) = node {
-        let attrs = format!("{} {}", e.value().attr("class").unwrap_or(""), e.value().attr("id").unwrap_or("")).to_lowercase();
-        if ["toc", "contents", "chapter", "summary", "sidebar", "table-of", "book"].iter().any(|k| attrs.contains(k)) {
+        let attrs = format!(
+            "{} {}",
+            e.value().attr("class").unwrap_or(""),
+            e.value().attr("id").unwrap_or("")
+        )
+        .to_lowercase();
+        if [
+            "toc", "contents", "chapter", "summary", "sidebar", "table-of", "book",
+        ]
+        .iter()
+        .any(|k| attrs.contains(k))
+        {
             return true;
         }
         depth += 1;

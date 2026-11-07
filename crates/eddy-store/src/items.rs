@@ -1,5 +1,6 @@
 use eddy_model::{
-    ContentOrigin, ContentVersion, FullTextMode, Item, ItemKind, Locator, Series, Source, SourceKind, now_ms,
+    ContentOrigin, ContentVersion, FullTextMode, Item, ItemKind, Locator, Series, Source,
+    SourceKind, now_ms,
 };
 use rusqlite::{OptionalExtension, Row, params, params_from_iter, types::Value};
 
@@ -30,7 +31,12 @@ pub struct ItemQuery {
 
 impl Default for ItemQuery {
     fn default() -> Self {
-        ItemQuery { filter: ItemFilter::All, unread_only: false, limit: 200, offset: 0 }
+        ItemQuery {
+            filter: ItemFilter::All,
+            unread_only: false,
+            limit: 200,
+            offset: 0,
+        }
     }
 }
 
@@ -41,7 +47,8 @@ pub struct ItemRow {
     pub source_title: Option<String>,
 }
 
-const ITEM_COLUMNS: &str = "i.id, i.source_id, i.account_id, i.upstream_id, i.kind, i.url, i.title, i.author,
+const ITEM_COLUMNS: &str =
+    "i.id, i.source_id, i.account_id, i.upstream_id, i.kind, i.url, i.title, i.author,
     i.published_at, i.added_at, i.read, i.starred, i.series_id, i.chapter_index, i.current_version,
     i.excerpt, i.lang, i.text_len, i.progress, i.finished, i.last_read_at, s.title";
 
@@ -82,7 +89,11 @@ fn source_row(r: &Row) -> rusqlite::Result<Source> {
         id: r.get(0)?,
         account_id: r.get(1)?,
         upstream_id: r.get(2)?,
-        kind: if kind == "saved" { SourceKind::Saved } else { SourceKind::Feed },
+        kind: if kind == "saved" {
+            SourceKind::Saved
+        } else {
+            SourceKind::Feed
+        },
         title: r.get(4)?,
         category: r.get(5)?,
         site_url: r.get(6)?,
@@ -165,7 +176,10 @@ impl Store {
 
     pub fn set_source_truncated(&self, id: &str, truncated: bool) -> Result<()> {
         self.with(|c| {
-            c.execute("UPDATE sources SET truncated=? WHERE id=?", params![truncated, id])?;
+            c.execute(
+                "UPDATE sources SET truncated=? WHERE id=?",
+                params![truncated, id],
+            )?;
             Ok(())
         })
     }
@@ -187,7 +201,13 @@ impl Store {
     }
 
     /// Refreshes metadata of an existing item from its upstream.
-    pub fn update_item_meta(&self, id: &str, title: &str, url: Option<&str>, author: Option<&str>) -> Result<()> {
+    pub fn update_item_meta(
+        &self,
+        id: &str,
+        title: &str,
+        url: Option<&str>,
+        author: Option<&str>,
+    ) -> Result<()> {
         self.with(|c| {
             c.execute("UPDATE items SET title=?, url=COALESCE(?,url), author=COALESCE(?,author) WHERE id=?", params![title, url, author, id])?;
             Ok(())
@@ -296,7 +316,35 @@ impl Store {
         })
     }
 
-    pub fn set_current_version(&self, item_id: &str, hash: &str, excerpt: &str, text_len: u32, lang: Option<&str>) -> Result<()> {
+    /// Whether upstream state for a field differs from ours with no local
+    /// change waiting to be pushed (servers turn such changes into ops).
+    pub fn upstream_state_differs(&self, item_id: &str, field: &str, value: bool) -> Result<bool> {
+        let column = match field {
+            eddy_model::fields::READ => "read",
+            eddy_model::fields::STARRED => "starred",
+            _ => return Ok(false),
+        };
+        self.with(|c| {
+            let differs: bool = c.query_row(
+                &format!(
+                    "SELECT EXISTS(SELECT 1 FROM items WHERE id=?1 AND {column}!=?2)
+                     AND NOT EXISTS(SELECT 1 FROM ops WHERE entity='item' AND entity_id=?1 AND field=?3 AND upstream_pending=1)"
+                ),
+                params![item_id, value, field],
+                |r| r.get(0),
+            )?;
+            Ok(differs)
+        })
+    }
+
+    pub fn set_current_version(
+        &self,
+        item_id: &str,
+        hash: &str,
+        excerpt: &str,
+        text_len: u32,
+        lang: Option<&str>,
+    ) -> Result<()> {
         self.with(|c| {
             c.execute(
                 "UPDATE items SET current_version=?, excerpt=?, text_len=?, lang=COALESCE(?,lang) WHERE id=?",
@@ -345,7 +393,13 @@ impl Store {
         })
     }
 
-    pub fn set_doc_blob(&self, hash: &str, doc_blob: &str, schema: u32, text_len: u32) -> Result<()> {
+    pub fn set_doc_blob(
+        &self,
+        hash: &str,
+        doc_blob: &str,
+        schema: u32,
+        text_len: u32,
+    ) -> Result<()> {
         self.with(|c| {
             c.execute(
                 "UPDATE content_versions SET doc_blob=?, doc_schema=?, text_len=? WHERE hash=?",
@@ -356,8 +410,14 @@ impl Store {
     }
 
     pub fn progress(&self, item_id: &str) -> Result<Option<Locator>> {
-        let raw: Option<String> =
-            self.with(|c| Ok(c.query_row("SELECT locator FROM progress WHERE item_id=?", [item_id], |r| r.get(0)).optional()?))?;
+        let raw: Option<String> = self.with(|c| {
+            Ok(c.query_row(
+                "SELECT locator FROM progress WHERE item_id=?",
+                [item_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+        })?;
         Ok(raw.map(|s| serde_json::from_str(&s)).transpose()?)
     }
 
@@ -378,9 +438,18 @@ impl Store {
 
     pub fn series(&self, id: &str) -> Result<Option<Series>> {
         self.with(|c| {
-            Ok(c.query_row("SELECT id,title,toc_url,created_at FROM series WHERE id=? AND deleted=0", [id], |r| {
-                Ok(Series { id: r.get(0)?, title: r.get(1)?, toc_url: r.get(2)?, created_at: r.get(3)? })
-            })
+            Ok(c.query_row(
+                "SELECT id,title,toc_url,created_at FROM series WHERE id=? AND deleted=0",
+                [id],
+                |r| {
+                    Ok(Series {
+                        id: r.get(0)?,
+                        title: r.get(1)?,
+                        toc_url: r.get(2)?,
+                        created_at: r.get(3)?,
+                    })
+                },
+            )
             .optional()?)
         })
     }
@@ -388,7 +457,9 @@ impl Store {
     /// Tags as (id, name), excluding deleted ones.
     pub fn tags(&self) -> Result<Vec<(String, String)>> {
         self.with(|c| {
-            let mut stmt = c.prepare("SELECT id, name FROM tags WHERE deleted=0 ORDER BY name COLLATE NOCASE")?;
+            let mut stmt = c.prepare(
+                "SELECT id, name FROM tags WHERE deleted=0 ORDER BY name COLLATE NOCASE",
+            )?;
             let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
@@ -430,7 +501,10 @@ impl Store {
             let tx = c.transaction()?;
             tx.execute("DELETE FROM tag_suggestions WHERE item_id=?", [item_id])?;
             for name in names {
-                tx.execute("INSERT OR IGNORE INTO tag_suggestions(item_id,name) VALUES(?,?)", params![item_id, name])?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO tag_suggestions(item_id,name) VALUES(?,?)",
+                    params![item_id, name],
+                )?;
             }
             tx.commit()?;
             Ok(())
@@ -439,12 +513,14 @@ impl Store {
 
     pub fn tag_suggestions(&self, item_id: &str) -> Result<Vec<String>> {
         self.with(|c| {
-            let mut stmt = c.prepare("SELECT name FROM tag_suggestions WHERE item_id=? ORDER BY name")?;
+            let mut stmt =
+                c.prepare("SELECT name FROM tag_suggestions WHERE item_id=? ORDER BY name")?;
             let rows = stmt.query_map([item_id], |r| r.get(0))?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn put_ai_artifact(
         &self,
         key: &str,
@@ -468,11 +544,22 @@ impl Store {
     }
 
     pub fn ai_artifact(&self, key: &str) -> Result<Option<String>> {
-        self.with(|c| Ok(c.query_row("SELECT payload FROM ai_artifacts WHERE key=?", [key], |r| r.get(0)).optional()?))
+        self.with(|c| {
+            Ok(
+                c.query_row("SELECT payload FROM ai_artifacts WHERE key=?", [key], |r| {
+                    r.get(0)
+                })
+                .optional()?,
+            )
+        })
     }
 
     /// Latest artifact of `kind` for an item: (content_hash, lang, payload).
-    pub fn latest_ai_artifact(&self, item_id: &str, kind: &str) -> Result<Option<(String, Option<String>, String)>> {
+    pub fn latest_ai_artifact(
+        &self,
+        item_id: &str,
+        kind: &str,
+    ) -> Result<Option<(String, Option<String>, String)>> {
         self.with(|c| {
             Ok(c.query_row(
                 "SELECT content_hash, lang, payload FROM ai_artifacts WHERE item_id=? AND kind=? ORDER BY created_at DESC LIMIT 1",
@@ -485,7 +572,19 @@ impl Store {
 
     /// Synced artifacts not yet uploaded: (key, item_id, kind, content_hash, lang, model, payload).
     #[allow(clippy::type_complexity)]
-    pub fn unuploaded_ai_artifacts(&self) -> Result<Vec<(String, String, String, String, Option<String>, Option<String>, String)>> {
+    pub fn unuploaded_ai_artifacts(
+        &self,
+    ) -> Result<
+        Vec<(
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            String,
+        )>,
+    > {
         self.with(|c| {
             let mut stmt = c.prepare(
                 "SELECT key,item_id,kind,content_hash,lang,model,payload FROM ai_artifacts WHERE sync=1 AND uploaded=0",

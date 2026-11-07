@@ -31,11 +31,22 @@ impl Inner {
         pin_raw: bool,
     ) -> Result<(Ingested, Option<String>)> {
         let rule = self.fetcher.read().rule_for(url).cloned();
-        let extracted = extract(page, url, rule.as_ref()).map_err(|e| EngineError::Invalid(e.to_string()))?;
+        let extracted =
+            extract(page, url, rule.as_ref()).map_err(|e| EngineError::Invalid(e.to_string()))?;
         let raw_blob = self.store.put_blob(page.as_bytes(), PAGE_MIME, pin_raw)?;
-        let document = html_to_document(&extracted.content_html, &ConvertOptions { base_url: Some(url), title: extracted.title.as_deref() });
-        let doc_blob = self.store.put_blob(&serde_json::to_vec(&document)?, "application/json", false)?;
-        let hash = ids::sha256_hex(format!("{}\u{0}{}\u{0}{}", item_id, origin.as_str(), raw_blob).as_bytes());
+        let document = html_to_document(
+            &extracted.content_html,
+            &ConvertOptions {
+                base_url: Some(url),
+                title: extracted.title.as_deref(),
+            },
+        );
+        let doc_blob =
+            self.store
+                .put_blob(&serde_json::to_vec(&document)?, "application/json", false)?;
+        let hash = ids::sha256_hex(
+            format!("{}\u{0}{}\u{0}{}", item_id, origin.as_str(), raw_blob).as_bytes(),
+        );
         let version = ContentVersion {
             hash,
             item_id: item_id.to_string(),
@@ -49,60 +60,130 @@ impl Inner {
             created_at: now_ms(),
         };
         self.store.insert_content_version(&version)?;
+        // User-produced content versions sync to other devices.
+        self.record(
+            Entity::ContentVersion,
+            &version.hash,
+            fields::CREATE,
+            serde_json::to_value(&version)?,
+            false,
+        )?;
         let excerpt = document.excerpt(240);
         let lang = detect_lang(&document);
-        Ok((Ingested { version, document, excerpt, lang }, extracted.title))
+        Ok((
+            Ingested {
+                version,
+                document,
+                excerpt,
+                lang,
+            },
+            extracted.title,
+        ))
     }
 
     /// Regenerates the document of a page version (extraction + conversion).
-    pub(crate) fn regenerate_page(&self, version: &ContentVersion, raw: &str) -> Option<eddy_model::Document> {
+    pub(crate) fn regenerate_page(
+        &self,
+        version: &ContentVersion,
+        raw: &str,
+    ) -> Option<eddy_model::Document> {
         let url = version.source_url.as_deref().unwrap_or("about:blank");
         let rule = self.fetcher.read().rule_for(url).cloned();
         let extracted = extract(raw, url, rule.as_ref()).ok()?;
-        Some(html_to_document(&extracted.content_html, &ConvertOptions { base_url: Some(url), title: extracted.title.as_deref() }))
+        Some(html_to_document(
+            &extracted.content_html,
+            &ConvertOptions {
+                base_url: Some(url),
+                title: extracted.title.as_deref(),
+            },
+        ))
     }
 
     /// Makes `version` the item's current content (an op, so it syncs).
     pub(crate) fn switch_version(&self, item_id: &str, ingested: &Ingested) -> Result<()> {
-        self.record(Entity::Item, item_id, fields::VERSION, ingested.version.hash.clone().into(), false)?;
-        self.store.set_current_version(item_id, &ingested.version.hash, &ingested.excerpt, ingested.version.text_len, ingested.lang.as_deref())?;
+        self.record(
+            Entity::Item,
+            item_id,
+            fields::VERSION,
+            ingested.version.hash.clone().into(),
+            false,
+        )?;
+        self.record(Entity::Item, item_id, "meta", ingested.meta_value(), false)?;
+        self.store.set_current_version(
+            item_id,
+            &ingested.version.hash,
+            &ingested.excerpt,
+            ingested.version.text_len,
+            ingested.lang.as_deref(),
+        )?;
         Ok(())
     }
 
     pub(crate) async fn fetch_full_text(&self, item_id: &str) -> Result<LoadedDocument> {
         let row = self.store.item(item_id)?.ok_or(EngineError::NotFound)?;
-        let url = row.item.url.clone().ok_or_else(|| EngineError::Invalid("这篇内容没有原文链接。".into()))?;
+        let url = row
+            .item
+            .url
+            .clone()
+            .ok_or_else(|| EngineError::Invalid("这篇内容没有原文链接。".into()))?;
         let feed_len = self.feed_text_len(&row)?;
         let fetcher = self.fetcher.read().clone();
         let rule = fetcher.rule_for(&url).cloned();
         let threshold = feed_len.max(400);
         let page = fetcher
-            .fetch(&url, |p| extract(&p.html, &p.final_url, rule.as_ref()).is_ok_and(|e| e.text_len >= threshold))
+            .fetch(&url, |p| {
+                extract(&p.html, &p.final_url, rule.as_ref()).is_ok_and(|e| e.text_len >= threshold)
+            })
             .await
             .map_err(|e| EngineError::Network(e.to_string()))?;
         let pin = row.item.kind != ItemKind::Feed;
-        let (ingested, _) = self.ingest_page(item_id, &page.html, &page.final_url, ContentOrigin::Extracted, pin)?;
+        let (ingested, _) = self.ingest_page(
+            item_id,
+            &page.html,
+            &page.final_url,
+            ContentOrigin::Extracted,
+            pin,
+        )?;
         if (ingested.version.text_len as usize) < feed_len / 2 {
-            return Err(EngineError::Invalid("抓到的正文比订阅里的还短，已保留订阅内容。".into()));
+            return Err(EngineError::Invalid(
+                "抓到的正文比订阅里的还短，已保留订阅内容。".into(),
+            ));
         }
-        if let Some(source_id) = row.item.source_id.as_deref() {
-            if row.item.kind == ItemKind::Feed && feed_len > 0 {
-                self.store.set_source_truncated(source_id, is_truncated(feed_len, ingested.version.text_len as usize))?;
-            }
+        if let Some(source_id) = row.item.source_id.as_deref()
+            && row.item.kind == ItemKind::Feed
+            && feed_len > 0
+        {
+            self.store.set_source_truncated(
+                source_id,
+                is_truncated(feed_len, ingested.version.text_len as usize),
+            )?;
         }
         self.switch_version(item_id, &ingested)?;
         self.after_ingest(item_id, &ingested);
-        Ok(LoadedDocument { version: ingested.version, document: ingested.document })
+        Ok(LoadedDocument {
+            version: ingested.version,
+            document: ingested.document,
+        })
     }
 
     fn feed_text_len(&self, row: &ItemRow) -> Result<usize> {
         let versions = self.store.content_versions(&row.item.id)?;
-        Ok(versions.iter().find(|v| v.origin == ContentOrigin::Feed).map(|v| v.text_len as usize).unwrap_or(0))
+        Ok(versions
+            .iter()
+            .find(|v| v.origin == ContentOrigin::Feed)
+            .map(|v| v.text_len as usize)
+            .unwrap_or(0))
     }
 
     /// Creates a saved item from a page the user already has (captured in the
     /// browser) or that was just fetched.
-    pub(crate) fn create_saved(&self, url: &str, page: &str, origin: ContentOrigin, title_hint: Option<&str>) -> Result<ItemRow> {
+    pub(crate) fn create_saved(
+        &self,
+        url: &str,
+        page: &str,
+        origin: ContentOrigin,
+        title_hint: Option<&str>,
+    ) -> Result<ItemRow> {
         let item_id = ids::new_local_id();
         let now = now_ms();
         let (ingested, title) = self.ingest_page(&item_id, page, url, origin, true)?;
@@ -133,19 +214,33 @@ impl Inner {
             finished: false,
             last_read_at: None,
         };
-        self.record(Entity::Item, &item_id, fields::CREATE, serde_json::to_value(&item)?, false)?;
+        self.record(
+            Entity::Item,
+            &item_id,
+            fields::CREATE,
+            serde_json::to_value(&item)?,
+            false,
+        )?;
         self.switch_version(&item_id, &ingested)?;
         self.after_ingest(&item_id, &ingested);
         self.store.item(&item_id)?.ok_or(EngineError::NotFound)
     }
 
     pub(crate) fn saved_by_url(&self, url: &str) -> Result<Option<ItemRow>> {
-        let saved = self.store.items(&ItemQuery { filter: ItemFilter::Saved, unread_only: false, limit: 10_000, offset: 0 })?;
-        Ok(saved.into_iter().find(|r| r.item.url.as_deref() == Some(url)))
+        let saved = self.store.items(&ItemQuery {
+            filter: ItemFilter::Saved,
+            unread_only: false,
+            limit: 10_000,
+            offset: 0,
+        })?;
+        Ok(saved
+            .into_iter()
+            .find(|r| r.item.url.as_deref() == Some(url)))
     }
 
     pub(crate) async fn save_url(&self, url: &str) -> Result<ItemRow> {
-        let parsed = url::Url::parse(url.trim()).map_err(|_| EngineError::Invalid("请输入完整的网址。".into()))?;
+        let parsed = url::Url::parse(url.trim())
+            .map_err(|_| EngineError::Invalid("请输入完整的网址。".into()))?;
         if !matches!(parsed.scheme(), "http" | "https") {
             return Err(EngineError::Invalid("只支持 http 和 https 网址。".into()));
         }
@@ -156,7 +251,9 @@ impl Inner {
         let fetcher = self.fetcher.read().clone();
         let rule = fetcher.rule_for(&url).cloned();
         let page = fetcher
-            .fetch(&url, |p| extract(&p.html, &p.final_url, rule.as_ref()).is_ok_and(|e| e.text_len >= 200))
+            .fetch(&url, |p| {
+                extract(&p.html, &p.final_url, rule.as_ref()).is_ok_and(|e| e.text_len >= 200)
+            })
             .await
             .map_err(|e| EngineError::Network(e.to_string()))?;
         self.create_saved(&page.final_url, &page.html, ContentOrigin::Extracted, None)
@@ -168,21 +265,39 @@ impl Inner {
     /// full text arrives, so nothing is processed twice.
     pub(crate) fn auto_process(self: &Arc<Self>, item_ids: Vec<String>) {
         let scheduled = self.auto_full_text(&item_ids);
-        self.auto_ai(item_ids.into_iter().filter(|id| !scheduled.contains(id)).collect());
+        self.auto_ai(
+            item_ids
+                .into_iter()
+                .filter(|id| !scheduled.contains(id))
+                .collect(),
+        );
     }
 
     /// Returns the IDs scheduled for fetching.
     fn auto_full_text(self: &Arc<Self>, item_ids: &[String]) -> Vec<String> {
         let mut candidates = Vec::new();
         for id in item_ids.iter().cloned() {
-            let Ok(Some(row)) = self.store.item(&id) else { continue };
-            let Some(source) = row.item.source_id.as_deref().and_then(|s| self.store.source(s).ok().flatten()) else { continue };
+            let Ok(Some(row)) = self.store.item(&id) else {
+                continue;
+            };
+            let Some(source) = row
+                .item
+                .source_id
+                .as_deref()
+                .and_then(|s| self.store.source(s).ok().flatten())
+            else {
+                continue;
+            };
             let wanted = match source.full_text {
                 FullTextMode::Always => true,
                 FullTextMode::Never => false,
                 FullTextMode::Auto => {
                     source.truncated
-                        || self.current_document(&id).ok().flatten().is_some_and(|d| truncation_hint(&d.document))
+                        || self
+                            .current_document(&id)
+                            .ok()
+                            .flatten()
+                            .is_some_and(|d| truncation_hint(&d.document))
                 }
             };
             if wanted && row.item.url.is_some() {
@@ -204,7 +319,9 @@ impl Inner {
                     let inner = inner.clone();
                     async move {
                         if let Err(e) = inner.fetch_full_text(&id).await {
-                            inner.platform.log(LogLevel::Info, &format!("auto full text skipped: {e}"));
+                            inner
+                                .platform
+                                .log(LogLevel::Info, &format!("auto full text skipped: {e}"));
                         }
                         inner.auto_ai(vec![id]);
                     }
@@ -248,8 +365,14 @@ impl Engine {
     /// fetched. Returns the number imported.
     pub async fn import_captures(&self) -> Result<u32> {
         let dir = self.spool_dir();
-        let Ok(entries) = std::fs::read_dir(&dir) else { return Ok(0) };
-        let mut paths: Vec<_> = entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "json")).collect();
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return Ok(0);
+        };
+        let mut paths: Vec<_> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e == "json"))
+            .collect();
         paths.sort();
         let mut imported = 0;
         for path in paths {
@@ -259,10 +382,13 @@ impl Engine {
                     imported += 1;
                 }
                 Err(e) => {
-                    self.inner.platform.log(LogLevel::Warn, &format!("capture import failed: {e}"));
+                    self.inner
+                        .platform
+                        .log(LogLevel::Warn, &format!("capture import failed: {e}"));
                     let failed = dir.join("failed");
                     let _ = std::fs::create_dir_all(&failed);
-                    let _ = std::fs::rename(&path, failed.join(path.file_name().unwrap_or_default()));
+                    let _ =
+                        std::fs::rename(&path, failed.join(path.file_name().unwrap_or_default()));
                 }
             }
         }
@@ -270,12 +396,18 @@ impl Engine {
     }
 
     async fn import_capture(&self, path: &Path) -> Result<()> {
-        let text = std::fs::read_to_string(path).map_err(|e| EngineError::Invalid(e.to_string()))?;
+        let text =
+            std::fs::read_to_string(path).map_err(|e| EngineError::Invalid(e.to_string()))?;
         let capture: Capture = serde_json::from_str(&text)?;
         let row = match capture.html.filter(|h| !h.trim().is_empty()) {
             Some(html) => match self.inner.saved_by_url(&capture.url)? {
                 Some(existing) => existing,
-                None => self.inner.create_saved(&capture.url, &html, ContentOrigin::Captured, capture.title.as_deref())?,
+                None => self.inner.create_saved(
+                    &capture.url,
+                    &html,
+                    ContentOrigin::Captured,
+                    capture.title.as_deref(),
+                )?,
             },
             None => self.inner.save_url(&capture.url).await?,
         };

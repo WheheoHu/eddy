@@ -26,6 +26,10 @@ pub enum Entity {
     Series,
     Source,
     Setting,
+    /// Metadata of an immutable content version; its blobs travel separately.
+    ContentVersion,
+    /// A synced AI result (translation, summary).
+    Artifact,
 }
 
 impl Entity {
@@ -39,6 +43,8 @@ impl Entity {
             Entity::Series => "series",
             Entity::Source => "source",
             Entity::Setting => "setting",
+            Entity::ContentVersion => "content_version",
+            Entity::Artifact => "artifact",
         }
     }
 
@@ -52,6 +58,8 @@ impl Entity {
             "series" => Entity::Series,
             "source" => Entity::Source,
             "setting" => Entity::Setting,
+            "content_version" => Entity::ContentVersion,
+            "artifact" => Entity::Artifact,
             _ => return None,
         })
     }

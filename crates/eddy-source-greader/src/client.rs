@@ -4,7 +4,10 @@ use reqwest::{Method, StatusCode, redirect};
 use tokio::sync::Mutex;
 
 use crate::model::{RawItemIds, RawStream, RawSubscriptions};
-use crate::{GReaderError, Result, StreamPage, Subscription, UpstreamItem, long_item_id, normalize_base, normalize_item_id};
+use crate::{
+    GReaderError, Result, StreamPage, Subscription, UpstreamItem, long_item_id, normalize_base,
+    normalize_item_id,
+};
 
 #[derive(Clone)]
 pub struct Credentials {
@@ -34,7 +37,9 @@ pub struct GReaderClient {
 impl GReaderClient {
     pub fn new(creds: Credentials) -> Result<Self> {
         if creds.username.trim().is_empty() || creds.password.is_empty() {
-            return Err(GReaderError::Config("请填写 FreshRSS 用户名和 API 专用密码。".into()));
+            return Err(GReaderError::Config(
+                "请填写 FreshRSS 用户名和 API 专用密码。".into(),
+            ));
         }
         let http = reqwest::Client::builder()
             // Never follow redirects: credentials must not reach another endpoint.
@@ -66,7 +71,10 @@ impl GReaderClient {
         let response = self
             .http
             .post(format!("{}/accounts/ClientLogin", self.base))
-            .form(&[("Email", self.username.as_str()), ("Passwd", self.password.as_str())])
+            .form(&[
+                ("Email", self.username.as_str()),
+                ("Passwd", self.password.as_str()),
+            ])
             .send()
             .await
             .map_err(network)?;
@@ -81,7 +89,11 @@ impl GReaderClient {
             .find_map(|l| l.strip_prefix("Auth="))
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty() && !s.contains(['\r', '\n']))
-            .ok_or_else(|| GReaderError::Format("登录响应里没有 Auth 令牌，请检查 Google Reader API 地址。".into()))?;
+            .ok_or_else(|| {
+                GReaderError::Format(
+                    "登录响应里没有 Auth 令牌，请检查 Google Reader API 地址。".into(),
+                )
+            })?;
         *self.auth.lock().await = Some(auth.clone());
         Ok(auth)
     }
@@ -94,7 +106,12 @@ impl GReaderClient {
     }
 
     /// Sends an authenticated request, logging in again once on 401.
-    async fn request(&self, method: Method, path: &str, form: Option<&[(String, String)]>) -> Result<reqwest::Response> {
+    async fn request(
+        &self,
+        method: Method,
+        path: &str,
+        form: Option<&[(String, String)]>,
+    ) -> Result<reqwest::Response> {
         for attempt in 0..2 {
             let auth = self.auth().await?;
             let mut req = self
@@ -119,26 +136,44 @@ impl GReaderClient {
         Err(GReaderError::Auth(401))
     }
 
-    async fn json<T: serde::de::DeserializeOwned>(&self, method: Method, path: &str, form: Option<&[(String, String)]>) -> Result<T> {
+    async fn json<T: serde::de::DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        form: Option<&[(String, String)]>,
+    ) -> Result<T> {
         let response = self.request(method, path, form).await?;
         let text = response.text().await.map_err(network)?;
         serde_json::from_str(&text).map_err(|e| GReaderError::Format(e.to_string()))
     }
 
     pub async fn subscriptions(&self) -> Result<Vec<Subscription>> {
-        let raw: RawSubscriptions = self.json(Method::GET, "subscription/list?output=json", None).await?;
-        Ok(raw.subscriptions.into_iter().map(Subscription::from).collect())
+        let raw: RawSubscriptions = self
+            .json(Method::GET, "subscription/list?output=json", None)
+            .await?;
+        Ok(raw
+            .subscriptions
+            .into_iter()
+            .map(Subscription::from)
+            .collect())
     }
 
     /// All item IDs (hex) in `stream`, optionally excluding a state, following
     /// continuations up to `cap` IDs.
-    pub async fn item_ids(&self, stream: &str, exclude: Option<&str>, cap: usize) -> Result<Vec<String>> {
+    pub async fn item_ids(
+        &self,
+        stream: &str,
+        exclude: Option<&str>,
+        cap: usize,
+    ) -> Result<Vec<String>> {
         let mut ids = Vec::new();
         let mut continuation: Option<String> = None;
         loop {
             let query = {
                 let mut q = url::form_urlencoded::Serializer::new(String::new());
-                q.append_pair("output", "json").append_pair("s", stream).append_pair("n", "10000");
+                q.append_pair("output", "json")
+                    .append_pair("s", stream)
+                    .append_pair("n", "10000");
                 if let Some(x) = exclude {
                     q.append_pair("xt", x);
                 }
@@ -147,9 +182,16 @@ impl GReaderClient {
                 }
                 q.finish()
             };
-            let raw: RawItemIds = self.json(Method::GET, &format!("stream/items/ids?{query}"), None).await?;
-            ids.extend(raw.item_refs.iter().filter_map(|r| normalize_item_id(&r.id)));
-            let next = crate::validate_continuation(raw.continuation.as_deref(), continuation.as_deref())?;
+            let raw: RawItemIds = self
+                .json(Method::GET, &format!("stream/items/ids?{query}"), None)
+                .await?;
+            ids.extend(
+                raw.item_refs
+                    .iter()
+                    .filter_map(|r| normalize_item_id(&r.id)),
+            );
+            let next =
+                crate::validate_continuation(raw.continuation.as_deref(), continuation.as_deref())?;
             if next.is_none() || ids.len() >= cap || raw.item_refs.is_empty() {
                 break;
             }
@@ -163,8 +205,17 @@ impl GReaderClient {
     pub async fn contents(&self, ids: &[String]) -> Result<Vec<UpstreamItem>> {
         let mut out = Vec::new();
         for chunk in ids.chunks(100) {
-            let form: Vec<(String, String)> = chunk.iter().map(|id| ("i".to_string(), long_item_id(id))).collect();
-            let raw: RawStream = self.json(Method::POST, "stream/items/contents?output=json", Some(&form)).await?;
+            let form: Vec<(String, String)> = chunk
+                .iter()
+                .map(|id| ("i".to_string(), long_item_id(id)))
+                .collect();
+            let raw: RawStream = self
+                .json(
+                    Method::POST,
+                    "stream/items/contents?output=json",
+                    Some(&form),
+                )
+                .await?;
             out.extend(raw.items.into_iter().filter_map(|i| i.into_item()));
         }
         Ok(out)
@@ -174,7 +225,14 @@ impl GReaderClient {
     pub async fn stream_page(&self, path: &str, requested: Option<&str>) -> Result<StreamPage> {
         let raw: RawStream = self.json(Method::GET, path, None).await?;
         let continuation = crate::validate_continuation(raw.continuation.as_deref(), requested)?;
-        Ok(StreamPage { items: raw.items.into_iter().filter_map(|i| i.into_item()).collect(), continuation })
+        Ok(StreamPage {
+            items: raw
+                .items
+                .into_iter()
+                .filter_map(|i| i.into_item())
+                .collect(),
+            continuation,
+        })
     }
 
     /// Adds or removes a state tag (e.g. read, starred) on items.
@@ -182,9 +240,19 @@ impl GReaderClient {
         if ids.is_empty() {
             return Ok(());
         }
-        let token = self.request(Method::GET, "token", None).await?.text().await.map_err(network)?.trim().to_string();
+        let token = self
+            .request(Method::GET, "token", None)
+            .await?
+            .text()
+            .await
+            .map_err(network)?
+            .trim()
+            .to_string();
         for chunk in ids.chunks(200) {
-            let mut form: Vec<(String, String)> = chunk.iter().map(|id| ("i".to_string(), long_item_id(id))).collect();
+            let mut form: Vec<(String, String)> = chunk
+                .iter()
+                .map(|id| ("i".to_string(), long_item_id(id)))
+                .collect();
             form.push((if add { "a" } else { "r" }.to_string(), tag.to_string()));
             form.push(("T".to_string(), token.clone()));
             self.request(Method::POST, "edit-tag", Some(&form)).await?;

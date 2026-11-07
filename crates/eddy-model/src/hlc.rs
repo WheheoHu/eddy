@@ -16,7 +16,11 @@ pub struct Hlc {
 
 impl Hlc {
     pub fn zero() -> Self {
-        Hlc { wall_ms: 0, counter: 0, node: String::new() }
+        Hlc {
+            wall_ms: 0,
+            counter: 0,
+            node: String::new(),
+        }
     }
 }
 
@@ -35,10 +39,20 @@ impl FromStr for Hlc {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut parts = s.splitn(3, '-');
-        let wall_ms = parts.next().and_then(|p| p.parse().ok()).ok_or(ParseHlcError)?;
-        let counter = parts.next().and_then(|p| p.parse().ok()).ok_or(ParseHlcError)?;
+        let wall_ms = parts
+            .next()
+            .and_then(|p| p.parse().ok())
+            .ok_or(ParseHlcError)?;
+        let counter = parts
+            .next()
+            .and_then(|p| p.parse().ok())
+            .ok_or(ParseHlcError)?;
         let node = parts.next().ok_or(ParseHlcError)?.to_string();
-        Ok(Hlc { wall_ms, counter, node })
+        Ok(Hlc {
+            wall_ms,
+            counter,
+            node,
+        })
     }
 }
 
@@ -64,7 +78,10 @@ pub struct HlcClock {
 
 impl HlcClock {
     pub fn new(node: impl Into<String>) -> Self {
-        HlcClock { node: node.into(), last: Mutex::new((0, 0)) }
+        HlcClock {
+            node: node.into(),
+            last: Mutex::new((0, 0)),
+        }
     }
 
     pub fn node(&self) -> &str {
@@ -77,9 +94,17 @@ impl HlcClock {
 
     fn tick(&self, physical: u64) -> Hlc {
         let mut last = self.last.lock();
-        let (wall, counter) = if physical > last.0 { (physical, 0) } else { (last.0, last.1 + 1) };
+        let (wall, counter) = if physical > last.0 {
+            (physical, 0)
+        } else {
+            (last.0, last.1 + 1)
+        };
         *last = (wall, counter);
-        Hlc { wall_ms: wall, counter, node: self.node.clone() }
+        Hlc {
+            wall_ms: wall,
+            counter,
+            node: self.node.clone(),
+        }
     }
 
     pub fn observe(&self, remote: &Hlc) {
@@ -111,15 +136,33 @@ mod tests {
     #[test]
     fn observing_a_remote_timestamp_moves_the_clock_forward() {
         let clock = HlcClock::new("a");
-        clock.observe(&Hlc { wall_ms: 5_000, counter: 7, node: "b".into() });
+        clock.observe(&Hlc {
+            wall_ms: 5_000,
+            counter: 7,
+            node: "b".into(),
+        });
         let next = clock.tick(10);
-        assert!(next > Hlc { wall_ms: 5_000, counter: 7, node: "b".into() });
+        assert!(
+            next > Hlc {
+                wall_ms: 5_000,
+                counter: 7,
+                node: "b".into()
+            }
+        );
     }
 
     #[test]
     fn string_form_round_trips_and_sorts_like_the_struct() {
-        let a = Hlc { wall_ms: 99, counter: 3, node: "dev-1".into() };
-        let b = Hlc { wall_ms: 100, counter: 0, node: "dev-0".into() };
+        let a = Hlc {
+            wall_ms: 99,
+            counter: 3,
+            node: "dev-1".into(),
+        };
+        let b = Hlc {
+            wall_ms: 100,
+            counter: 0,
+            node: "dev-0".into(),
+        };
         assert_eq!(a.to_string().parse::<Hlc>().unwrap(), a);
         assert!(a.to_string() < b.to_string());
         assert!(a < b);

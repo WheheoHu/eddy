@@ -5,25 +5,28 @@ mod ai;
 mod content;
 mod engine;
 mod fulltext;
+mod hub;
 mod images;
 mod native_host;
 mod platform;
 mod progress;
 mod rules;
 mod search;
+mod server;
 mod upstream;
 
 pub use ai::{BatchCallback, ItemTagsResult, SummaryResult, TagInfo, TranslationResult};
 pub use content::LoadedDocument;
-pub use eddy_extract::{ChapterLink, SeriesProposal};
-pub use progress::{ResumePoint, SeriesInfo};
-pub use search::SearchResult;
 pub use eddy_ai::{AiSettings, AutoAction, AutoRule, ProviderSettings, RuleScope, Summary};
+pub use eddy_extract::{ChapterLink, SeriesProposal};
 pub use eddy_fetch::WebRenderer;
-pub use native_host::{CHROME_EXTENSION_ID, NATIVE_HOST_NAME, install_native_host};
-pub use rules::RulePackSummary;
 pub use engine::{Engine, EngineOptions, EngineStatus, Mode, RefreshSummary, SourceInfo};
+pub use hub::{ServerStatus, plausible_hlc};
+pub use native_host::{CHROME_EXTENSION_ID, NATIVE_HOST_NAME, install_native_host};
 pub use platform::{LogLevel, MemoryPlatform, Platform};
+pub use progress::{ResumePoint, SeriesInfo};
+pub use rules::RulePackSummary;
+pub use search::SearchResult;
 
 pub use eddy_store::{ItemFilter, ItemQuery, ItemRow};
 

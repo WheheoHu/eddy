@@ -45,7 +45,9 @@ pub fn extract(html: &str, url: &str, rule: Option<&SiteRule>) -> Result<Extract
         .and_then(|sel| select_text(&doc, sel))
         .or_else(|| page_title(&doc))
         .map(|t| clean_title(t, heading.as_deref()));
-    let next_page = rule.and_then(|r| r.next_page.as_deref()).and_then(|sel| select_href(&doc, sel, url));
+    let next_page = rule
+        .and_then(|r| r.next_page.as_deref())
+        .and_then(|sel| select_href(&doc, sel, url));
 
     if let Some(rule) = rule {
         strip(&mut doc, &rule.strip);
@@ -76,12 +78,23 @@ pub fn extract(html: &str, url: &str, rule: Option<&SiteRule>) -> Result<Extract
     }
 
     let source = doc.html();
-    let cfg = dom_smoothie::Config { max_elements_to_parse: 0, ..Default::default() };
-    let readability = dom_smoothie::Readability::new(source.as_str(), Url::parse(url).ok().map(|_| url), Some(cfg));
+    let cfg = dom_smoothie::Config {
+        max_elements_to_parse: 0,
+        ..Default::default()
+    };
+    let readability = dom_smoothie::Readability::new(
+        source.as_str(),
+        Url::parse(url).ok().map(|_| url),
+        Some(cfg),
+    );
     match readability.and_then(|mut r| r.parse()) {
         Ok(article) => {
             let content_html = article.content.to_string();
-            let text_len = article.text_content.chars().filter(|c| !c.is_whitespace()).count();
+            let text_len = article
+                .text_content
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .count();
             if text_len == 0 {
                 return Err(ExtractError::NoContent);
             }
@@ -102,12 +115,25 @@ pub fn extract(html: &str, url: &str, rule: Option<&SiteRule>) -> Result<Extract
         Err(_) => {
             // Readability gave up (short page): keep the whole body.
             let body = Selector::parse("body").unwrap();
-            let content_html = doc.select(&body).next().map(|b| b.inner_html()).ok_or(ExtractError::NoContent)?;
+            let content_html = doc
+                .select(&body)
+                .next()
+                .map(|b| b.inner_html())
+                .ok_or(ExtractError::NoContent)?;
             let text_len = text_len_of(&content_html);
             if text_len == 0 {
                 return Err(ExtractError::NoContent);
             }
-            Ok(Extracted { title, byline: None, content_html, text_len, excerpt: None, published: None, site_name: None, next_page })
+            Ok(Extracted {
+                title,
+                byline: None,
+                content_html,
+                text_len,
+                excerpt: None,
+                published: None,
+                site_name: None,
+                next_page,
+            })
         }
     }
 }
@@ -115,7 +141,11 @@ pub fn extract(html: &str, url: &str, rule: Option<&SiteRule>) -> Result<Extract
 /// The page `<title>` (or `og:title`), trimmed of site suffixes like " | Site".
 pub fn page_title(doc: &Html) -> Option<String> {
     let og = Selector::parse("meta[property=\"og:title\"]").unwrap();
-    if let Some(t) = doc.select(&og).next().and_then(|m| m.value().attr("content")) {
+    if let Some(t) = doc
+        .select(&og)
+        .next()
+        .and_then(|m| m.value().attr("content"))
+    {
         let t = t.trim();
         if !t.is_empty() {
             return Some(t.to_string());
@@ -150,7 +180,11 @@ fn select_text(doc: &Html, selector: &str) -> Option<String> {
 fn select_href(doc: &Html, selector: &str, base: &str) -> Option<String> {
     let sel = Selector::parse(selector).ok()?;
     let href = doc.select(&sel).next()?.value().attr("href")?;
-    Url::parse(base).ok()?.join(href).ok().map(|u| u.to_string())
+    Url::parse(base)
+        .ok()?
+        .join(href)
+        .ok()
+        .map(|u| u.to_string())
 }
 
 fn strip(doc: &mut Html, selectors: &[String]) {
@@ -168,21 +202,36 @@ fn strip(doc: &mut Html, selectors: &[String]) {
 }
 
 fn text_len_of(html: &str) -> usize {
-    Html::parse_fragment(html).root_element().text().flat_map(str::chars).filter(|c| !c.is_whitespace()).count()
+    Html::parse_fragment(html)
+        .root_element()
+        .text()
+        .flat_map(str::chars)
+        .filter(|c| !c.is_whitespace())
+        .count()
 }
 
-static MATH_SCRIPT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(?is)<script[^>]*type\s*=\s*["']math/tex(; *mode=display)?["'][^>]*>(.*?)</script>"#).unwrap());
-static MATHML: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?is)<math\b([^>]*)>(.*?)</math>"#).unwrap());
-static TEX_ANNOTATION: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(?is)<annotation[^>]*encoding\s*=\s*["'](?:application/x-tex|tex)["'][^>]*>(.*?)</annotation>"#).unwrap());
-static ALTTEXT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?is)\balttext\s*=\s*"([^"]*)""#).unwrap());
-static MATH_FALLBACK_IMG: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(?is)<img\b[^>]*class\s*=\s*["'][^"']*mwe-math-fallback[^"']*["'][^>]*>"#).unwrap());
+static MATH_SCRIPT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?is)<script[^>]*type\s*=\s*["']math/tex(; *mode=display)?["'][^>]*>(.*?)</script>"#,
+    )
+    .unwrap()
+});
+static MATHML: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?is)<math\b([^>]*)>(.*?)</math>"#).unwrap());
+static TEX_ANNOTATION: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?is)<annotation[^>]*encoding\s*=\s*["'](?:application/x-tex|tex)["'][^>]*>(.*?)</annotation>"#).unwrap()
+});
+static ALTTEXT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?is)\balttext\s*=\s*"([^"]*)""#).unwrap());
+static MATH_FALLBACK_IMG: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?is)<img\b[^>]*class\s*=\s*["'][^"']*mwe-math-fallback[^"']*["'][^>]*>"#)
+        .unwrap()
+});
 /// Wikipedia hides the accessible MathML (`mwe-math-mathml-*`) behind
 /// `display: none`, and Readability drops hidden elements.
-static HIDDEN_MATH_WRAPPER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(?is)(<span\b[^>]*class\s*=\s*["'][^"']*mwe-math-mathml[^"']*["'][^>]*?)\s*style\s*=\s*["']\s*display:\s*none;?\s*["']"#).unwrap());
+static HIDDEN_MATH_WRAPPER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?is)(<span\b[^>]*class\s*=\s*["'][^"']*mwe-math-mathml[^"']*["'][^>]*?)\s*style\s*=\s*["']\s*display:\s*none;?\s*["']"#).unwrap()
+});
 
 /// Readability drops `<script>` elements and hidden MathML, which would take
 /// MathJax and MathML formulas with them. Rewrites both as TeX delimiters in
@@ -193,7 +242,11 @@ pub fn preserve_math(html: &str) -> String {
     if out.contains("math/tex") {
         out = MATH_SCRIPT
             .replace_all(&out, |c: &regex::Captures| {
-                let tex = c[2].trim().replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+                let tex = c[2]
+                    .trim()
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;");
                 delimit(&tex, c.get(1).is_some())
             })
             .into_owned();
@@ -210,7 +263,11 @@ pub fn preserve_math(html: &str) -> String {
                         DATA_MW.captures(&c[1]).and_then(|a| {
                             let raw = a.get(1).or(a.get(2))?.as_str();
                             let tex = eddy_doc::tex_from_data_mw(&decode_entities(raw))?;
-                            Some(tex.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;"))
+                            Some(
+                                tex.replace('&', "&amp;")
+                                    .replace('<', "&lt;")
+                                    .replace('>', "&gt;"),
+                            )
                         })
                     });
                 match tex.filter(|t| !t.is_empty()) {
@@ -225,14 +282,24 @@ pub fn preserve_math(html: &str) -> String {
     out
 }
 
-static DATA_MW: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?is)\bdata-mw\s*=\s*(?:'([^']*)'|"([^"]*)")"#).unwrap());
+static DATA_MW: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?is)\bdata-mw\s*=\s*(?:'([^']*)'|"([^"]*)")"#).unwrap());
 
 fn decode_entities(s: &str) -> String {
-    s.replace("&quot;", "\"").replace("&apos;", "'").replace("&#39;", "'").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+    s.replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&#39;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
 }
 
 fn delimit(tex: &str, display: bool) -> String {
-    if display { format!("<div>\\[{tex}\\]</div>") } else { format!("\\({tex}\\)") }
+    if display {
+        format!("<div>\\[{tex}\\]</div>")
+    } else {
+        format!("\\({tex}\\)")
+    }
 }
 
 #[cfg(test)]

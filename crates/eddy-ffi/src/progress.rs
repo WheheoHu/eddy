@@ -11,6 +11,9 @@ pub struct ResumePointView {
     pub updated_at: i64,
     pub device: Option<String>,
     pub from_other_device: bool,
+    /// This device's own last position, for "back to where I was here".
+    pub local_block_id: Option<String>,
+    pub local_offset: u32,
 }
 
 impl From<core::ResumePoint> for ResumePointView {
@@ -22,6 +25,8 @@ impl From<core::ResumePoint> for ResumePointView {
             updated_at: r.updated_at,
             device: r.device,
             from_other_device: r.from_other_device,
+            local_block_id: r.local_block_id,
+            local_offset: r.local_offset,
         }
     }
 }
@@ -44,7 +49,14 @@ impl From<core::SeriesProposal> for SeriesProposalView {
         SeriesProposalView {
             title: p.title,
             toc_url: p.toc_url,
-            chapters: p.chapters.into_iter().map(|c| ChapterLinkView { title: c.title, url: c.url }).collect(),
+            chapters: p
+                .chapters
+                .into_iter()
+                .map(|c| ChapterLinkView {
+                    title: c.title,
+                    url: c.url,
+                })
+                .collect(),
         }
     }
 }
@@ -100,7 +112,11 @@ impl EddyEngine {
             .map(|r| SearchResultView {
                 item: r.item.into(),
                 snippet: r.snippet,
-                highlights: r.highlights.into_iter().map(|(start, end)| TextRangeView { start, end }).collect(),
+                highlights: r
+                    .highlights
+                    .into_iter()
+                    .map(|(start, end)| TextRangeView { start, end })
+                    .collect(),
             })
             .collect())
     }
@@ -114,8 +130,17 @@ impl EddyEngine {
 impl EddyEngine {
     /// Reports the top visible block and UTF-16 offset; returns the overall
     /// progression. Throttled unless `force`.
-    pub fn record_progress(&self, item_id: String, block_id: String, offset: u32, force: bool) -> R<Option<f64>> {
-        Ok(self.engine.record_progress(&item_id, &block_id, offset, force)?.map(|l| l.progression))
+    pub fn record_progress(
+        &self,
+        item_id: String,
+        block_id: String,
+        offset: u32,
+        force: bool,
+    ) -> R<Option<f64>> {
+        Ok(self
+            .engine
+            .record_progress(&item_id, &block_id, offset, force)?
+            .map(|l| l.progression))
     }
 
     pub fn set_finished(&self, item_id: String, finished: bool) -> R<()> {
@@ -134,13 +159,23 @@ impl EddyEngine {
         Ok(self.engine.detect_series_at(&url).await?.map(Into::into))
     }
 
-    pub fn create_series(&self, title: String, toc_url: Option<String>, chapters: Vec<ChapterLinkView>) -> R<String> {
-        let chapters: Vec<(String, String)> = chapters.into_iter().map(|c| (c.title, c.url)).collect();
-        Ok(self.engine.create_series(&title, toc_url.as_deref(), &chapters)?)
+    pub fn create_series(
+        &self,
+        title: String,
+        toc_url: Option<String>,
+        chapters: Vec<ChapterLinkView>,
+    ) -> R<String> {
+        let chapters: Vec<(String, String)> =
+            chapters.into_iter().map(|c| (c.title, c.url)).collect();
+        Ok(self
+            .engine
+            .create_series(&title, toc_url.as_deref(), &chapters)?)
     }
 
     pub fn add_to_series(&self, series_id: String, item_id: String, chapter_index: u32) -> R<()> {
-        Ok(self.engine.add_to_series(&series_id, &item_id, chapter_index)?)
+        Ok(self
+            .engine
+            .add_to_series(&series_id, &item_id, chapter_index)?)
     }
 
     pub fn remove_from_series(&self, item_id: String) -> R<()> {
@@ -156,7 +191,12 @@ impl EddyEngine {
     }
 
     pub fn series_list(&self) -> R<Vec<SeriesView>> {
-        Ok(self.engine.series_list()?.into_iter().map(Into::into).collect())
+        Ok(self
+            .engine
+            .series_list()?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
     pub fn series_info(&self, series_id: String) -> R<Option<SeriesView>> {

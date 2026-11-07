@@ -26,10 +26,18 @@ fn readability_extracts_article_and_keeps_math() {
     assert_eq!(out.title.as_deref(), Some("Path Tracing Notes"));
     assert!(out.text_len > 1000);
     assert!(!out.content_html.contains("Copyright"));
-    let doc = html_to_document(&out.content_html, &ConvertOptions { base_url: Some("https://blog.example/posts/pt"), title: out.title.as_deref() });
+    let doc = html_to_document(
+        &out.content_html,
+        &ConvertOptions {
+            base_url: Some("https://blog.example/posts/pt"),
+            title: out.title.as_deref(),
+        },
+    );
     let text = doc.plain_text();
     assert!(text.contains("$L_o = \\int L_i \\cos\\theta$"), "{text}");
-    assert!(doc.blocks.iter().any(|b| matches!(&b.kind, eddy_model::BlockKind::Math { tex } if tex.contains("\\frac{1}{N}"))));
+    assert!(doc.blocks.iter().any(
+        |b| matches!(&b.kind, eddy_model::BlockKind::Math { tex } if tex.contains("\\frac{1}{N}"))
+    ));
 }
 
 #[test]
@@ -42,13 +50,31 @@ fn wikipedia_style_mathml_survives_readability() {
         <p>Parsoid output: <math class="mwe-math-element" data-mw='{{"name":"math","body":{{"extsrc":"x &lt; y&apos;"}}}}'><mi>x</mi></math> holds.</p>
         </div></body></html>"#
     );
-    let out = extract(&page, "https://en.wikipedia.org/wiki/Rendering_equation", None).unwrap();
+    let out = extract(
+        &page,
+        "https://en.wikipedia.org/wiki/Rendering_equation",
+        None,
+    )
+    .unwrap();
     assert!(!out.content_html.contains("mwe-math-fallback"));
     let doc = html_to_document(&out.content_html, &ConvertOptions::default());
-    let para = doc.blocks.iter().find(|b| b.plain_text().starts_with("The equation")).unwrap();
-    assert_eq!(para.plain_text(), "The equation $L_o$ is outgoing radiance.");
-    assert!(doc.blocks.iter().any(|b| matches!(&b.kind, eddy_model::BlockKind::Math { tex } if tex == "\\int_\\Omega f")));
-    let parsoid = doc.blocks.iter().find(|b| b.plain_text().starts_with("Parsoid")).unwrap();
+    let para = doc
+        .blocks
+        .iter()
+        .find(|b| b.plain_text().starts_with("The equation"))
+        .unwrap();
+    assert_eq!(
+        para.plain_text(),
+        "The equation $L_o$ is outgoing radiance."
+    );
+    assert!(doc.blocks.iter().any(
+        |b| matches!(&b.kind, eddy_model::BlockKind::Math { tex } if tex == "\\int_\\Omega f")
+    ));
+    let parsoid = doc
+        .blocks
+        .iter()
+        .find(|b| b.plain_text().starts_with("Parsoid"))
+        .unwrap();
     assert_eq!(parsoid.plain_text(), "Parsoid output: $x < y'$ holds.");
 }
 
@@ -69,12 +95,19 @@ fn site_rules_override_readability() {
 
 #[test]
 fn truncation_detection() {
-    let teaser = html_to_document("<p>A short teaser about the new renderer…</p>", &ConvertOptions::default());
+    let teaser = html_to_document(
+        "<p>A short teaser about the new renderer…</p>",
+        &ConvertOptions::default(),
+    );
     assert!(truncation_hint(&teaser));
-    let long_text = "<p>Full body sentence with enough words to count as real content.</p>".repeat(20);
+    let long_text =
+        "<p>Full body sentence with enough words to count as real content.</p>".repeat(20);
     let full = html_to_document(&long_text, &ConvertOptions::default());
     assert!(!truncation_hint(&full));
-    let read_more = html_to_document(&format!("{long_text}<p><a href='/x'>Continue reading →</a></p>"), &ConvertOptions::default());
+    let read_more = html_to_document(
+        &format!("{long_text}<p><a href='/x'>Continue reading →</a></p>"),
+        &ConvertOptions::default(),
+    );
     assert!(truncation_hint(&read_more));
     assert!(is_truncated(200, 3000));
     assert!(!is_truncated(2900, 3000));
@@ -82,7 +115,9 @@ fn truncation_detection() {
 
 #[test]
 fn detects_a_docs_table_of_contents() {
-    let toc: String = (1..=8).map(|i| format!("<li><a href=\"/book/ch{i:02}.html\">Chapter {i}</a></li>")).collect();
+    let toc: String = (1..=8)
+        .map(|i| format!("<li><a href=\"/book/ch{i:02}.html\">Chapter {i}</a></li>"))
+        .collect();
     let page = format!(
         r#"<html><head><title>The Book</title></head><body>
         <header><a href="/">Home</a><a href="https://twitter.com/x">Twitter</a></header>
@@ -92,7 +127,10 @@ fn detects_a_docs_table_of_contents() {
     let series = detect_series(&page, "https://docs.example/book/index.html").unwrap();
     assert_eq!(series.title, "The Book");
     assert_eq!(series.chapters.len(), 8);
-    assert_eq!(series.chapters[0].url, "https://docs.example/book/ch01.html");
+    assert_eq!(
+        series.chapters[0].url,
+        "https://docs.example/book/ch01.html"
+    );
     assert_eq!(series.chapters[7].title, "Chapter 8");
     assert!(detect_series(&article_page(), "https://blog.example/posts/pt").is_none());
 }

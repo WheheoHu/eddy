@@ -33,7 +33,10 @@ impl From<EngineStatus> for StatusView {
                 Mode::Standalone => EngineMode::Standalone,
                 Mode::Server => EngineMode::Server,
             },
-            account: s.account.map(|a| AccountView { base_url: a.base_url, username: a.username }),
+            account: s.account.map(|a| AccountView {
+                base_url: a.base_url,
+                username: a.username,
+            }),
             last_refresh: s.last_refresh,
             last_error: s.last_error,
         }
@@ -49,7 +52,11 @@ pub struct RefreshSummaryView {
 
 impl From<RefreshSummary> for RefreshSummaryView {
     fn from(s: RefreshSummary) -> Self {
-        RefreshSummaryView { new_items: s.new_items, state_changes: s.state_changes, sources: s.sources }
+        RefreshSummaryView {
+            new_items: s.new_items,
+            state_changes: s.state_changes,
+            sources: s.sources,
+        }
     }
 }
 
@@ -204,7 +211,12 @@ pub struct ItemQueryView {
 
 impl From<ItemQueryView> for eddy_core::ItemQuery {
     fn from(q: ItemQueryView) -> Self {
-        eddy_core::ItemQuery { filter: q.filter.into(), unread_only: q.unread_only, limit: q.limit, offset: q.offset }
+        eddy_core::ItemQuery {
+            filter: q.filter.into(),
+            unread_only: q.unread_only,
+            limit: q.limit,
+            offset: q.offset,
+        }
     }
 }
 
@@ -218,7 +230,12 @@ pub struct RunView {
 
 impl From<m::Run> for RunView {
     fn from(r: m::Run) -> Self {
-        RunView { text: r.text, style: r.style, link: r.link, math: r.math }
+        RunView {
+            text: r.text,
+            style: r.style,
+            link: r.link,
+            math: r.math,
+        }
     }
 }
 
@@ -291,14 +308,44 @@ pub enum MediaKindView {
 
 #[derive(uniffi::Enum, Clone, Debug)]
 pub enum BlockKindView {
-    Heading { level: u8, runs: Vec<RunView> },
-    Paragraph { runs: Vec<RunView> },
-    ListItem { ordered: bool, depth: u8, index: u32, marker: bool, runs: Vec<RunView> },
-    Code { language: Option<String>, text: String, highlights: Vec<HighlightView> },
-    Math { tex: String },
-    Image { src: String, alt: String, width: Option<u32>, height: Option<u32>, caption: Vec<RunView> },
-    Table { rows: Vec<TableRowView> },
-    Media { media: MediaKindView, src: String, poster: Option<String>, title: Option<String> },
+    Heading {
+        level: u8,
+        runs: Vec<RunView>,
+    },
+    Paragraph {
+        runs: Vec<RunView>,
+    },
+    ListItem {
+        ordered: bool,
+        depth: u8,
+        index: u32,
+        marker: bool,
+        runs: Vec<RunView>,
+    },
+    Code {
+        language: Option<String>,
+        text: String,
+        highlights: Vec<HighlightView>,
+    },
+    Math {
+        tex: String,
+    },
+    Image {
+        src: String,
+        alt: String,
+        width: Option<u32>,
+        height: Option<u32>,
+        caption: Vec<RunView>,
+    },
+    Table {
+        rows: Vec<TableRowView>,
+    },
+    Media {
+        media: MediaKindView,
+        src: String,
+        poster: Option<String>,
+        title: Option<String>,
+    },
     Rule,
 }
 
@@ -313,21 +360,54 @@ impl From<m::Block> for BlockView {
     fn from(b: m::Block) -> Self {
         use m::BlockKind as K;
         let kind = match b.kind {
-            K::Heading { level, runs: r } => BlockKindView::Heading { level, runs: runs(r) },
+            K::Heading { level, runs: r } => BlockKindView::Heading {
+                level,
+                runs: runs(r),
+            },
             K::Paragraph { runs: r } => BlockKindView::Paragraph { runs: runs(r) },
-            K::ListItem { ordered, depth, index, marker, runs: r } => {
-                BlockKindView::ListItem { ordered, depth, index, marker, runs: runs(r) }
-            }
-            K::Code { language, text, highlights } => BlockKindView::Code {
+            K::ListItem {
+                ordered,
+                depth,
+                index,
+                marker,
+                runs: r,
+            } => BlockKindView::ListItem {
+                ordered,
+                depth,
+                index,
+                marker,
+                runs: runs(r),
+            },
+            K::Code {
+                language,
+                text,
+                highlights,
+            } => BlockKindView::Code {
                 language,
                 text,
                 highlights: highlights
                     .into_iter()
-                    .map(|h| HighlightView { start: h.start, end: h.end, class: h.class.into() })
+                    .map(|h| HighlightView {
+                        start: h.start,
+                        end: h.end,
+                        class: h.class.into(),
+                    })
                     .collect(),
             },
             K::Math { tex } => BlockKindView::Math { tex },
-            K::Image { src, alt, width, height, caption } => BlockKindView::Image { src, alt, width, height, caption: runs(caption) },
+            K::Image {
+                src,
+                alt,
+                width,
+                height,
+                caption,
+            } => BlockKindView::Image {
+                src,
+                alt,
+                width,
+                height,
+                caption: runs(caption),
+            },
             K::Table { rows } => BlockKindView::Table {
                 rows: rows
                     .into_iter()
@@ -335,12 +415,22 @@ impl From<m::Block> for BlockView {
                         cells: row
                             .cells
                             .into_iter()
-                            .map(|c| TableCellView { header: c.header, colspan: c.colspan, rowspan: c.rowspan, runs: runs(c.runs) })
+                            .map(|c| TableCellView {
+                                header: c.header,
+                                colspan: c.colspan,
+                                rowspan: c.rowspan,
+                                runs: runs(c.runs),
+                            })
                             .collect(),
                     })
                     .collect(),
             },
-            K::Media { media, src, poster, title } => BlockKindView::Media {
+            K::Media {
+                media,
+                src,
+                poster,
+                title,
+            } => BlockKindView::Media {
                 media: match media {
                     m::MediaKind::Video => MediaKindView::Video,
                     m::MediaKind::Audio => MediaKindView::Audio,
@@ -352,7 +442,11 @@ impl From<m::Block> for BlockView {
             },
             K::Rule => BlockKindView::Rule,
         };
-        BlockView { id: b.id, quote_depth: b.quote_depth, kind }
+        BlockView {
+            id: b.id,
+            quote_depth: b.quote_depth,
+            kind,
+        }
     }
 }
 

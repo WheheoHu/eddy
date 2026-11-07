@@ -40,15 +40,29 @@ pub type Result<T> = std::result::Result<T, GReaderError>;
 /// `https://host/reader/api/greader.php`. Credentials, queries and fragments
 /// are rejected so secrets are never sent to an unexpected endpoint.
 pub fn normalize_base(input: &str) -> Result<String> {
-    let mut url = Url::parse(input.trim()).map_err(|_| GReaderError::Config("请输入完整的 FreshRSS 地址，例如 https://rss.example.com。".into()))?;
+    let mut url = Url::parse(input.trim()).map_err(|_| {
+        GReaderError::Config("请输入完整的 FreshRSS 地址，例如 https://rss.example.com。".into())
+    })?;
     if !matches!(url.scheme(), "https" | "http") || url.host_str().is_none() {
-        return Err(GReaderError::Config("FreshRSS 地址需要以 https:// 或 http:// 开头。".into()));
+        return Err(GReaderError::Config(
+            "FreshRSS 地址需要以 https:// 或 http:// 开头。".into(),
+        ));
     }
-    if !url.username().is_empty() || url.password().is_some() || url.query().is_some() || url.fragment().is_some() {
-        return Err(GReaderError::Config("地址里不能包含账号、参数或锚点。".into()));
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(GReaderError::Config(
+            "地址里不能包含账号、参数或锚点。".into(),
+        ));
     }
     let path = url.path().trim_end_matches('/').to_string();
-    let path = if path.ends_with("/api/greader.php") { path } else { format!("{path}/api/greader.php") };
+    let path = if path.ends_with("/api/greader.php") {
+        path
+    } else {
+        format!("{path}/api/greader.php")
+    };
     url.set_path(&path);
     Ok(url.to_string().trim_end_matches('/').to_string())
 }

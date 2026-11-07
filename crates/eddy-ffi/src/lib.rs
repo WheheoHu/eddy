@@ -2,6 +2,7 @@
 
 mod ai;
 mod progress;
+mod sync;
 mod views;
 
 use std::path::PathBuf;
@@ -11,6 +12,7 @@ use eddy_core::{Engine, EngineError, EngineOptions, LogLevel, Platform};
 
 pub use ai::*;
 pub use progress::*;
+pub use sync::*;
 pub use views::*;
 
 uniffi::setup_scaffolding!();
@@ -79,7 +81,11 @@ pub struct RulePackSummaryView {
 impl From<eddy_core::RulePackSummary> for RulePackSummaryView {
     fn from(s: eddy_core::RulePackSummary) -> Self {
         RulePackSummaryView {
-            packs: s.packs.into_iter().map(|(name, sites)| RulePackView { name, sites }).collect(),
+            packs: s
+                .packs
+                .into_iter()
+                .map(|(name, sites)| RulePackView { name, sites })
+                .collect(),
             ftr_sites: s.ftr_sites,
         }
     }
@@ -96,7 +102,10 @@ pub fn chrome_extension_id() -> String {
 #[uniffi::export]
 pub fn install_native_host(host_path: String) -> Result<Vec<String>, EddyError> {
     let files = eddy_core::install_native_host(std::path::Path::new(&host_path))?;
-    Ok(files.into_iter().map(|p| p.to_string_lossy().into_owned()).collect())
+    Ok(files
+        .into_iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect())
 }
 
 struct PlatformAdapter(Arc<dyn PlatformServices>);
@@ -138,11 +147,18 @@ pub struct EddyEngine {
 #[uniffi::export(async_runtime = "tokio")]
 impl EddyEngine {
     #[uniffi::constructor]
-    pub fn new(data_dir: String, platform: Arc<dyn PlatformServices>, default_cache_limit: u64) -> R<Arc<Self>> {
+    pub fn new(
+        data_dir: String,
+        platform: Arc<dyn PlatformServices>,
+        default_cache_limit: u64,
+    ) -> R<Arc<Self>> {
         let engine = Engine::open(
             &PathBuf::from(data_dir),
             Arc::new(PlatformAdapter(platform)),
-            EngineOptions { default_cache_limit },
+            EngineOptions {
+                default_cache_limit,
+                server_role: false,
+            },
         )?;
         Ok(Arc::new(EddyEngine { engine }))
     }
@@ -155,9 +171,20 @@ impl EddyEngine {
         Ok(self.engine.status()?.into())
     }
 
-    pub async fn configure_freshrss(&self, url: String, username: String, password: String) -> R<AccountView> {
-        let a = self.engine.configure_freshrss(&url, &username, &password).await?;
-        Ok(AccountView { base_url: a.base_url, username: a.username })
+    pub async fn configure_freshrss(
+        &self,
+        url: String,
+        username: String,
+        password: String,
+    ) -> R<AccountView> {
+        let a = self
+            .engine
+            .configure_freshrss(&url, &username, &password)
+            .await?;
+        Ok(AccountView {
+            base_url: a.base_url,
+            username: a.username,
+        })
     }
 
     pub fn remove_account(&self) -> R<()> {
@@ -173,7 +200,12 @@ impl EddyEngine {
     }
 
     pub fn items(&self, query: ItemQueryView) -> R<Vec<ItemView>> {
-        Ok(self.engine.items(&query.into())?.into_iter().map(Into::into).collect())
+        Ok(self
+            .engine
+            .items(&query.into())?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
     pub fn item(&self, id: String) -> R<Option<ItemView>> {
@@ -246,7 +278,8 @@ impl EddyEngine {
     }
 
     pub fn set_web_renderer(&self, renderer: Option<Arc<dyn WebPageRenderer>>) -> R<()> {
-        let renderer = renderer.map(|r| Arc::new(RendererAdapter(r)) as Arc<dyn eddy_core::WebRenderer>);
+        let renderer =
+            renderer.map(|r| Arc::new(RendererAdapter(r)) as Arc<dyn eddy_core::WebRenderer>);
         Ok(self.engine.set_web_renderer(renderer)?)
     }
 }

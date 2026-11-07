@@ -72,10 +72,21 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX ai_artifacts_item ON ai_artifacts(item_id, kind);
     CREATE TABLE ai_usage(day TEXT PRIMARY KEY, count INTEGER NOT NULL);
     "#,
+    // 2: sync. The ops table doubles as the server's change feed (seq is the
+    // cursor); `device` records which device an op came from.
+    r#"
+    ALTER TABLE ops ADD COLUMN device TEXT;
+    CREATE TABLE devices(
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
+        created_at INTEGER NOT NULL, last_seen INTEGER);
+    CREATE TABLE pairing_codes(code_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);
+    CREATE TABLE server_config(key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
+    "#,
 ];
 
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
-    let current: usize = conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? as usize;
+    let current: usize =
+        conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? as usize;
     for (i, sql) in MIGRATIONS.iter().enumerate().skip(current) {
         let tx = conn.transaction()?;
         tx.execute_batch(sql)?;

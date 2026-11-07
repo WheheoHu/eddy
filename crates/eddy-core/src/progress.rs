@@ -24,6 +24,10 @@ pub struct ResumePoint {
     /// Device that recorded it.
     pub device: Option<String>,
     pub from_other_device: bool,
+    /// This device's own last position, offered as "back to where I was"
+    /// when the resume point came from another device.
+    pub local_block_id: Option<String>,
+    pub local_offset: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -41,23 +45,49 @@ pub struct SeriesInfo {
 
 impl Inner {
     fn chapters(&self, series_id: &str) -> Result<Vec<ItemRow>> {
-        Ok(self.store.items(&ItemQuery { filter: ItemFilter::Series(series_id.into()), unread_only: false, limit: 10_000, offset: 0 })?)
+        Ok(self.store.items(&ItemQuery {
+            filter: ItemFilter::Series(series_id.into()),
+            unread_only: false,
+            limit: 10_000,
+            offset: 0,
+        })?)
     }
 
     fn series_info(&self, series: eddy_model::Series) -> Result<SeriesInfo> {
         let chapters = self.chapters(&series.id)?;
         let total = chapters.len() as u32;
         let finished = chapters.iter().filter(|r| r.item.finished).count() as u32;
-        let partial: f64 = chapters.iter().filter(|r| !r.item.finished).map(|r| r.item.progress).sum();
-        let progress = if total == 0 { 0.0 } else { ((finished as f64 + partial) / total as f64).min(1.0) };
+        let partial: f64 = chapters
+            .iter()
+            .filter(|r| !r.item.finished)
+            .map(|r| r.item.progress)
+            .sum();
+        let progress = if total == 0 {
+            0.0
+        } else {
+            ((finished as f64 + partial) / total as f64).min(1.0)
+        };
         // Continue where reading stopped: the first unfinished chapter after
         // the last one touched, else the first unfinished one.
-        let last_touched = chapters.iter().enumerate().filter(|(_, r)| r.item.last_read_at.is_some()).max_by_key(|(_, r)| r.item.last_read_at).map(|(i, _)| i);
+        let last_touched = chapters
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.item.last_read_at.is_some())
+            .max_by_key(|(_, r)| r.item.last_read_at)
+            .map(|(i, _)| i);
         let next = last_touched
             .and_then(|i| chapters[i..].iter().find(|r| !r.item.finished))
             .or_else(|| chapters.iter().find(|r| !r.item.finished))
             .map(|r| r.item.id.clone());
-        Ok(SeriesInfo { id: series.id, title: series.title, toc_url: series.toc_url, chapters: total, finished, progress, next_item_id: next })
+        Ok(SeriesInfo {
+            id: series.id,
+            title: series.title,
+            toc_url: series.toc_url,
+            chapters: total,
+            finished,
+            progress,
+            next_item_id: next,
+        })
     }
 
     /// Fetches content for items that have only a URL (series chapters).
@@ -66,10 +96,21 @@ impl Inner {
         if row.item.current_version.is_some() || row.item.kind == ItemKind::Feed {
             return Ok(false);
         }
-        let Some(url) = row.item.url.clone() else { return Ok(false) };
+        let Some(url) = row.item.url.clone() else {
+            return Ok(false);
+        };
         let fetcher = self.fetcher.read().clone();
-        let page = fetcher.fetch(&url, |_| true).await.map_err(|e| EngineError::Network(e.to_string()))?;
-        let (ingested, _) = self.ingest_page(item_id, &page.html, &page.final_url, ContentOrigin::Extracted, true)?;
+        let page = fetcher
+            .fetch(&url, |_| true)
+            .await
+            .map_err(|e| EngineError::Network(e.to_string()))?;
+        let (ingested, _) = self.ingest_page(
+            item_id,
+            &page.html,
+            &page.final_url,
+            ContentOrigin::Extracted,
+            true,
+        )?;
         self.switch_version(item_id, &ingested)?;
         self.after_ingest(item_id, &ingested);
         Ok(true)
@@ -81,24 +122,47 @@ impl Engine {
     /// block and UTF-16 offset in it). Throttled while scrolling unless
     /// `force` (e.g. when the reader closes). Marks the item finished at the
     /// end. Returns the full locator.
-    pub fn record_progress(&self, item_id: &str, block_id: &str, offset: u32, force: bool) -> Result<Option<Locator>> {
+    pub fn record_progress(
+        &self,
+        item_id: &str,
+        block_id: &str,
+        offset: u32,
+        force: bool,
+    ) -> Result<Option<Locator>> {
         let inner = &self.inner;
-        let Some(doc) = inner.current_document(item_id)? else { return Ok(None) };
-        let Some(mut locator) = locator_at(&doc.document, &doc.version.hash, block_id, offset) else { return Ok(None) };
+        let Some(doc) = inner.current_document(item_id)? else {
+            return Ok(None);
+        };
+        let Some(mut locator) = locator_at(&doc.document, &doc.version.hash, block_id, offset)
+        else {
+            return Ok(None);
+        };
         let at_end = doc.document.blocks.last().is_some_and(|b| b.id == block_id);
         if at_end {
             locator.progression = locator.progression.max(FINISHED_AT);
         }
         {
             let mut last = inner.progress_throttle.lock();
-            if let Some((when, progression)) = last.get(item_id) {
-                if !force && when.elapsed() < PROGRESS_INTERVAL && (progression - locator.progression).abs() < 0.2 {
-                    return Ok(Some(locator));
-                }
+            if let Some((when, progression)) = last.get(item_id)
+                && !force
+                && when.elapsed() < PROGRESS_INTERVAL
+                && (progression - locator.progression).abs() < 0.2
+            {
+                return Ok(Some(locator));
             }
             last.insert(item_id.to_string(), (Instant::now(), locator.progression));
         }
-        inner.record(Entity::Progress, item_id, fields::LOCATOR, serde_json::to_value(&locator)?, false)?;
+        inner.record(
+            Entity::Progress,
+            item_id,
+            fields::LOCATOR,
+            serde_json::to_value(&locator)?,
+            false,
+        )?;
+        inner.store.meta_set(
+            &format!("local_progress:{item_id}"),
+            &serde_json::to_string(&locator)?,
+        )?;
         let row = inner.store.item(item_id)?.ok_or(EngineError::NotFound)?;
         if locator.progression >= FINISHED_AT && !row.item.finished {
             inner.record(Entity::Item, item_id, fields::FINISHED, true.into(), false)?;
@@ -107,7 +171,13 @@ impl Engine {
     }
 
     pub fn set_finished(&self, item_id: &str, finished: bool) -> Result<()> {
-        self.inner.record(Entity::Item, item_id, fields::FINISHED, finished.into(), false)
+        self.inner.record(
+            Entity::Item,
+            item_id,
+            fields::FINISHED,
+            finished.into(),
+            false,
+        )
     }
 
     /// Where to resume reading, re-anchored to the current content version
@@ -115,22 +185,44 @@ impl Engine {
     /// device).
     pub fn resume_point(&self, item_id: &str) -> Result<Option<ResumePoint>> {
         let inner = &self.inner;
-        let Some(stored) = inner.store.progress(item_id)? else { return Ok(None) };
-        let Some(doc) = inner.current_document(item_id)? else { return Ok(None) };
+        let Some(stored) = inner.store.progress(item_id)? else {
+            return Ok(None);
+        };
+        let Some(doc) = inner.current_document(item_id)? else {
+            return Ok(None);
+        };
         let locator = remap_locator(&doc.document, &doc.version.hash, &stored);
         let (block_id, offset) = match &locator.position {
             Position::Block { block_id, offset } => (Some(block_id.clone()), *offset),
             _ => (None, 0),
         };
-        let clock = inner.store.field_clock(Entity::Progress, item_id, fields::LOCATOR)?;
+        let clock = inner
+            .store
+            .field_clock(Entity::Progress, item_id, fields::LOCATOR)?;
         let device = clock.as_ref().map(|h| h.node.clone());
+        let from_other_device = device.as_deref().is_some_and(|d| d != inner.clock.node());
+        let local: Option<Locator> = if from_other_device {
+            inner
+                .store
+                .meta_get(&format!("local_progress:{item_id}"))?
+                .and_then(|s| serde_json::from_str(&s).ok())
+        } else {
+            None
+        };
+        let local = local.map(|l| remap_locator(&doc.document, &doc.version.hash, &l));
+        let (local_block_id, local_offset) = match local.map(|l| l.position) {
+            Some(Position::Block { block_id, offset }) => (Some(block_id), offset),
+            _ => (None, 0),
+        };
         Ok(Some(ResumePoint {
             locator,
             block_id,
             offset,
             updated_at: clock.map(|h| h.wall_ms as i64).unwrap_or(0),
-            from_other_device: device.as_deref().is_some_and(|d| d != inner.clock.node()),
+            from_other_device,
             device,
+            local_block_id,
+            local_offset,
         }))
     }
 
@@ -138,12 +230,18 @@ impl Engine {
     pub fn detect_series_in(&self, item_id: &str) -> Result<Option<SeriesProposal>> {
         let inner = &self.inner;
         let row = inner.store.item(item_id)?.ok_or(EngineError::NotFound)?;
-        let Some(hash) = row.item.current_version else { return Ok(None) };
-        let Some(version) = inner.store.content_version(&hash)? else { return Ok(None) };
+        let Some(hash) = row.item.current_version else {
+            return Ok(None);
+        };
+        let Some(version) = inner.store.content_version(&hash)? else {
+            return Ok(None);
+        };
         if version.raw_mime != PAGE_MIME {
             return Ok(None);
         }
-        let Some(raw) = inner.store.get_blob(&version.raw_blob)? else { return Ok(None) };
+        let Some(raw) = inner.store.get_blob(&version.raw_blob)? else {
+            return Ok(None);
+        };
         let url = version.source_url.or(row.item.url).unwrap_or_default();
         Ok(detect_series(&String::from_utf8_lossy(&raw), &url))
     }
@@ -151,16 +249,30 @@ impl Engine {
     /// Fetches a table-of-contents page and proposes a series from it.
     pub async fn detect_series_at(&self, url: &str) -> Result<Option<SeriesProposal>> {
         let fetcher = self.inner.fetcher.read().clone();
-        let page = fetcher.fetch(url, |_| true).await.map_err(|e| EngineError::Network(e.to_string()))?;
+        let page = fetcher
+            .fetch(url, |_| true)
+            .await
+            .map_err(|e| EngineError::Network(e.to_string()))?;
         Ok(detect_series(&page.html, &page.final_url))
     }
 
     /// Creates a series from confirmed chapters. Pages already saved join it;
     /// the others become chapters whose content is fetched when opened.
-    pub fn create_series(&self, title: &str, toc_url: Option<&str>, chapters: &[(String, String)]) -> Result<String> {
+    pub fn create_series(
+        &self,
+        title: &str,
+        toc_url: Option<&str>,
+        chapters: &[(String, String)],
+    ) -> Result<String> {
         let inner = &self.inner;
         let series_id = ids::new_local_id();
-        inner.record(Entity::Series, &series_id, fields::CREATE, serde_json::json!({ "title": title, "toc_url": toc_url }), false)?;
+        inner.record(
+            Entity::Series,
+            &series_id,
+            fields::CREATE,
+            serde_json::json!({ "title": title, "toc_url": toc_url }),
+            false,
+        )?;
         for (index, (chapter_title, url)) in chapters.iter().enumerate() {
             let item_id = match inner.saved_by_url(url)? {
                 Some(row) => row.item.id,
@@ -190,7 +302,13 @@ impl Engine {
                         finished: false,
                         last_read_at: None,
                     };
-                    inner.record(Entity::Item, &id, fields::CREATE, serde_json::to_value(&item)?, false)?;
+                    inner.record(
+                        Entity::Item,
+                        &id,
+                        fields::CREATE,
+                        serde_json::to_value(&item)?,
+                        false,
+                    )?;
                     id
                 }
             };
@@ -210,22 +328,49 @@ impl Engine {
     }
 
     pub fn remove_from_series(&self, item_id: &str) -> Result<()> {
-        self.inner.record(Entity::Item, item_id, fields::SERIES, serde_json::json!({ "series_id": null, "chapter_index": null }), false)
+        self.inner.record(
+            Entity::Item,
+            item_id,
+            fields::SERIES,
+            serde_json::json!({ "series_id": null, "chapter_index": null }),
+            false,
+        )
     }
 
     pub fn rename_series(&self, series_id: &str, title: &str) -> Result<()> {
-        self.inner.record(Entity::Series, series_id, fields::TITLE, title.trim().into(), false)
+        self.inner.record(
+            Entity::Series,
+            series_id,
+            fields::TITLE,
+            title.trim().into(),
+            false,
+        )
     }
 
     pub fn delete_series(&self, series_id: &str) -> Result<()> {
-        self.inner.record(Entity::Series, series_id, fields::DELETED, true.into(), false)
+        self.inner.record(
+            Entity::Series,
+            series_id,
+            fields::DELETED,
+            true.into(),
+            false,
+        )
     }
 
     pub fn series_list(&self) -> Result<Vec<SeriesInfo>> {
-        self.inner.store.series_list()?.into_iter().map(|(s, _, _)| self.inner.series_info(s)).collect()
+        self.inner
+            .store
+            .series_list()?
+            .into_iter()
+            .map(|(s, _, _)| self.inner.series_info(s))
+            .collect()
     }
 
     pub fn series_info(&self, series_id: &str) -> Result<Option<SeriesInfo>> {
-        self.inner.store.series(series_id)?.map(|s| self.inner.series_info(s)).transpose()
+        self.inner
+            .store
+            .series(series_id)?
+            .map(|s| self.inner.series_info(s))
+            .transpose()
     }
 }

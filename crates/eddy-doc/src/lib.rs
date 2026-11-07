@@ -37,7 +37,9 @@ pub fn translation_segments(doc: &Document) -> Vec<Segment> {
     };
     for block in &doc.blocks {
         match &block.kind {
-            BlockKind::Heading { runs, .. } | BlockKind::Paragraph { runs } | BlockKind::ListItem { runs, .. } => {
+            BlockKind::Heading { runs, .. }
+            | BlockKind::Paragraph { runs }
+            | BlockKind::ListItem { runs, .. } => {
                 push(block.id.clone(), runs_plain_text(runs));
             }
             BlockKind::Image { caption, .. } if !caption.is_empty() => {
@@ -46,7 +48,10 @@ pub fn translation_segments(doc: &Document) -> Vec<Segment> {
             BlockKind::Table { rows } => {
                 for (r, row) in rows.iter().enumerate() {
                     for (c, cell) in row.cells.iter().enumerate() {
-                        push(format!("{}#r{r}c{c}", block.id), runs_plain_text(&cell.runs));
+                        push(
+                            format!("{}#r{r}c{c}", block.id),
+                            runs_plain_text(&cell.runs),
+                        );
                     }
                 }
             }

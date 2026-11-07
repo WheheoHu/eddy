@@ -5,6 +5,7 @@ mod blobs;
 mod items;
 mod ops;
 mod schema;
+mod server;
 
 use std::path::{Path, PathBuf};
 
@@ -13,6 +14,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 pub use items::{ItemFilter, ItemQuery, ItemRow};
 pub use ops::{OpOrigin, StoredOp};
+pub use server::Device;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -46,7 +48,10 @@ impl Store {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         schema::migrate(&mut conn)?;
-        Ok(Store { conn: Mutex::new(conn), blobs_dir })
+        Ok(Store {
+            conn: Mutex::new(conn),
+            blobs_dir,
+        })
     }
 
     pub(crate) fn with<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
@@ -55,7 +60,12 @@ impl Store {
     }
 
     pub fn meta_get(&self, key: &str) -> Result<Option<String>> {
-        self.with(|c| Ok(c.query_row("SELECT value FROM meta WHERE key=?", [key], |r| r.get(0)).optional()?))
+        self.with(|c| {
+            Ok(
+                c.query_row("SELECT value FROM meta WHERE key=?", [key], |r| r.get(0))
+                    .optional()?,
+            )
+        })
     }
 
     pub fn meta_set(&self, key: &str, value: &str) -> Result<()> {
@@ -84,8 +94,14 @@ impl Store {
 
     /// Settings are synced key/value pairs written through ops.
     pub fn setting(&self, key: &str) -> Result<Option<serde_json::Value>> {
-        let raw: Option<String> =
-            self.with(|c| Ok(c.query_row("SELECT value FROM settings WHERE key=?", [key], |r| r.get(0)).optional()?))?;
+        let raw: Option<String> = self.with(|c| {
+            Ok(
+                c.query_row("SELECT value FROM settings WHERE key=?", [key], |r| {
+                    r.get(0)
+                })
+                .optional()?,
+            )
+        })?;
         Ok(raw.map(|s| serde_json::from_str(&s)).transpose()?)
     }
 
@@ -102,7 +118,9 @@ impl Store {
 
     pub fn accounts(&self) -> Result<Vec<eddy_model::Account>> {
         self.with(|c| {
-            let mut stmt = c.prepare("SELECT id,kind,base_url,username,created_at FROM accounts ORDER BY created_at")?;
+            let mut stmt = c.prepare(
+                "SELECT id,kind,base_url,username,created_at FROM accounts ORDER BY created_at",
+            )?;
             let rows = stmt.query_map([], |r| {
                 Ok(eddy_model::Account {
                     id: r.get(0)?,
@@ -125,7 +143,13 @@ impl Store {
 
     pub fn ai_usage_today(&self, day: &str) -> Result<u32> {
         self.with(|c| {
-            Ok(c.query_row("SELECT count FROM ai_usage WHERE day=?", [day], |r| r.get::<_, u32>(0)).optional()?.unwrap_or(0))
+            Ok(
+                c.query_row("SELECT count FROM ai_usage WHERE day=?", [day], |r| {
+                    r.get::<_, u32>(0)
+                })
+                .optional()?
+                .unwrap_or(0),
+            )
         })
     }
 

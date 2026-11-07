@@ -24,15 +24,45 @@ fn is_zero(v: &u8) -> bool {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BlockKind {
-    Heading { level: u8, runs: Vec<Run> },
-    Paragraph { runs: Vec<Run> },
+    Heading {
+        level: u8,
+        runs: Vec<Run>,
+    },
+    Paragraph {
+        runs: Vec<Run>,
+    },
     /// `marker == false` continues the previous item without a bullet.
-    ListItem { ordered: bool, depth: u8, index: u32, marker: bool, runs: Vec<Run> },
-    Code { language: Option<String>, text: String, highlights: Vec<HighlightSpan> },
-    Math { tex: String },
-    Image { src: String, alt: String, width: Option<u32>, height: Option<u32>, caption: Vec<Run> },
-    Table { rows: Vec<TableRow> },
-    Media { media: MediaKind, src: String, poster: Option<String>, title: Option<String> },
+    ListItem {
+        ordered: bool,
+        depth: u8,
+        index: u32,
+        marker: bool,
+        runs: Vec<Run>,
+    },
+    Code {
+        language: Option<String>,
+        text: String,
+        highlights: Vec<HighlightSpan>,
+    },
+    Math {
+        tex: String,
+    },
+    Image {
+        src: String,
+        alt: String,
+        width: Option<u32>,
+        height: Option<u32>,
+        caption: Vec<Run>,
+    },
+    Table {
+        rows: Vec<TableRow>,
+    },
+    Media {
+        media: MediaKind,
+        src: String,
+        poster: Option<String>,
+        title: Option<String>,
+    },
     Rule,
 }
 
@@ -114,11 +144,21 @@ pub mod style {
 
 impl Run {
     pub fn text(text: impl Into<String>) -> Self {
-        Run { text: text.into(), style: 0, link: None, math: false }
+        Run {
+            text: text.into(),
+            style: 0,
+            link: None,
+            math: false,
+        }
     }
 
     pub fn math(tex: impl Into<String>) -> Self {
-        Run { text: tex.into(), style: 0, link: None, math: true }
+        Run {
+            text: tex.into(),
+            style: 0,
+            link: None,
+            math: true,
+        }
     }
 }
 
@@ -160,7 +200,13 @@ impl Block {
             BlockKind::Math { .. } => OBJECT_REPLACEMENT.to_string(),
             BlockKind::Table { rows } => rows
                 .iter()
-                .map(|r| r.cells.iter().map(|c| runs_layout_text(&c.runs)).collect::<Vec<_>>().join("\t"))
+                .map(|r| {
+                    r.cells
+                        .iter()
+                        .map(|c| runs_layout_text(&c.runs))
+                        .collect::<Vec<_>>()
+                        .join("\t")
+                })
                 .collect::<Vec<_>>()
                 .join("\n"),
             kind => kind.runs().map(runs_layout_text).unwrap_or_default(),
@@ -174,12 +220,22 @@ impl Block {
             BlockKind::Math { tex } => tex.clone(),
             BlockKind::Table { rows } => rows
                 .iter()
-                .map(|r| r.cells.iter().map(|c| runs_plain_text(&c.runs)).collect::<Vec<_>>().join(" | "))
+                .map(|r| {
+                    r.cells
+                        .iter()
+                        .map(|c| runs_plain_text(&c.runs))
+                        .collect::<Vec<_>>()
+                        .join(" | ")
+                })
                 .collect::<Vec<_>>()
                 .join("\n"),
             BlockKind::Image { alt, caption, .. } => {
                 let caption = runs_plain_text(caption);
-                if caption.is_empty() { alt.clone() } else { caption }
+                if caption.is_empty() {
+                    alt.clone()
+                } else {
+                    caption
+                }
             }
             kind => kind.runs().map(runs_plain_text).unwrap_or_default(),
         }
@@ -188,19 +244,36 @@ impl Block {
 
 pub fn runs_layout_text(runs: &[Run]) -> String {
     runs.iter()
-        .map(|r| if r.math { OBJECT_REPLACEMENT.to_string() } else { r.text.clone() })
+        .map(|r| {
+            if r.math {
+                OBJECT_REPLACEMENT.to_string()
+            } else {
+                r.text.clone()
+            }
+        })
         .collect()
 }
 
 pub fn runs_plain_text(runs: &[Run]) -> String {
     runs.iter()
-        .map(|r| if r.math { format!("${}$", r.text) } else { r.text.clone() })
+        .map(|r| {
+            if r.math {
+                format!("${}$", r.text)
+            } else {
+                r.text.clone()
+            }
+        })
         .collect()
 }
 
 impl Document {
     pub fn plain_text(&self) -> String {
-        self.blocks.iter().map(Block::plain_text).filter(|t| !t.is_empty()).collect::<Vec<_>>().join("\n\n")
+        self.blocks
+            .iter()
+            .map(Block::plain_text)
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n")
     }
 
     /// Number of readable characters, used for word counts and truncation checks.
@@ -208,7 +281,12 @@ impl Document {
         self.blocks
             .iter()
             .filter(|b| !matches!(b.kind, BlockKind::Code { .. }))
-            .map(|b| b.plain_text().chars().filter(|c| !c.is_whitespace()).count())
+            .map(|b| {
+                b.plain_text()
+                    .chars()
+                    .filter(|c| !c.is_whitespace())
+                    .count()
+            })
             .sum()
     }
 
@@ -219,7 +297,10 @@ impl Document {
     pub fn excerpt(&self, max_chars: usize) -> String {
         let mut out = String::new();
         for block in &self.blocks {
-            if !matches!(block.kind, BlockKind::Paragraph { .. } | BlockKind::ListItem { .. }) {
+            if !matches!(
+                block.kind,
+                BlockKind::Paragraph { .. } | BlockKind::ListItem { .. }
+            ) {
                 continue;
             }
             let text = block.plain_text();

@@ -24,9 +24,14 @@ const BROWSERS: &[&str] = &[
 /// and every other installed Chromium browser. Returns the files written.
 pub fn install_native_host(host_path: &Path) -> Result<Vec<PathBuf>> {
     if !host_path.is_file() {
-        return Err(EngineError::Invalid(format!("找不到捕获程序：{}", host_path.display())));
+        return Err(EngineError::Invalid(format!(
+            "找不到捕获程序：{}",
+            host_path.display()
+        )));
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| EngineError::Invalid("找不到用户目录。".into()))?;
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| EngineError::Invalid("找不到用户目录。".into()))?;
     let support = home.join("Library/Application Support");
     let manifest = serde_json::json!({
         "name": NATIVE_HOST_NAME,

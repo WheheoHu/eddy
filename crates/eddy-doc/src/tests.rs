@@ -3,7 +3,13 @@ use eddy_model::{BlockKind, Document, MediaKind, Position, TokenClass, style};
 use super::*;
 
 fn doc(html: &str) -> Document {
-    html_to_document(html, &ConvertOptions { base_url: Some("https://example.com/post/1"), title: Some("Hello World") })
+    html_to_document(
+        html,
+        &ConvertOptions {
+            base_url: Some("https://example.com/post/1"),
+            title: Some("Hello World"),
+        },
+    )
 }
 
 fn kinds(d: &Document) -> Vec<&'static str> {
@@ -21,22 +27,41 @@ fn keeps_semantic_structure_and_drops_unsafe_markup() {
         <hr>
     "#);
     assert_eq!(kinds(&d), ["paragraph", "heading", "rule"]);
-    let BlockKind::Paragraph { runs } = &d.blocks[0].kind else { panic!() };
+    let BlockKind::Paragraph { runs } = &d.blocks[0].kind else {
+        panic!()
+    };
     let text: String = runs.iter().map(|r| r.text.as_str()).collect();
     assert_eq!(text, "Intro bold and it link bad");
-    assert!(runs.iter().any(|r| r.text == "bold" && r.style & style::BOLD != 0));
-    assert!(runs.iter().any(|r| r.text == "link" && r.link.as_deref() == Some("https://example.com/x")));
-    assert!(runs.iter().all(|r| r.link.as_deref().is_none_or(|l| l.starts_with("https://"))));
+    assert!(
+        runs.iter()
+            .any(|r| r.text == "bold" && r.style & style::BOLD != 0)
+    );
+    assert!(
+        runs.iter()
+            .any(|r| r.text == "link" && r.link.as_deref() == Some("https://example.com/x"))
+    );
+    assert!(
+        runs.iter()
+            .all(|r| r.link.as_deref().is_none_or(|l| l.starts_with("https://")))
+    );
 }
 
 #[test]
 fn nested_lists_quotes_and_continuations() {
-    let d = doc("<ol start=3><li>one</li><li>two<ul><li>inner</li></ul><p>more</p></li></ol><blockquote><p>q</p><blockquote>qq</blockquote></blockquote>");
+    let d = doc(
+        "<ol start=3><li>one</li><li>two<ul><li>inner</li></ul><p>more</p></li></ol><blockquote><p>q</p><blockquote>qq</blockquote></blockquote>",
+    );
     let items: Vec<_> = d
         .blocks
         .iter()
         .filter_map(|b| match &b.kind {
-            BlockKind::ListItem { ordered, depth, index, marker, .. } => Some((*ordered, *depth, *index, *marker, b.plain_text())),
+            BlockKind::ListItem {
+                ordered,
+                depth,
+                index,
+                marker,
+                ..
+            } => Some((*ordered, *depth, *index, *marker, b.plain_text())),
             _ => None,
         })
         .collect();
@@ -49,18 +74,36 @@ fn nested_lists_quotes_and_continuations() {
             (true, 0, 4, false, "more".into()),
         ]
     );
-    let quotes: Vec<_> = d.blocks.iter().filter(|b| b.quote_depth > 0).map(|b| (b.quote_depth, b.plain_text())).collect();
+    let quotes: Vec<_> = d
+        .blocks
+        .iter()
+        .filter(|b| b.quote_depth > 0)
+        .map(|b| (b.quote_depth, b.plain_text()))
+        .collect();
     assert_eq!(quotes, vec![(1, "q".into()), (2, "qq".into())]);
 }
 
 #[test]
 fn code_blocks_keep_whitespace_and_get_highlighted() {
-    let d = doc("<pre><code class=\"language-rust\">fn main() {\n    // hi\n    let x = \"s\";\n}</code></pre>");
-    let BlockKind::Code { language, text, highlights } = &d.blocks[0].kind else { panic!("{:?}", d.blocks) };
+    let d = doc(
+        "<pre><code class=\"language-rust\">fn main() {\n    // hi\n    let x = \"s\";\n}</code></pre>",
+    );
+    let BlockKind::Code {
+        language,
+        text,
+        highlights,
+    } = &d.blocks[0].kind
+    else {
+        panic!("{:?}", d.blocks)
+    };
     assert_eq!(language.as_deref(), Some("rust"));
     assert!(text.contains("\n    // hi\n"));
     assert!(highlights.iter().any(|h| h.class == TokenClass::Comment));
-    assert!(highlights.iter().any(|h| h.class == TokenClass::Keyword || h.class == TokenClass::Type));
+    assert!(
+        highlights
+            .iter()
+            .any(|h| h.class == TokenClass::Keyword || h.class == TokenClass::Type)
+    );
     assert!(highlights.iter().any(|h| h.class == TokenClass::String));
 }
 
@@ -72,17 +115,35 @@ fn formulas_from_katex_mathjax_and_raw_tex() {
         <p>Raw $x^2$ inline, costs $5 and $10, and \(\beta\).</p>
         <p>$$L_o = \int L_i \cos\theta$$</p>"#;
     let d = doc(katex);
-    let BlockKind::Paragraph { runs } = &d.blocks[0].kind else { panic!() };
+    let BlockKind::Paragraph { runs } = &d.blocks[0].kind else {
+        panic!()
+    };
     assert!(runs.iter().any(|r| r.math && r.text == "E=mc^2"));
     assert!(!d.blocks[0].plain_text().contains("E=mc2 "));
     assert!(matches!(&d.blocks[1].kind, BlockKind::Math { tex } if tex == "\\int_0^1 f(x)\\,dx"));
-    assert!(d.blocks.iter().any(|b| matches!(&b.kind, BlockKind::Math { tex } if tex == "\\sum_i x_i")));
-    let raw = d.blocks.iter().find(|b| b.plain_text().starts_with("Raw")).unwrap();
-    let BlockKind::Paragraph { runs } = &raw.kind else { panic!() };
-    let math: Vec<_> = runs.iter().filter(|r| r.math).map(|r| r.text.as_str()).collect();
+    assert!(
+        d.blocks
+            .iter()
+            .any(|b| matches!(&b.kind, BlockKind::Math { tex } if tex == "\\sum_i x_i"))
+    );
+    let raw = d
+        .blocks
+        .iter()
+        .find(|b| b.plain_text().starts_with("Raw"))
+        .unwrap();
+    let BlockKind::Paragraph { runs } = &raw.kind else {
+        panic!()
+    };
+    let math: Vec<_> = runs
+        .iter()
+        .filter(|r| r.math)
+        .map(|r| r.text.as_str())
+        .collect();
     assert_eq!(math, ["x^2", "\\beta"]);
     assert!(raw.plain_text().contains("costs $5 and $10"));
-    assert!(matches!(&d.blocks.last().unwrap().kind, BlockKind::Math { tex } if tex == "L_o = \\int L_i \\cos\\theta"));
+    assert!(
+        matches!(&d.blocks.last().unwrap().kind, BlockKind::Math { tex } if tex == "L_o = \\int L_i \\cos\\theta")
+    );
 }
 
 #[test]
@@ -96,25 +157,48 @@ fn images_figures_tables_and_media() {
         <video poster="/p.jpg"><source src="/v.mp4"></video>
         <iframe src="https://www.youtube.com/embed/xyz" title="yt"></iframe>
     "#);
-    let BlockKind::Image { src, alt, width, caption, .. } = &d.blocks[0].kind else { panic!("{:?}", d.blocks[0]) };
+    let BlockKind::Image {
+        src,
+        alt,
+        width,
+        caption,
+        ..
+    } = &d.blocks[0].kind
+    else {
+        panic!("{:?}", d.blocks[0])
+    };
     assert_eq!(src, "https://example.com/a.png");
     assert_eq!(alt, "A");
     assert_eq!(*width, Some(640));
     assert_eq!(eddy_model::runs_plain_text(caption), "Caption here");
-    assert!(matches!(&d.blocks[1].kind, BlockKind::Image { src, .. } if src == "https://example.com/l.png"));
-    let BlockKind::Table { rows } = &d.blocks[2].kind else { panic!("{:?}", d.blocks[2]) };
+    assert!(
+        matches!(&d.blocks[1].kind, BlockKind::Image { src, .. } if src == "https://example.com/l.png")
+    );
+    let BlockKind::Table { rows } = &d.blocks[2].kind else {
+        panic!("{:?}", d.blocks[2])
+    };
     assert_eq!(rows.len(), 2);
     assert!(rows[0].cells[0].header);
     assert_eq!(rows[1].cells[1].colspan, 2);
     assert!(matches!(&d.blocks[3].kind, BlockKind::Paragraph { .. }));
-    assert!(matches!(&d.blocks[4].kind, BlockKind::Media { media: MediaKind::Video, src, poster: Some(_), .. } if src == "https://example.com/v.mp4"));
-    assert!(matches!(&d.blocks[5].kind, BlockKind::Media { media: MediaKind::Embed, .. }));
+    assert!(
+        matches!(&d.blocks[4].kind, BlockKind::Media { media: MediaKind::Video, src, poster: Some(_), .. } if src == "https://example.com/v.mp4")
+    );
+    assert!(matches!(
+        &d.blocks[5].kind,
+        BlockKind::Media {
+            media: MediaKind::Embed,
+            ..
+        }
+    ));
 }
 
 #[test]
 fn block_ids_are_stable_across_unrelated_edits() {
     let a = doc("<p>First paragraph.</p><p>Second paragraph.</p><p>Repeated</p><p>Repeated</p>");
-    let b = doc("<p>First paragraph, edited.</p><p>Second paragraph.</p><p>Repeated</p><p>Repeated</p>");
+    let b = doc(
+        "<p>First paragraph, edited.</p><p>Second paragraph.</p><p>Repeated</p><p>Repeated</p>",
+    );
     assert_ne!(a.blocks[0].id, b.blocks[0].id);
     assert_eq!(a.blocks[1].id, b.blocks[1].id);
     assert_ne!(a.blocks[2].id, a.blocks[3].id);
@@ -130,7 +214,9 @@ fn bare_text_and_br_become_paragraph_text() {
 
 #[test]
 fn translation_segments_cover_text_blocks() {
-    let d = doc("<h2>Title</h2><p>Body with $x$ math.</p><figure><img src='/i.png'><figcaption>Cap</figcaption></figure><pre>code</pre><p>123</p>");
+    let d = doc(
+        "<h2>Title</h2><p>Body with $x$ math.</p><figure><img src='/i.png'><figcaption>Cap</figcaption></figure><pre>code</pre><p>123</p>",
+    );
     let segs = translation_segments(&d);
     assert_eq!(segs.len(), 3);
     assert_eq!(segs[1].text, "Body with $x$ math.");
@@ -140,7 +226,9 @@ fn translation_segments_cover_text_blocks() {
 #[test]
 fn locator_round_trip_and_remap_across_versions() {
     let feed = doc("<p>Short teaser about rendering.</p><p>Read more…</p>");
-    let full = doc("<p>Intro added by the full text.</p><p>Short teaser about rendering.</p><p>The path tracer accumulates radiance over many samples per pixel.</p><p>End.</p>");
+    let full = doc(
+        "<p>Intro added by the full text.</p><p>Short teaser about rendering.</p><p>The path tracer accumulates radiance over many samples per pixel.</p><p>End.</p>",
+    );
     let target = &full.blocks[2];
     let loc = locator_at(&full, "full", &target.id, 9).unwrap();
     assert!(loc.quote.exact.starts_with("tracer"));
@@ -150,21 +238,29 @@ fn locator_round_trip_and_remap_across_versions() {
     assert_eq!(remap_locator(&full, "full", &loc), loc);
 
     // Block missing in another version, but quote present after an edit.
-    let edited = doc("<p>Intro.</p><p>Note: The path tracer accumulates radiance over many samples per pixel.</p>");
+    let edited = doc(
+        "<p>Intro.</p><p>Note: The path tracer accumulates radiance over many samples per pixel.</p>",
+    );
     let moved = remap_locator(&edited, "edited", &loc);
-    let Position::Block { block_id, offset } = &moved.position else { panic!() };
+    let Position::Block { block_id, offset } = &moved.position else {
+        panic!()
+    };
     assert_eq!(block_id, &edited.blocks[1].id);
     assert_eq!(*offset, 15);
 
     // Feed version anchor carried into full text by block ID.
     let teaser = locator_at(&feed, "feed", &feed.blocks[0].id, 6).unwrap();
     let carried = remap_locator(&full, "full", &teaser);
-    assert!(matches!(&carried.position, Position::Block { block_id, offset: 6 } if block_id == &full.blocks[1].id));
+    assert!(
+        matches!(&carried.position, Position::Block { block_id, offset: 6 } if block_id == &full.blocks[1].id)
+    );
 }
 
 #[test]
 fn offsets_are_utf16_and_inline_math_counts_as_one_unit() {
-    let d = doc("<p>𝛼 then <span class=\"katex\"><annotation encoding=\"application/x-tex\">x</annotation></span> then 中文</p>");
+    let d = doc(
+        "<p>𝛼 then <span class=\"katex\"><annotation encoding=\"application/x-tex\">x</annotation></span> then 中文</p>",
+    );
     let text = d.blocks[0].layout_text();
     assert_eq!(text, "𝛼 then \u{FFFC} then 中文");
     assert_eq!(eddy_model::utf16_len(&text), 2 + 6 + 1 + 6 + 2);

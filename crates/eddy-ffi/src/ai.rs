@@ -47,7 +47,10 @@ pub struct AiSettingsView {
 impl From<core::AiSettings> for AiSettingsView {
     fn from(s: core::AiSettings) -> Self {
         AiSettingsView {
-            provider: s.provider.map(|p| ProviderView { base_url: p.base_url, model: p.model }),
+            provider: s.provider.map(|p| ProviderView {
+                base_url: p.base_url,
+                model: p.model,
+            }),
             target_language: s.target_language,
             glossary: s.glossary,
             sync_translations: s.sync_translations,
@@ -78,7 +81,10 @@ impl From<core::AiSettings> for AiSettingsView {
 impl From<AiSettingsView> for core::AiSettings {
     fn from(s: AiSettingsView) -> Self {
         core::AiSettings {
-            provider: s.provider.map(|p| core::ProviderSettings { base_url: p.base_url, model: p.model }),
+            provider: s.provider.map(|p| core::ProviderSettings {
+                base_url: p.base_url,
+                model: p.model,
+            }),
             target_language: s.target_language,
             glossary: s.glossary,
             sync_translations: s.sync_translations,
@@ -117,7 +123,12 @@ pub struct TranslationView {
 
 impl From<core::TranslationResult> for TranslationView {
     fn from(t: core::TranslationResult) -> Self {
-        TranslationView { content_hash: t.content_hash, target_language: t.target_language, segments: t.segments, cached: t.cached }
+        TranslationView {
+            content_hash: t.content_hash,
+            target_language: t.target_language,
+            segments: t.segments,
+            cached: t.cached,
+        }
     }
 }
 
@@ -137,7 +148,11 @@ pub struct TagView {
 
 impl From<core::TagInfo> for TagView {
     fn from(t: core::TagInfo) -> Self {
-        TagView { id: t.id, name: t.name, count: t.count }
+        TagView {
+            id: t.id,
+            name: t.name,
+            count: t.count,
+        }
     }
 }
 
@@ -149,7 +164,10 @@ pub struct ItemTagsView {
 
 impl From<core::ItemTagsResult> for ItemTagsView {
     fn from(r: core::ItemTagsResult) -> Self {
-        ItemTagsView { tags: r.tags.into_iter().map(Into::into).collect(), suggestions: r.suggestions }
+        ItemTagsView {
+            tags: r.tags.into_iter().map(Into::into).collect(),
+            suggestions: r.suggestions,
+        }
     }
 }
 
@@ -184,9 +202,21 @@ impl EddyEngine {
         Ok(self.engine.ai_usage_today()?)
     }
 
-    pub async fn translate(&self, item_id: String, force: bool, listener: Option<Arc<dyn TranslationListener>>) -> R<TranslationView> {
-        let callback = listener.map(|l| Arc::new(move |s: &HashMap<String, String>| l.on_batch(s.clone())) as core::BatchCallback);
-        Ok(self.engine.translate(&item_id, force, callback).await?.into())
+    pub async fn translate(
+        &self,
+        item_id: String,
+        force: bool,
+        listener: Option<Arc<dyn TranslationListener>>,
+    ) -> R<TranslationView> {
+        let callback = listener.map(|l| {
+            Arc::new(move |s: &HashMap<String, String>| l.on_batch(s.clone()))
+                as core::BatchCallback
+        });
+        Ok(self
+            .engine
+            .translate(&item_id, force, callback)
+            .await?
+            .into())
     }
 
     pub fn cached_translation(&self, item_id: String) -> R<Option<TranslationView>> {
@@ -195,11 +225,19 @@ impl EddyEngine {
 
     pub async fn summarize(&self, item_id: String, force: bool) -> R<SummaryView> {
         let r = self.engine.summarize(&item_id, force).await?;
-        Ok(SummaryView { tldr: r.summary.tldr, points: r.summary.points, cached: r.cached })
+        Ok(SummaryView {
+            tldr: r.summary.tldr,
+            points: r.summary.points,
+            cached: r.cached,
+        })
     }
 
     pub fn cached_summary(&self, item_id: String) -> R<Option<SummaryView>> {
-        Ok(self.engine.cached_summary(&item_id)?.map(|s| SummaryView { tldr: s.tldr, points: s.points, cached: true }))
+        Ok(self.engine.cached_summary(&item_id)?.map(|s| SummaryView {
+            tldr: s.tldr,
+            points: s.points,
+            cached: true,
+        }))
     }
 
     pub async fn suggest_tags(&self, item_id: String) -> R<ItemTagsView> {

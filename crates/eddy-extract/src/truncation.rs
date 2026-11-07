@@ -24,12 +24,21 @@ pub fn truncation_hint(doc: &Document) -> bool {
         .blocks
         .iter()
         .rev()
-        .filter(|b| matches!(b.kind, BlockKind::Paragraph { .. } | BlockKind::ListItem { .. }))
+        .filter(|b| {
+            matches!(
+                b.kind,
+                BlockKind::Paragraph { .. } | BlockKind::ListItem { .. }
+            )
+        })
         .take(2)
         .map(|b| b.plain_text().trim().to_lowercase())
         .collect();
     tail.iter().any(|t| {
-        t.ends_with('…') || t.ends_with("...") || t.ends_with("[…]") || t.ends_with("[...]") || MARKERS.iter().any(|m| t.contains(m))
+        t.ends_with('…')
+            || t.ends_with("...")
+            || t.ends_with("[…]")
+            || t.ends_with("[...]")
+            || MARKERS.iter().any(|m| t.contains(m))
     })
 }
 

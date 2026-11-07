@@ -13,11 +13,17 @@ pub struct ChatMessage {
 
 impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
-        ChatMessage { role: "system", content: content.into() }
+        ChatMessage {
+            role: "system",
+            content: content.into(),
+        }
     }
 
     pub fn user(content: impl Into<String>) -> Self {
-        ChatMessage { role: "user", content: content.into() }
+        ChatMessage {
+            role: "user",
+            content: content.into(),
+        }
     }
 }
 
@@ -37,12 +43,22 @@ pub trait Provider: Send + Sync {
 /// `/chat/completions` endpoint is trimmed, custom prefixes stay intact.
 /// Plain HTTP is allowed for local model servers.
 pub fn normalize_base(input: &str) -> Result<String, AiError> {
-    let mut url = url::Url::parse(input.trim()).map_err(|_| AiError::Config("请输入完整的模型 API 地址，例如 https://api.example.com/v1。".into()))?;
+    let mut url = url::Url::parse(input.trim()).map_err(|_| {
+        AiError::Config("请输入完整的模型 API 地址，例如 https://api.example.com/v1。".into())
+    })?;
     if !matches!(url.scheme(), "https" | "http") || url.host_str().is_none() {
-        return Err(AiError::Config("模型 API 地址需要以 https:// 或 http:// 开头。".into()));
+        return Err(AiError::Config(
+            "模型 API 地址需要以 https:// 或 http:// 开头。".into(),
+        ));
     }
-    if !url.username().is_empty() || url.password().is_some() || url.query().is_some() || url.fragment().is_some() {
-        return Err(AiError::Config("模型 API 地址里不能包含账号、参数或锚点。".into()));
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(AiError::Config(
+            "模型 API 地址里不能包含账号、参数或锚点。".into(),
+        ));
     }
     let mut path = url.path().trim_end_matches('/').to_string();
     if let Some(stripped) = path.strip_suffix("/chat/completions") {
@@ -65,7 +81,11 @@ pub struct OpenAiCompatible {
 
 impl std::fmt::Debug for OpenAiCompatible {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("OpenAiCompatible").field("base_url", &self.base_url).field("model", &self.model).field("api_key", &"[已隐藏]").finish()
+        f.debug_struct("OpenAiCompatible")
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("api_key", &"[已隐藏]")
+            .finish()
     }
 }
 
@@ -83,7 +103,12 @@ impl OpenAiCompatible {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| AiError::Network(e.to_string()))?;
-        Ok(OpenAiCompatible { http, base_url: normalize_base(base_url)?, model: model.trim().to_string(), api_key: api_key.trim().to_string() })
+        Ok(OpenAiCompatible {
+            http,
+            base_url: normalize_base(base_url)?,
+            model: model.trim().to_string(),
+            api_key: api_key.trim().to_string(),
+        })
     }
 }
 
@@ -113,7 +138,8 @@ impl Provider for OpenAiCompatible {
     }
 
     async fn complete(&self, messages: &[ChatMessage]) -> Result<String, AiError> {
-        let body = serde_json::json!({ "model": self.model, "temperature": 0.2, "messages": messages });
+        let body =
+            serde_json::json!({ "model": self.model, "temperature": 0.2, "messages": messages });
         let response = self
             .http
             .post(format!("{}/chat/completions", self.base_url))
@@ -122,7 +148,11 @@ impl Provider for OpenAiCompatible {
             .send()
             .await
             .map_err(|e| {
-                if e.is_timeout() { AiError::Network("模型请求超时，请稍后重试。".into()) } else { AiError::Network(crate::redact::safe_detail(&e.to_string(), &[&self.api_key])) }
+                if e.is_timeout() {
+                    AiError::Network("模型请求超时，请稍后重试。".into())
+                } else {
+                    AiError::Network(crate::redact::safe_detail(&e.to_string(), &[&self.api_key]))
+                }
             })?;
         completion_text(response, &[&self.api_key]).await
     }
@@ -131,31 +161,63 @@ impl Provider for OpenAiCompatible {
 /// Extracts the assistant text from a Chat Completions response, turning
 /// every failure mode (HTTP errors, gateway HTML pages, malformed JSON) into
 /// a readable, redacted error.
-pub async fn completion_text(response: reqwest::Response, secrets: &[&str]) -> Result<String, AiError> {
+pub async fn completion_text(
+    response: reqwest::Response,
+    secrets: &[&str],
+) -> Result<String, AiError> {
     let status = response.status().as_u16();
     let headers = response.headers().clone();
-    let content_type = headers.get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("").to_lowercase();
-    let raw = response.text().await.map_err(|e| AiError::Network(e.to_string()))?;
+    let content_type = headers
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_lowercase();
+    let raw = response
+        .text()
+        .await
+        .map_err(|e| AiError::Network(e.to_string()))?;
     parse_completion(status, &content_type, &raw, secrets, Some(&headers))
 }
 
-pub fn parse_completion(status: u16, content_type: &str, raw: &str, secrets: &[&str], headers: Option<&reqwest::header::HeaderMap>) -> Result<String, AiError> {
+pub fn parse_completion(
+    status: u16,
+    content_type: &str,
+    raw: &str,
+    secrets: &[&str],
+    headers: Option<&reqwest::header::HeaderMap>,
+) -> Result<String, AiError> {
     let html = content_type.contains("text/html") || {
         let t = raw.trim_start().to_lowercase();
         t.starts_with("<!doctype") || t.starts_with("<html")
     };
     if !(200..300).contains(&status) || html {
-        return Err(AiError::Provider(model_failure(status, content_type, raw, secrets, headers)));
+        return Err(AiError::Provider(model_failure(
+            status,
+            content_type,
+            raw,
+            secrets,
+            headers,
+        )));
     }
     if raw.len() > 1_000_000 {
-        return Err(AiError::Provider("模型响应过长，请减少单次处理的内容。".into()));
+        return Err(AiError::Provider(
+            "模型响应过长，请减少单次处理的内容。".into(),
+        ));
     }
-    let value: serde_json::Value =
-        serde_json::from_str(raw).map_err(|_| AiError::Provider("模型服务未返回有效 JSON，请检查 API Base URL 和接口兼容性。".into()))?;
+    let value: serde_json::Value = serde_json::from_str(raw).map_err(|_| {
+        AiError::Provider("模型服务未返回有效 JSON，请检查 API Base URL 和接口兼容性。".into())
+    })?;
     if value.get("error").is_some_and(|e| !e.is_null()) {
-        return Err(AiError::Provider(model_failure(status, content_type, raw, secrets, headers)));
+        return Err(AiError::Provider(model_failure(
+            status,
+            content_type,
+            raw,
+            secrets,
+            headers,
+        )));
     }
-    let completion: Completion = serde_json::from_value(value).map_err(|_| AiError::Provider("模型没有返回可用结果，请更换模型或重试。".into()))?;
+    let completion: Completion = serde_json::from_value(value)
+        .map_err(|_| AiError::Provider("模型没有返回可用结果，请更换模型或重试。".into()))?;
     completion
         .choices
         .into_iter()

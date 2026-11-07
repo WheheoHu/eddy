@@ -18,9 +18,19 @@ pub struct Locator {
 pub enum Position {
     /// Reflowed article: block ID plus offset in UTF-16 code units of the
     /// block's layout text.
-    Block { block_id: String, offset: u32 },
-    Epub { href: String, progression: f64, cfi: Option<String> },
-    Pdf { page: u32, progression: f64 },
+    Block {
+        block_id: String,
+        offset: u32,
+    },
+    Epub {
+        href: String,
+        progression: f64,
+        cfi: Option<String>,
+    },
+    Pdf {
+        page: u32,
+        progression: f64,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

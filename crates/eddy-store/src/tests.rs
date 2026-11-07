@@ -1,5 +1,6 @@
 use eddy_model::{
-    ContentOrigin, ContentVersion, Entity, Hlc, Item, ItemKind, Locator, Op, Position, TextQuote, fields,
+    ContentOrigin, ContentVersion, Entity, Hlc, Item, ItemKind, Locator, Op, Position, TextQuote,
+    fields,
 };
 use serde_json::json;
 
@@ -40,7 +41,11 @@ fn item(id: &str, published: i64) -> Item {
 fn op(n: u64, node: &str, entity: Entity, id: &str, field: &str, value: serde_json::Value) -> Op {
     Op {
         op_id: format!("{node}-{n}-{field}"),
-        hlc: Hlc { wall_ms: n, counter: 0, node: node.into() },
+        hlc: Hlc {
+            wall_ms: n,
+            counter: 0,
+            node: node.into(),
+        },
         entity,
         entity_id: id.into(),
         field: field.into(),
@@ -65,16 +70,33 @@ fn reopen_keeps_data_and_device_id() {
 fn last_writer_wins_per_field_and_duplicates_are_ignored() {
     let (_d, s) = store();
     s.insert_item(&item("a", 1)).unwrap();
-    s.record_local(&op(10, "dev1", Entity::Item, "a", fields::STARRED, json!(true)), false).unwrap();
+    s.record_local(
+        &op(10, "dev1", Entity::Item, "a", fields::STARRED, json!(true)),
+        false,
+    )
+    .unwrap();
     // Older remote write loses, newer one wins, a replay is ignored.
-    assert!(!s.apply_remote(&op(5, "dev2", Entity::Item, "a", fields::STARRED, json!(false))).unwrap());
+    assert!(
+        !s.apply_remote(&op(
+            5,
+            "dev2",
+            Entity::Item,
+            "a",
+            fields::STARRED,
+            json!(false)
+        ))
+        .unwrap()
+    );
     assert!(s.item("a").unwrap().unwrap().item.starred);
     let newer = op(20, "dev2", Entity::Item, "a", fields::STARRED, json!(false));
     assert!(s.apply_remote(&newer).unwrap());
     assert!(!s.apply_remote(&newer).unwrap());
     assert!(!s.item("a").unwrap().unwrap().item.starred);
     // Fields are independent.
-    assert!(s.apply_remote(&op(1, "dev2", Entity::Item, "a", fields::READ, json!(true))).unwrap());
+    assert!(
+        s.apply_remote(&op(1, "dev2", Entity::Item, "a", fields::READ, json!(true)))
+            .unwrap()
+    );
     assert!(s.item("a").unwrap().unwrap().item.read);
     // Remote ops are not re-uploaded; the local one is.
     let pending = s.unuploaded_ops(100).unwrap();
@@ -87,15 +109,33 @@ fn upstream_state_does_not_clobber_pending_local_changes() {
     let (_d, s) = store();
     s.insert_item(&item("recent", 30)).unwrap();
     s.insert_item(&item("older", 20)).unwrap();
-    s.record_local(&op(1, "dev", Entity::Item, "recent", fields::READ, json!(true)), true).unwrap();
+    s.record_local(
+        &op(1, "dev", Entity::Item, "recent", fields::READ, json!(true)),
+        true,
+    )
+    .unwrap();
     // A refresh started before the local change still reports it unread.
-    assert!(!s.set_state_from_upstream("recent", fields::READ, false).unwrap());
+    assert!(
+        !s.set_state_from_upstream("recent", fields::READ, false)
+            .unwrap()
+    );
     assert!(s.item("recent").unwrap().unwrap().item.read);
-    assert!(s.set_state_from_upstream("older", fields::READ, true).unwrap());
+    assert!(
+        s.set_state_from_upstream("older", fields::READ, true)
+            .unwrap()
+    );
     // After the push succeeds, upstream is authoritative again.
-    let seqs: Vec<i64> = s.upstream_pending().unwrap().iter().map(|o| o.seq).collect();
+    let seqs: Vec<i64> = s
+        .upstream_pending()
+        .unwrap()
+        .iter()
+        .map(|o| o.seq)
+        .collect();
     s.clear_upstream_pending(&seqs).unwrap();
-    assert!(s.set_state_from_upstream("recent", fields::READ, false).unwrap());
+    assert!(
+        s.set_state_from_upstream("recent", fields::READ, false)
+            .unwrap()
+    );
 }
 
 #[test]
@@ -109,25 +149,94 @@ fn item_queries_filter_and_order() {
     let mut ch = item("ch", 9);
     ch.kind = ItemKind::Chapter;
     s.insert_item(&ch).unwrap();
-    s.record_local(&op(1, "d", Entity::Item, "b", fields::READ, json!(true)), false).unwrap();
-    s.record_local(&op(2, "d", Entity::Item, "a", fields::STARRED, json!(true)), false).unwrap();
+    s.record_local(
+        &op(1, "d", Entity::Item, "b", fields::READ, json!(true)),
+        false,
+    )
+    .unwrap();
+    s.record_local(
+        &op(2, "d", Entity::Item, "a", fields::STARRED, json!(true)),
+        false,
+    )
+    .unwrap();
 
-    let ids = |q: ItemQuery| s.items(&q).unwrap().into_iter().map(|r| r.item.id).collect::<Vec<_>>();
+    let ids = |q: ItemQuery| {
+        s.items(&q)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.item.id)
+            .collect::<Vec<_>>()
+    };
     assert_eq!(ids(ItemQuery::default()), ["b", "c", "a"]);
-    assert_eq!(ids(ItemQuery { unread_only: true, ..Default::default() }), ["c", "a"]);
-    assert_eq!(ids(ItemQuery { filter: ItemFilter::Starred, ..Default::default() }), ["a"]);
-    assert_eq!(ids(ItemQuery { filter: ItemFilter::Saved, ..Default::default() }), ["c"]);
-    assert_eq!(ids(ItemQuery { filter: ItemFilter::Ids(vec!["a".into(), "ch".into()]), ..Default::default() }), ["a", "ch"]);
+    assert_eq!(
+        ids(ItemQuery {
+            unread_only: true,
+            ..Default::default()
+        }),
+        ["c", "a"]
+    );
+    assert_eq!(
+        ids(ItemQuery {
+            filter: ItemFilter::Starred,
+            ..Default::default()
+        }),
+        ["a"]
+    );
+    assert_eq!(
+        ids(ItemQuery {
+            filter: ItemFilter::Saved,
+            ..Default::default()
+        }),
+        ["c"]
+    );
+    assert_eq!(
+        ids(ItemQuery {
+            filter: ItemFilter::Ids(vec!["a".into(), "ch".into()]),
+            ..Default::default()
+        }),
+        ["a", "ch"]
+    );
 
     let loc = |p: f64| Locator {
         content_hash: "h".into(),
-        position: Position::Block { block_id: "b1".into(), offset: 0 },
+        position: Position::Block {
+            block_id: "b1".into(),
+            offset: 0,
+        },
         quote: TextQuote::default(),
         progression: p,
     };
-    s.record_local(&op(3, "d", Entity::Progress, "a", fields::LOCATOR, serde_json::to_value(loc(0.4)).unwrap()), false).unwrap();
-    s.record_local(&op(4, "d", Entity::Progress, "c", fields::LOCATOR, serde_json::to_value(loc(0.97)).unwrap()), false).unwrap();
-    assert_eq!(ids(ItemQuery { filter: ItemFilter::ContinueReading, ..Default::default() }), ["a"]);
+    s.record_local(
+        &op(
+            3,
+            "d",
+            Entity::Progress,
+            "a",
+            fields::LOCATOR,
+            serde_json::to_value(loc(0.4)).unwrap(),
+        ),
+        false,
+    )
+    .unwrap();
+    s.record_local(
+        &op(
+            4,
+            "d",
+            Entity::Progress,
+            "c",
+            fields::LOCATOR,
+            serde_json::to_value(loc(0.97)).unwrap(),
+        ),
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        ids(ItemQuery {
+            filter: ItemFilter::ContinueReading,
+            ..Default::default()
+        }),
+        ["a"]
+    );
     assert_eq!(s.progress("a").unwrap().unwrap().progression, 0.4);
 }
 
@@ -135,18 +244,81 @@ fn item_queries_filter_and_order() {
 fn tags_series_settings_and_sources_via_ops() {
     let (_d, s) = store();
     s.insert_item(&item("a", 1)).unwrap();
-    s.record_local(&op(1, "d", Entity::Tag, "t1", fields::CREATE, json!({"name": "Rendering"})), false).unwrap();
-    s.record_local(&op(2, "d", Entity::ItemTag, "a|t1", fields::STATE, json!("confirmed")), false).unwrap();
+    s.record_local(
+        &op(
+            1,
+            "d",
+            Entity::Tag,
+            "t1",
+            fields::CREATE,
+            json!({"name": "Rendering"}),
+        ),
+        false,
+    )
+    .unwrap();
+    s.record_local(
+        &op(
+            2,
+            "d",
+            Entity::ItemTag,
+            "a|t1",
+            fields::STATE,
+            json!("confirmed"),
+        ),
+        false,
+    )
+    .unwrap();
     assert_eq!(s.tags().unwrap(), vec![("t1".into(), "Rendering".into())]);
-    assert_eq!(s.items(&ItemQuery { filter: ItemFilter::Tag("t1".into()), ..Default::default() }).unwrap().len(), 1);
+    assert_eq!(
+        s.items(&ItemQuery {
+            filter: ItemFilter::Tag("t1".into()),
+            ..Default::default()
+        })
+        .unwrap()
+        .len(),
+        1
+    );
 
-    s.record_local(&op(3, "d", Entity::Series, "s1", fields::CREATE, json!({"title": "Book", "toc_url": null})), false).unwrap();
-    s.record_local(&op(4, "d", Entity::Item, "a", fields::SERIES, json!({"series_id": "s1", "chapter_index": 2})), false).unwrap();
+    s.record_local(
+        &op(
+            3,
+            "d",
+            Entity::Series,
+            "s1",
+            fields::CREATE,
+            json!({"title": "Book", "toc_url": null}),
+        ),
+        false,
+    )
+    .unwrap();
+    s.record_local(
+        &op(
+            4,
+            "d",
+            Entity::Item,
+            "a",
+            fields::SERIES,
+            json!({"series_id": "s1", "chapter_index": 2}),
+        ),
+        false,
+    )
+    .unwrap();
     let series = s.series_list().unwrap();
     assert_eq!(series[0].0.title, "Book");
     assert_eq!(series[0].1, 1);
 
-    s.record_local(&op(5, "d", Entity::Setting, "ai", fields::VALUE, json!({"model": "m"})), false).unwrap();
+    s.record_local(
+        &op(
+            5,
+            "d",
+            Entity::Setting,
+            "ai",
+            fields::VALUE,
+            json!({"model": "m"}),
+        ),
+        false,
+    )
+    .unwrap();
     assert_eq!(s.setting("ai").unwrap(), Some(json!({"model": "m"})));
 }
 

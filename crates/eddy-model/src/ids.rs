@@ -11,7 +11,9 @@ fn v5(input: &str) -> String {
 
 /// Upstream account identity, e.g. a FreshRSS user on a normalized API base URL.
 pub fn account_id(kind: &str, base_url: &str, username: &str) -> String {
-    v5(&format!("account\u{1f}{kind}\u{1f}{base_url}\u{1f}{username}"))
+    v5(&format!(
+        "account\u{1f}{kind}\u{1f}{base_url}\u{1f}{username}"
+    ))
 }
 
 pub fn feed_source_id(account_id: &str, upstream_feed_id: &str) -> String {
@@ -49,8 +51,14 @@ mod tests {
     #[test]
     fn deterministic_ids_are_stable_and_distinct() {
         let account = account_id("greader", "https://rss.example.com/api/greader.php", "me");
-        assert_eq!(account, account_id("greader", "https://rss.example.com/api/greader.php", "me"));
-        assert_ne!(account, account_id("greader", "https://rss.example.com/api/greader.php", "you"));
+        assert_eq!(
+            account,
+            account_id("greader", "https://rss.example.com/api/greader.php", "me")
+        );
+        assert_ne!(
+            account,
+            account_id("greader", "https://rss.example.com/api/greader.php", "you")
+        );
         let item = feed_item_id(&account, "000000000000abcd");
         assert_eq!(item, feed_item_id(&account, "000000000000abcd"));
         assert_ne!(item, feed_source_id(&account, "000000000000abcd"));
