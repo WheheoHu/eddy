@@ -305,6 +305,30 @@ impl Store {
         );
         self.with(|c| Ok(c.query_row(&sql, params_from_iter(values), |r| r.get(0))?))
     }
+
+    /// Unread subscription articles a query lists that arrived by `until`
+    /// (ms), whatever its limit: what "mark all as read" marks.
+    pub fn unread_feed_ids(&self, q: &ItemQuery, until: i64) -> Result<Vec<String>> {
+        let Some(Conditions {
+            mut clauses,
+            mut values,
+            ..
+        }) = conditions(q)
+        else {
+            return Ok(Vec::new());
+        };
+        clauses.push("i.kind='feed' AND i.read=0 AND i.added_at<=?".into());
+        values.push(Value::Integer(until));
+        let sql = format!(
+            "SELECT i.id FROM {ITEM_JOINS} WHERE {}",
+            clauses.join(" AND ")
+        );
+        self.with(|c| {
+            let mut stmt = c.prepare(&sql)?;
+            let rows = stmt.query_map(params_from_iter(values), |r| r.get(0))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<String>>>()?)
+        })
+    }
 }
 
 struct Conditions {

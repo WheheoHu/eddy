@@ -41,6 +41,21 @@ struct ReaderCommand: Equatable {
     let action: Action
 }
 
+/// A list of subscription articles, as "Mark All as Read" sees it.
+struct ArticleList: Equatable {
+    let filter: ItemFilterView
+    let title: String
+}
+
+/// What "Mark All as Read" would mark: counted, with the moment it was
+/// counted, when the dialog opens. Articles arriving after aren't marked.
+struct MarkAllRequest: Identifiable {
+    let id = UUID()
+    let list: ArticleList
+    let count: Int
+    let until: Int64
+}
+
 /// App-wide state over the engine. Views read lists through it so a single
 /// `revision` bump refreshes everything after a change.
 @Observable
@@ -78,6 +93,12 @@ final class AppModel {
 
     /// A collection entry waiting for the user to confirm its deletion.
     var pendingDeletion: CollectionEntryView?
+
+    /// The article list on screen, for "Mark All as Read"; nil when none is
+    /// (collections, search results, a book).
+    var currentList: ArticleList?
+    /// "Mark All as Read" waiting for the user to confirm.
+    var pendingMarkAll: MarkAllRequest?
 
     var savingURL = false
     var importing = false
@@ -219,6 +240,26 @@ final class AppModel {
             try? await engine?.setRead(itemId: item.id, read: on)
             reload()
         }
+    }
+
+    /// Counts what a list would mark and asks; nothing to mark says so.
+    func requestMarkAllRead(_ list: ArticleList) {
+        let until = Int64(Date().timeIntervalSince1970 * 1000)
+        let count = Int((try? engine?.unreadFeedCount(filter: list.filter, until: until)) ?? 0)
+        guard count > 0 else {
+            message = String(localized: "Everything in “\(list.title)” is read.")
+            return
+        }
+        pendingMarkAll = MarkAllRequest(list: list, count: count, until: until)
+    }
+
+    func markAllRead(_ request: MarkAllRequest) async {
+        do {
+            _ = try await engine?.markAllRead(filter: request.list.filter, until: request.until)
+        } catch {
+            message = error.localizedDescription
+        }
+        reload()
     }
 
     /// Back to unread and never started, on every device (and FreshRSS).

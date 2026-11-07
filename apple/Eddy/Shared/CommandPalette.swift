@@ -6,6 +6,7 @@ import SwiftUI
 struct PaletteItem: Identifiable {
     enum Group: String {
         case reader = "Reader"
+        case list = "List"
         case go = "Go To"
         case collection = "Collection"
         case articles = "Articles"
@@ -181,8 +182,8 @@ struct CommandPalette: View {
     private var visibleItems: [PaletteItem] {
         if let results { return resultItems(results) }
         let text = query.trimmingCharacters(in: .whitespaces)
-        guard !text.isEmpty else { return readerItems + goItems }
-        var items = (readerItems + goItems).filter { $0.matches(text) }
+        guard !text.isEmpty else { return readerItems + listItems + goItems }
+        var items = (readerItems + listItems + goItems).filter { $0.matches(text) }
         items += collectionItems(text)
         items += articleItems
         items += settingsItems.filter { $0.matches(text) }
@@ -235,6 +236,16 @@ struct CommandPalette: View {
             })
         }
         return items
+    }
+
+    /// Commands on the article list on screen.
+    private var listItems: [PaletteItem] {
+        guard let list = model.currentList else { return [] }
+        return [
+            PaletteItem(id: "markAllRead", group: .list, title: String(localized: "Mark All as Read"), subtitle: list.title, icon: "checkmark.circle") {
+                model.requestMarkAllRead(list)
+            },
+        ]
     }
 
     /// The current mode's sidebar.

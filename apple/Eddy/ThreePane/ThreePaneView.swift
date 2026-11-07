@@ -84,6 +84,8 @@ struct ThreePaneView: View {
         .onChange(of: selection) { history.reset(model.currentItemID) }
         .onChange(of: query) { history.reset(model.currentItemID) }
         .onChange(of: focus) { _, new in if new != nil { readerFocused = false } }
+        .onChange(of: articleList, initial: true) { _, list in model.currentList = list }
+        .onDisappear { model.currentList = nil }
         .onChange(of: model.navigation) { _, request in
             guard case let .threePane(destination) = request?.value else { return }
             model.navigation = nil
@@ -295,6 +297,14 @@ struct ThreePaneView: View {
             ToolbarItem {
                 Toggle(isOn: $unreadOnly) { Label("Unread Only", systemImage: "line.3.horizontal.decrease.circle") }.help("Show unread only")
             }
+            if let articleList {
+                ToolbarItem {
+                    Button { model.requestMarkAllRead(articleList) } label: {
+                        Label("Mark All as Read", systemImage: "checkmark.circle")
+                    }
+                    .help("Mark every unread article here as read")
+                }
+            }
             refreshItem
         }
         .background { keyboard(rows) }
@@ -305,6 +315,29 @@ struct ThreePaneView: View {
             Button { Task { await model.refresh() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                 .help("Refresh (⌘R)")
                 .disabled(model.busy)
+        }
+    }
+
+    /// The middle column as a list of subscription articles, for "Mark All
+    /// as Read"; nil for the collection and for search results.
+    private var articleList: ArticleList? {
+        guard results == nil, let selection else { return nil }
+        switch selection {
+        case let .smart(smart):
+            let filter: ItemFilterView = switch smart {
+            case .all, .unread: .all
+            case .starred: .starred
+            case .continueReading: .continueReading
+            }
+            return ArticleList(filter: filter, title: String(localized: String.LocalizationValue(smart.rawValue)))
+        case let .folder(name):
+            return ArticleList(filter: .category(name: name), title: name)
+        case let .feed(id):
+            return ArticleList(filter: .source(id: id), title: model.feeds.first { $0.id == id }?.title ?? "")
+        case let .tag(id):
+            return ArticleList(filter: .tag(id: id), title: model.tags.first { $0.id == id }?.name ?? "")
+        case .saved, .kind:
+            return nil
         }
     }
 

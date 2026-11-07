@@ -50,7 +50,11 @@ struct LibraryReader: View {
             ModeToolbar(mode: $mode, model: model)
         }
         .navigationTitle(book.title)
-        .onAppear(perform: chooseStart)
+        .onAppear {
+            chooseStart()
+            model.currentList = articleList
+        }
+        .onDisappear { model.currentList = nil }
         .onChange(of: currentID) { _, new in
             history.opened(new)
             if new != landAtEnd { landAtEnd = nil }
@@ -77,9 +81,16 @@ struct LibraryReader: View {
         } else {
             FeedContents(
                 title: book.title, items: entries, currentID: currentID, select: select,
-                focus: $focus, onReturn: { readerFocused = true }, onEscape: close
+                focus: $focus, onReturn: { readerFocused = true }, onEscape: close,
+                onMarkAllRead: articleList.map { list in { model.requestMarkAllRead(list) } }
             )
         }
+    }
+
+    /// A subscription's articles, for "Mark All as Read".
+    private var articleList: ArticleList? {
+        guard case let .feed(sourceID) = book.kind else { return nil }
+        return ArticleList(filter: .source(id: sourceID), title: book.title)
     }
 
     /// Esc in the text: to the contents column when it shows, else back to
@@ -174,14 +185,23 @@ private struct FeedContents: View {
     var focus: FocusState<PaneFocus?>.Binding?
     var onReturn: (() -> Void)?
     var onEscape: (() -> Void)?
+    var onMarkAllRead: (() -> Void)?
 
     @State private var query = ""
 
     var body: some View {
         VStack(spacing: 0) {
-            FilterField(text: $query, prompt: "Filter Articles")
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
+            HStack(spacing: 6) {
+                FilterField(text: $query, prompt: "Filter Articles")
+                if let onMarkAllRead {
+                    Button(action: onMarkAllRead) { Image(systemName: "checkmark.circle") }
+                        .buttonStyle(.borderless)
+                        .help("Mark every unread article here as read")
+                        .accessibilityLabel("Mark All as Read")
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
             List(selection: Binding(get: { currentID }, set: { if let id = $0 { select(id) } })) {
                 Section(title) {
                     ForEach(items.filter { $0.title.matches(filter: query) }) { item in

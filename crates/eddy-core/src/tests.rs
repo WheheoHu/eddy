@@ -291,6 +291,61 @@ async fn local_changes_are_pushed_to_freshrss() {
 }
 
 #[tokio::test]
+async fn mark_all_read_takes_unread_subscription_articles_up_to_a_moment() {
+    let server = mock_freshrss().await;
+    Mock::given(method("POST"))
+        .and(path("/api/greader.php/reader/api/0/edit-tag"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("OK"))
+        .mount(&server)
+        .await;
+    let pages = mock_pages().await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    engine
+        .configure_freshrss(&server.uri(), "me", "secret")
+        .await
+        .unwrap();
+    engine.refresh().await.unwrap();
+    let saved = engine
+        .save_url(&format!("{}/essay", pages.uri()))
+        .await
+        .unwrap();
+    engine.set_read(&saved.item.id, false).await.unwrap();
+    let unread_articles = |e: &Engine| {
+        e.items(&ItemQuery {
+            unread_only: true,
+            ..Default::default()
+        })
+        .unwrap()
+        .iter()
+        .filter(|r| r.item.kind == eddy_model::ItemKind::Feed)
+        .count()
+    };
+    let before = unread_articles(&engine);
+    assert!(before > 0);
+
+    // Nothing had arrived by the start of time.
+    assert_eq!(engine.unread_feed_count(&ItemFilter::All, 0).unwrap(), 0);
+    assert_eq!(engine.mark_all_read(&ItemFilter::All, 0).unwrap(), 0);
+
+    let now = i64::MAX;
+    assert_eq!(
+        engine.unread_feed_count(&ItemFilter::All, now).unwrap() as usize,
+        before
+    );
+    assert_eq!(
+        engine.mark_all_read(&ItemFilter::All, now).unwrap() as usize,
+        before
+    );
+    assert_eq!(unread_articles(&engine), 0);
+    // Saved pages aren't subscription articles.
+    assert!(!engine.item(&saved.item.id).unwrap().unwrap().item.read);
+    // The marks reach FreshRSS with the next refresh.
+    engine.refresh().await.unwrap();
+    assert!(engine.inner.store.upstream_pending().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn unpushed_local_changes_survive_a_refresh() {
     // No edit-tag endpoint: every push fails.
     let server = mock_freshrss().await;
