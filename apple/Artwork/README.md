@@ -17,6 +17,8 @@ scripts/build-mac-app.sh
 
 生成脚本使用 macOS 自带的 `sips` 和 `iconutil`，直接从母版导出各尺寸，并额外生成 `build/icons/Eddy.icns` 和 `build/icons/Eddy.iconset/`。母版与资源目录入库；`build/` 下的导出文件不入库。日常构建直接使用已提交的资源，无需重新生成图片。
 
+增量构建可能只更新 `.app` 内的文件而不更新应用包目录的修改时间，使 Finder / Dock 继续显示旧图标。`build-mac-app.sh` 在构建成功后会更新应用包目录的修改时间，触发图标刷新。
+
 母版通过内置 imagegen 工具从选定概念稿移除外围展示背景得到。后续导出使用本地母版，不依赖对话或生成服务。最终背景提取提示词如下：
 
 ```text

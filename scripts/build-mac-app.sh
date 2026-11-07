@@ -30,4 +30,8 @@ if ! xcodebuild -project Eddy.xcodeproj -scheme "$SCHEME" -configuration "$CONFI
 fi
 grep -E "warning: .*/apple/Eddy/" "$LOG" | sort -u || true
 
+# Incremental builds can leave the bundle directory's mtime unchanged even when
+# its icon resources change. Notify Finder and Dock so they drop the cached icon.
+touch "$ROOT/apple/DerivedData/Build/Products/$CONFIGURATION/$SCHEME.app"
+
 echo "Built $SCHEME ($CONFIGURATION) in $ROOT/apple/DerivedData/Build/Products/$CONFIGURATION"
