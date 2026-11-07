@@ -145,20 +145,64 @@ struct ArticleTextView: NSViewRepresentable {
 
         func show(_ article: BuiltArticle, version: String, keepPosition: Bool) {
             guard let textView else { return }
-            let anchor = keepPosition ? currentPosition() : nil
+            let held = keepPosition ? holdPosition() : nil
             self.article = article
             self.version = version
             imageTask?.cancel()
             textView.textStorage?.setAttributedString(article.text)
             textView.updateInsets()
             hasShown = true
-            if let anchor {
-                DispatchQueue.main.async { self.scroll(to: ScrollTarget(blockID: anchor.0, offset: anchor.1), animated: false) }
+            if let held {
+                restore(held)
             } else if lastTarget == nil {
                 scroll?.contentView.scroll(to: .zero)
             }
             loadImages(article.images)
             report(onlyAtEnd: true)
+        }
+
+        /// The line at the top of the view, and how far into it the view
+        /// starts, to put back after the text is rebuilt (a translation batch
+        /// arriving, a change of reading mode or style).
+        private struct HeldPosition {
+            let spot: BuiltArticle.Spot
+            let offset: Int
+            let delta: CGFloat
+        }
+
+        private func holdPosition() -> HeldPosition? {
+            guard let scroll, let textView, let tlm = textView.textLayoutManager, let article else { return nil }
+            let top = scroll.contentView.bounds.minY
+            let y = max(0, top - textView.textContainerOrigin.y)
+            guard let fragment = tlm.textLayoutFragment(for: CGPoint(x: 0, y: y)) else { return nil }
+            let fragmentStart = tlm.offset(from: tlm.documentRange.location, to: fragment.rangeInElement.location)
+            let within = y - fragment.layoutFragmentFrame.minY
+            let line = fragment.textLineFragments.last { $0.typographicBounds.minY <= within } ?? fragment.textLineFragments.first
+            let lineTop = fragment.layoutFragmentFrame.minY + (line?.typographicBounds.minY ?? 0) + textView.textContainerOrigin.y
+            guard let place = article.spot(at: fragmentStart + (line?.characterRange.location ?? 0)) else { return nil }
+            return HeldPosition(spot: place.spot, offset: place.offset, delta: top - lineTop)
+        }
+
+        /// Puts the held line back where it was, before anything is drawn.
+        private func restore(_ held: HeldPosition) {
+            guard let scroll, let textView, let tlm = textView.textLayoutManager, let article,
+                  let utf16 = article.location(of: held.spot, offset: held.offset),
+                  let location = tlm.location(tlm.documentRange.location, offsetBy: utf16)
+            else { return }
+            tlm.ensureLayout(for: NSTextRange(location: tlm.documentRange.location, end: location) ?? tlm.documentRange)
+            guard let fragment = tlm.textLayoutFragment(for: location) else { return }
+            let fragmentStart = tlm.offset(from: tlm.documentRange.location, to: fragment.rangeInElement.location)
+            var lineTop = fragment.layoutFragmentFrame.minY + textView.textContainerOrigin.y
+            if let line = fragment.textLineFragments.first(where: { line in
+                let start = fragmentStart + line.characterRange.location
+                return utf16 >= start && utf16 < start + max(line.characterRange.length, 1)
+            }) {
+                lineTop += line.typographicBounds.minY
+            }
+            scrollingProgrammatically = true
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, lineTop + held.delta)))
+            scroll.reflectScrolledClipView(scroll.contentView)
+            DispatchQueue.main.async { [weak self] in self?.scrollingProgrammatically = false }
         }
 
         private func loadImages(_ images: [ImageAttachment]) {

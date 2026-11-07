@@ -73,7 +73,36 @@ extension NSAttributedString.Key {
 struct BuiltArticle {
     let text: NSAttributedString
     let blocks: [(id: String, range: NSRange)]
+    /// Translations shown after their block (bilingual), by segment ID.
+    var translations: [(id: String, range: NSRange)] = []
     let images: [ImageAttachment]
+
+    /// A place in the text: a block, or the translation shown after one.
+    enum Spot: Equatable {
+        case block(String)
+        case translation(String)
+    }
+
+    func spot(at location: Int) -> (spot: Spot, offset: Int)? {
+        if let t = translations.first(where: { NSLocationInRange(location, $0.range) }) {
+            return (.translation(t.id), location - t.range.location)
+        }
+        return block(at: location).map { (.block($0.id), $0.offset) }
+    }
+
+    /// A translation no longer shown stands in for the end of its block.
+    func location(of spot: Spot, offset: Int) -> Int? {
+        switch spot {
+        case let .block(id):
+            return location(of: id, offset: offset)
+        case let .translation(id):
+            if let t = translations.first(where: { $0.id == id }) {
+                return t.range.location + min(offset, t.range.length)
+            }
+            let blockID = String(id.split(separator: "#").first ?? Substring(id))
+            return location(of: blockID, offset: .max)
+        }
+    }
 
     func block(at location: Int) -> (id: String, offset: Int)? {
         var lo = 0, hi = blocks.count - 1, found: Int?
@@ -103,7 +132,7 @@ enum ArticleBuilder {
         var b = Builder(style: style, translations: mode == .original ? [:] : translations, mode: mode)
         if let item { b.header(item, translatedTitle: mode == .original ? nil : translations["title"]) }
         for block in doc.blocks { b.block(block) }
-        return BuiltArticle(text: b.out, blocks: b.ranges, images: b.images)
+        return BuiltArticle(text: b.out, blocks: b.ranges, translations: b.translationRanges, images: b.images)
     }
 }
 
@@ -113,6 +142,7 @@ private struct Builder {
     let mode: ReadingMode
     let out = NSMutableAttributedString()
     var ranges: [(id: String, range: NSRange)] = []
+    var translationRanges: [(id: String, range: NSRange)] = []
     var images: [ImageAttachment] = []
 
     init(style: ReaderStyle, translations: [String: String], mode: ReadingMode) {
@@ -242,6 +272,7 @@ private struct Builder {
 
     mutating func translation(for id: String, font: NSFont, p: NSParagraphStyle) {
         guard mode == .bilingual, let text = translations[id] else { return }
+        translationRanges.append((id, NSRange(location: out.length, length: text.utf16.count)))
         out.append(NSAttributedString(string: text + "\n", attributes: base(font, p, color: .secondaryLabelColor)))
     }
 
