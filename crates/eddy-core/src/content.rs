@@ -67,7 +67,14 @@ impl Inner {
         }
         let Some(raw) = self.store.get_blob(&version.raw_blob)? else { return Ok(None) };
         let html = String::from_utf8_lossy(&raw);
-        let document = html_to_document(&html, &ConvertOptions { base_url: version.source_url.as_deref(), title });
+        let document = if version.raw_mime == crate::fulltext::PAGE_MIME {
+            match self.regenerate_page(version, &html) {
+                Some(doc) => doc,
+                None => return Ok(None),
+            }
+        } else {
+            html_to_document(&html, &ConvertOptions { base_url: version.source_url.as_deref(), title })
+        };
         let doc_blob = self.store.put_blob(&serde_json::to_vec(&document)?, "application/json", false)?;
         self.store.set_doc_blob(&version.hash, &doc_blob, SCHEMA_VERSION, document.text_len() as u32)?;
         Ok(Some(document))

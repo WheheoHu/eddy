@@ -8,7 +8,13 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use crate::*;
 
 pub(crate) async fn mock_freshrss() -> MockServer {
+    mock_freshrss_linking("https://blog.example").await
+}
+
+/// Mock FreshRSS whose items link to `{article_base}/{n}`.
+pub(crate) async fn mock_freshrss_linking(article_base: &str) -> MockServer {
     let server = MockServer::start().await;
+    let item = |n: u64, title: &str, read: bool| item_at(article_base, n, title, read);
     Mock::given(method("POST"))
         .and(path("/api/greader.php/accounts/ClientLogin"))
         .respond_with(ResponseTemplate::new(200).set_body_string("Auth=tok\n"))
@@ -51,7 +57,7 @@ pub(crate) async fn mock_freshrss() -> MockServer {
     server
 }
 
-fn item(n: u64, title: &str, read: bool) -> serde_json::Value {
+fn item_at(base: &str, n: u64, title: &str, read: bool) -> serde_json::Value {
     let mut cats = vec!["user/-/state/com.google/reading-list"];
     if read {
         cats.push("user/-/state/com.google/read");
@@ -61,7 +67,7 @@ fn item(n: u64, title: &str, read: bool) -> serde_json::Value {
         "title": title,
         "published": 1_700_000_000 + n,
         "categories": cats,
-        "alternate": [{"href": format!("https://blog.example/{n}")}],
+        "alternate": [{"href": format!("{base}/{n}")}],
         "summary": {"content": format!("<h1>{title}</h1><p>Body of {title} with <img src=\"/img/{n}.png\"></p>")},
         "origin": {"streamId": "feed/1", "title": "Graphics Blog"}
     })
@@ -151,4 +157,106 @@ async fn unpushed_local_changes_survive_a_refresh() {
     assert!(engine.item(&new_post.item.id).unwrap().unwrap().item.read);
     assert_eq!(engine.inner.store.upstream_pending().unwrap().len(), 1);
     assert!(engine.status().unwrap().last_error.is_some());
+}
+
+fn article_html(title: &str, paragraphs: usize) -> String {
+    let body: String = (0..paragraphs)
+        .map(|i| format!("<p>Paragraph {i} of {title} explains importance sampling and why the estimator stays unbiased.</p>"))
+        .collect();
+    format!("<html><head><title>{title} | Site</title></head><body><nav><a href='/'>Home</a></nav><article><h1>{title}</h1>{body}</article><footer>Footer</footer></body></html>")
+}
+
+async fn mock_pages() -> MockServer {
+    let server = MockServer::start().await;
+    for n in 1..=3 {
+        Mock::given(method("GET"))
+            .and(path(format!("/{n}")))
+            .respond_with(ResponseTemplate::new(200).insert_header("content-type", "text/html").set_body_string(article_html(&format!("Full {n}"), 30)))
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("GET"))
+        .and(path("/essay"))
+        .respond_with(ResponseTemplate::new(200).insert_header("content-type", "text/html").set_body_string(article_html("An Essay", 20)))
+        .mount(&server)
+        .await;
+    server
+}
+
+#[tokio::test]
+async fn full_text_replaces_a_truncated_feed_version() {
+    let pages = mock_pages().await;
+    let server = mock_freshrss_linking(&pages.uri()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    engine.configure_freshrss(&server.uri(), "me", "secret").await.unwrap();
+    engine.refresh().await.unwrap();
+    let row = engine.items(&ItemQuery::default()).unwrap().into_iter().find(|r| r.item.title == "New post").unwrap();
+    let before = engine.document(&row.item.id).await.unwrap().unwrap();
+
+    let full = engine.fetch_full_text(&row.item.id).await.unwrap();
+    assert_eq!(full.version.origin, eddy_model::ContentOrigin::Extracted);
+    assert!(full.document.text_len() > before.document.text_len() * 3);
+    assert!(!full.document.plain_text().contains("Footer"));
+
+    let current = engine.document(&row.item.id).await.unwrap().unwrap();
+    assert_eq!(current.version.hash, full.version.hash);
+    let source = engine.sources().unwrap().into_iter().find(|s| s.source.title == "Graphics Blog").unwrap();
+    assert!(source.source.truncated);
+    // Switching versions is an op, so it syncs like any other change.
+    assert!(engine.inner.store.unuploaded_ops(100).unwrap().iter().any(|o| o.op.field == "version"));
+}
+
+#[tokio::test]
+async fn saving_urls_and_importing_captures() {
+    let pages = mock_pages().await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+
+    let saved = engine.save_url(&format!("{}/essay", pages.uri())).await.unwrap();
+    assert_eq!(saved.item.title, "An Essay");
+    assert_eq!(saved.item.kind, eddy_model::ItemKind::Saved);
+    let again = engine.save_url(&format!("{}/essay", pages.uri())).await.unwrap();
+    assert_eq!(again.item.id, saved.item.id);
+    let doc = engine.document(&saved.item.id).await.unwrap().unwrap();
+    assert!(doc.document.text_len() > 500);
+
+    // A capture written by the browser host, with logged-in content.
+    let spool = engine.spool_dir();
+    std::fs::create_dir_all(&spool).unwrap();
+    std::fs::write(
+        spool.join("0001.json"),
+        serde_json::to_vec(&json!({"url": "https://paper.example/members/1", "title": "Members only", "html": article_html("Members only", 15)})).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(spool.join("0002.json"), b"not json").unwrap();
+    assert_eq!(engine.import_captures().await.unwrap(), 1);
+    assert!(spool.join("failed/0002.json").exists());
+    let saved_items = engine.items(&ItemQuery { filter: ItemFilter::Saved, ..Default::default() }).unwrap();
+    let captured = saved_items.iter().find(|r| r.item.title == "Members only").unwrap();
+    let doc = engine.document(&captured.item.id).await.unwrap().unwrap();
+    assert_eq!(doc.version.origin, eddy_model::ContentOrigin::Captured);
+
+    // Evicting the derived document regenerates it by re-extracting the page.
+    let blob = doc.version.doc_blob.clone().unwrap();
+    std::fs::remove_file(dir.path().join("blobs").join(&blob[blob.len() - 2..]).join(&blob)).unwrap();
+    let regenerated = engine.document(&captured.item.id).await.unwrap().unwrap();
+    assert_eq!(regenerated.document, doc.document);
+}
+
+#[tokio::test]
+async fn private_rule_packs_load_from_the_data_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    assert!(engine.rule_packs().packs.is_empty());
+    let summary = engine
+        .import_rule_pack("mine", "name = \"Mine\"\nversion = 1\n[[site]]\ndomains = [\"example.com\"]\nstrategies = [\"archive\"]\n")
+        .unwrap();
+    assert_eq!(summary.packs, vec![("Mine".to_string(), 1)]);
+    assert!(engine.import_rule_pack("bad", "[[site]\n").is_err());
+    assert!(engine.import_rule_pack("../escape", "name = \"x\"").is_err());
+    let summary = engine.import_ftr_rule(".example.org", "body: //article\n").unwrap();
+    assert_eq!(summary.ftr_sites, 1);
+    assert_eq!(engine.inner.fetcher.read().rule_for("https://www.example.com/a").unwrap().strategies, ["archive"]);
+    assert!(engine.inner.fetcher.read().rule_for("https://news.example.org/a").is_some());
 }

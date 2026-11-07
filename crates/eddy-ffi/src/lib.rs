@@ -43,6 +43,58 @@ pub trait PlatformServices: Send + Sync {
     fn log(&self, level: String, message: String);
 }
 
+/// Implemented by the host app: renders a page in a WebView (JavaScript,
+/// the user's own sessions) and returns its HTML, or `None` on failure.
+#[uniffi::export(with_foreign)]
+#[async_trait::async_trait]
+pub trait WebPageRenderer: Send + Sync {
+    async fn render(&self, url: String) -> Option<String>;
+}
+
+struct RendererAdapter(Arc<dyn WebPageRenderer>);
+
+#[async_trait::async_trait]
+impl eddy_core::WebRenderer for RendererAdapter {
+    async fn render(&self, url: &str) -> Option<String> {
+        self.0.render(url.to_string()).await
+    }
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct RulePackView {
+    pub name: String,
+    pub sites: u32,
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct RulePackSummaryView {
+    pub packs: Vec<RulePackView>,
+    pub ftr_sites: u32,
+}
+
+impl From<eddy_core::RulePackSummary> for RulePackSummaryView {
+    fn from(s: eddy_core::RulePackSummary) -> Self {
+        RulePackSummaryView {
+            packs: s.packs.into_iter().map(|(name, sites)| RulePackView { name, sites }).collect(),
+            ftr_sites: s.ftr_sites,
+        }
+    }
+}
+
+/// Chrome extension ID allowed to talk to the capture host.
+#[uniffi::export]
+pub fn chrome_extension_id() -> String {
+    eddy_core::CHROME_EXTENSION_ID.to_string()
+}
+
+/// Registers the capture host with Chrome-family browsers; returns the
+/// manifest files written.
+#[uniffi::export]
+pub fn install_native_host(host_path: String) -> Result<Vec<String>, EddyError> {
+    let files = eddy_core::install_native_host(std::path::Path::new(&host_path))?;
+    Ok(files.into_iter().map(|p| p.to_string_lossy().into_owned()).collect())
+}
+
 struct PlatformAdapter(Arc<dyn PlatformServices>);
 
 impl Platform for PlatformAdapter {
@@ -155,5 +207,42 @@ impl EddyEngine {
 
     pub fn set_source_full_text(&self, source_id: String, mode: FullTextModeView) -> R<()> {
         Ok(self.engine.set_source_full_text(&source_id, mode.into())?)
+    }
+
+    pub async fn fetch_full_text(&self, item_id: String) -> R<DocumentView> {
+        Ok(self.engine.fetch_full_text(&item_id).await?.into())
+    }
+
+    pub async fn save_url(&self, url: String) -> R<ItemView> {
+        Ok(self.engine.save_url(&url).await?.into())
+    }
+
+    pub fn spool_dir(&self) -> String {
+        self.engine.spool_dir().to_string_lossy().into_owned()
+    }
+
+    pub async fn import_captures(&self) -> R<u32> {
+        Ok(self.engine.import_captures().await?)
+    }
+
+    pub fn import_rule_pack(&self, name: String, contents: String) -> R<RulePackSummaryView> {
+        Ok(self.engine.import_rule_pack(&name, &contents)?.into())
+    }
+
+    pub fn import_ftr_rule(&self, domain: String, contents: String) -> R<RulePackSummaryView> {
+        Ok(self.engine.import_ftr_rule(&domain, &contents)?.into())
+    }
+
+    pub fn remove_rule_pack(&self, name: String) -> R<RulePackSummaryView> {
+        Ok(self.engine.remove_rule_pack(&name)?.into())
+    }
+
+    pub fn rule_packs(&self) -> RulePackSummaryView {
+        self.engine.rule_packs().into()
+    }
+
+    pub fn set_web_renderer(&self, renderer: Option<Arc<dyn WebPageRenderer>>) -> R<()> {
+        let renderer = renderer.map(|r| Arc::new(RendererAdapter(r)) as Arc<dyn eddy_core::WebRenderer>);
+        Ok(self.engine.set_web_renderer(renderer)?)
     }
 }

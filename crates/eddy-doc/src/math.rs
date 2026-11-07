@@ -5,6 +5,29 @@ use scraper::ElementRef;
 /// `<annotation encoding="application/x-tex">`; plain MathML may carry
 /// `alttext`. Falls back to the visible text.
 pub fn tex_in(el: ElementRef) -> Option<String> {
+    raw_tex_in(el).map(|t| normalize_tex(&t))
+}
+
+/// TeX source of a Wikipedia (Parsoid) formula, kept in the `data-mw`
+/// attribute as `{"body": {"extsrc": "…"}}`.
+pub fn tex_from_data_mw(json: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    let tex = value.get("body")?.get("extsrc")?.as_str()?;
+    Some(normalize_tex(tex))
+}
+
+/// Unwraps `{\displaystyle …}` (Wikipedia) and trims.
+pub fn normalize_tex(tex: &str) -> String {
+    let t = tex.trim();
+    for wrapper in ["{\\displaystyle", "{\\textstyle"] {
+        if let Some(inner) = t.strip_prefix(wrapper).and_then(|r| r.strip_suffix('}')) {
+            return inner.trim().to_string();
+        }
+    }
+    t.to_string()
+}
+
+fn raw_tex_in(el: ElementRef) -> Option<String> {
     let annotation = el.descendants().filter_map(ElementRef::wrap).find(|e| {
         e.value().name() == "annotation"
             && e.value().attr("encoding").is_some_and(|enc| enc.eq_ignore_ascii_case("application/x-tex") || enc.eq_ignore_ascii_case("tex"))
@@ -19,6 +42,9 @@ pub fn tex_in(el: ElementRef) -> Option<String> {
     };
     if let Some(alt) = math.and_then(|m| m.value().attr("alttext")) {
         return Some(alt.trim().to_string());
+    }
+    if let Some(tex) = math.and_then(|m| m.value().attr("data-mw")).and_then(tex_from_data_mw) {
+        return Some(tex);
     }
     let text = math.unwrap_or(el).text().collect::<String>();
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -131,11 +157,11 @@ fn match_math(s: &str) -> Option<(String, bool, usize)> {
     for (open, close, display) in [("$$", "$$", true), ("\\[", "\\]", true), ("\\(", "\\)", false)] {
         if let Some(body) = s.strip_prefix(open) {
             let end = body.find(close)?;
-            let tex = body[..end].trim();
+            let tex = normalize_tex(&body[..end]);
             if tex.is_empty() {
                 return None;
             }
-            return Some((tex.to_string(), display, open.len() + end + close.len()));
+            return Some((tex, display, open.len() + end + close.len()));
         }
     }
     let body = s.strip_prefix('$')?;

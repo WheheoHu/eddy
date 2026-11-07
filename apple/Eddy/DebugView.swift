@@ -17,14 +17,64 @@ final class DebugModel {
     var url = ""
     var username = ""
     var password = ""
+    var saveURL = ""
+    private var spoolWatcher: SpoolWatcher?
 
     init() {
         do {
-            engine = try EddyCore.openDefault()
+            let engine = try EddyCore.openDefault()
+            try engine.setWebRenderer(renderer: WebViewRenderer())
+            self.engine = engine
+            spoolWatcher = SpoolWatcher(path: engine.spoolDir()) { [weak self] in
+                Task { @MainActor in self?.importCaptures() }
+            }
             reload()
+            importCaptures()
         } catch {
             message = "打开引擎失败：\(error.localizedDescription)"
         }
+    }
+
+    func importCaptures() {
+        guard let engine else { return }
+        Task {
+            if let n = try? await engine.importCaptures(), n > 0 {
+                message = "导入了 \(n) 个浏览器捕获的页面"
+                reload()
+            }
+        }
+    }
+
+    func save() {
+        let target = saveURL
+        run("保存") { engine in
+            let item = try await engine.saveUrl(url: target)
+            return "已保存：\(item.title)"
+        }
+        saveURL = ""
+    }
+
+    func fetchFullText() {
+        guard let id = selected else { return }
+        run("抓全文") { [weak self] engine in
+            let doc = try await engine.fetchFullText(itemId: id)
+            await MainActor.run { self?.show(doc) }
+            return "全文 \(doc.blocks.count) 块（\(doc.origin)）"
+        }
+    }
+
+    func installChromeHost() {
+        let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/eddy-capture-host").path
+        do {
+            let files = try installNativeHost(hostPath: helper)
+            message = "已连接 Chrome 扩展（ID \(chromeExtensionId())），写入 \(files.count) 个浏览器配置"
+        } catch {
+            message = "连接 Chrome 扩展失败：\(error.localizedDescription)"
+        }
+    }
+
+    func show(_ doc: DocumentView) {
+        documentText = "[\(doc.origin)]\n\n" + doc.blocks.map { "[\($0.id)] \($0.kind.plainText)" }.joined(separator: "\n\n")
     }
 
     func reload() {
@@ -69,7 +119,7 @@ final class DebugModel {
         Task {
             do {
                 if let doc = try await engine.document(itemId: id) {
-                    documentText = doc.blocks.map { "[\($0.id)] \($0.kind.plainText)" }.joined(separator: "\n\n")
+                    show(doc)
                 } else {
                     documentText = "（没有内容）"
                 }
@@ -100,6 +150,12 @@ struct DebugView: View {
                 TextField("用户名", text: $model.username).frame(width: 140)
                 SecureField("API 密码", text: $model.password).frame(width: 140)
                 Button("连接", action: model.connect).disabled(model.busy)
+            }
+            HStack {
+                TextField("粘贴网址稍后阅读", text: $model.saveURL).onSubmit(model.save)
+                Button("保存", action: model.save).disabled(model.busy || model.saveURL.isEmpty)
+                Button("抓全文", action: model.fetchFullText).disabled(model.busy || model.selected == nil)
+                Button("连接 Chrome 扩展", action: model.installChromeHost)
             }
             Text(model.message).font(.caption).foregroundStyle(.secondary)
             HSplitView {

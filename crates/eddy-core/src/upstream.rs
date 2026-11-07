@@ -128,11 +128,11 @@ impl Upstream for DirectUpstream {
         missing.truncate(MISSING_FETCH_CAP);
         incoming.extend(self.client.contents(&missing).await?);
 
-        let mut new_items = 0;
+        let mut new_item_ids = Vec::new();
         for up in incoming {
             let source_id = feed_to_source.get(&up.feed_id).cloned();
-            if self.ingest(inner, &up, source_id)? {
-                new_items += 1;
+            if let Some(id) = self.ingest(inner, &up, source_id)? {
+                new_item_ids.push(id);
             }
         }
 
@@ -149,12 +149,18 @@ impl Upstream for DirectUpstream {
         if let Some(e) = push_error {
             return Err(e);
         }
-        Ok(RefreshSummary { new_items, state_changes, sources: subscriptions.len() as u32 })
+        Ok(RefreshSummary {
+            new_items: new_item_ids.len() as u32,
+            state_changes,
+            sources: subscriptions.len() as u32,
+            new_item_ids,
+        })
     }
 }
 
 impl DirectUpstream {
-    fn ingest(&self, inner: &Inner, up: &UpstreamItem, source_id: Option<String>) -> Result<bool> {
+    /// Stores a new upstream item. Returns its ID when it was new.
+    fn ingest(&self, inner: &Inner, up: &UpstreamItem, source_id: Option<String>) -> Result<Option<String>> {
         let account_id = self.account.id.as_str();
         let item_id = ids::feed_item_id(account_id, &up.id);
         let published = if up.published_ms > 0 { up.published_ms } else { now_ms() };
@@ -183,12 +189,12 @@ impl DirectUpstream {
         };
         if !inner.store.insert_item(&item)? {
             inner.store.update_item_meta(&item_id, &up.title, up.url.as_deref(), up.author.as_deref())?;
-            return Ok(false);
+            return Ok(None);
         }
         let ingested = inner.ingest_html(&item_id, &up.html, ContentOrigin::Feed, up.url.as_deref(), Some(&up.title), false)?;
         inner.store.set_current_version(&item_id, &ingested.version.hash, &ingested.excerpt, ingested.version.text_len, ingested.lang.as_deref())?;
         inner.after_ingest(&item_id, &ingested);
-        Ok(true)
+        Ok(Some(item_id))
     }
 
     /// Re-downloads feed content whose raw source was evicted from the cache.

@@ -5,6 +5,7 @@ use std::time::Duration;
 use eddy_model::{
     Account, Entity, FullTextMode, HlcClock, Op, Source, SourceKind, fields, ids, now_ms,
 };
+use eddy_fetch::{Fetcher, WebRenderer};
 use eddy_source_greader::{Credentials, GReaderClient, normalize_base};
 use eddy_store::{ItemQuery, ItemRow, Store};
 use parking_lot::RwLock;
@@ -49,6 +50,8 @@ pub struct RefreshSummary {
     pub new_items: u32,
     pub state_changes: u32,
     pub sources: u32,
+    /// IDs of the newly ingested items.
+    pub new_item_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -65,9 +68,10 @@ pub(crate) struct Inner {
     pub upstream: RwLock<Option<Arc<dyn Upstream>>>,
     pub direct: RwLock<Option<Arc<DirectUpstream>>>,
     pub refresh_lock: tokio::sync::Mutex<()>,
-    #[allow(dead_code)]
     pub data_dir: PathBuf,
     pub options: EngineOptions,
+    pub fetcher: RwLock<Arc<Fetcher>>,
+    pub web_renderer: RwLock<Option<Arc<dyn WebRenderer>>>,
 }
 
 /// Cheap to clone; all clones share one engine.
@@ -96,7 +100,12 @@ impl Engine {
             refresh_lock: tokio::sync::Mutex::new(()),
             data_dir: data_dir.to_path_buf(),
             options,
+            fetcher: RwLock::new(Arc::new(
+                Fetcher::new(Default::default(), None).map_err(|e| EngineError::Network(e.to_string()))?,
+            )),
+            web_renderer: RwLock::new(None),
         });
+        inner.rebuild_fetcher()?;
         inner.store.upsert_source(&Source {
             id: ids::saved_source_id(),
             account_id: None,
@@ -177,9 +186,10 @@ impl Engine {
         let upstream = inner.upstream.read().clone().ok_or(EngineError::NotConfigured)?;
         let result = upstream.sync(inner).await;
         match &result {
-            Ok(_) => {
+            Ok(summary) => {
                 inner.store.meta_set("last_refresh", &now_ms().to_string())?;
                 inner.store.meta_delete("last_error")?;
+                inner.auto_full_text(summary.new_item_ids.clone());
             }
             Err(e) => {
                 inner.store.meta_set("last_error", &e.to_string())?;

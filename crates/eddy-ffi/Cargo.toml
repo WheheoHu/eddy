@@ -10,6 +10,7 @@ crate-type = ["lib", "staticlib", "cdylib"]
 name = "eddy_ffi"
 
 [dependencies]
+async-trait = { workspace = true }
 eddy-core = { workspace = true }
 eddy-model = { workspace = true }
 thiserror = { workspace = true }

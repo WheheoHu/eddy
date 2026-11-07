@@ -1,0 +1,11 @@
+[package]
+name = "eddy-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+eddy-core = { workspace = true }
+eddy-model = { workspace = true }
+tokio = { workspace = true }

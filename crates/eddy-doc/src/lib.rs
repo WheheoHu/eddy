@@ -9,6 +9,7 @@ mod math;
 pub use convert::{ConvertOptions, html_to_document};
 pub use highlight::highlight;
 pub use locate::{locator_at, progression_at, remap_locator};
+pub use math::{normalize_tex, tex_from_data_mw};
 
 use eddy_model::{BlockKind, Document, runs_plain_text};
 

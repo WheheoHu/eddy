@@ -1,0 +1,16 @@
+[package]
+name = "eddy-extract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+dom_smoothie = "0.19"
+eddy-doc = { workspace = true }
+eddy-fetch = { path = "../eddy-fetch" }
+eddy-model = { workspace = true }
+regex = { workspace = true }
+scraper = { workspace = true }
+thiserror = { workspace = true }
+url = { workspace = true }

@@ -3,11 +3,17 @@
 
 mod content;
 mod engine;
+mod fulltext;
 mod images;
+mod native_host;
 mod platform;
+mod rules;
 mod upstream;
 
 pub use content::LoadedDocument;
+pub use eddy_fetch::WebRenderer;
+pub use native_host::{CHROME_EXTENSION_ID, NATIVE_HOST_NAME, install_native_host};
+pub use rules::RulePackSummary;
 pub use engine::{Engine, EngineOptions, EngineStatus, Mode, RefreshSummary, SourceInfo};
 pub use platform::{LogLevel, MemoryPlatform, Platform};
 

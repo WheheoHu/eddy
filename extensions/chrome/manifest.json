@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Save to Eddy",
+  "description": "把正在看的页面（包括已登录才能看到的内容）交给 Eddy 稍后阅读。",
+  "version": "0.1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzjoBKglrn3nWtQYPU/bFdPwAsdHafo4IthgzYDOlPlRNEb4ONGLnLKW7iv/FcM4QAsCqNiCgpjHnTLlJW64Ty5TPOIebvO045POPyvDzCrB3pJEDFJIbnwX3ZykPWmWUYghlxW1MtRQB3ZPo3/ZU8NEg1GGweoV6MwnBAwbC0wSPxKs4xTDZ0gMlHkWLJCQrxDINEqnDiybEl/jeoPIjRXYILEqvINvZeorlCysYfZAsXx5poj93tt550/AZs0Y/7luLu/Wm83cPjlYJ/9h+pzrKLkfM1qiydqv96YOBjeU5onbh4hC6O5+9+LySjiVFlRKKTdmA8Afi9oA0GxWsuwIDAQAB",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "nativeMessaging",
+    "contextMenus"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "保存到 Eddy"
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+E",
+        "mac": "Command+Shift+E"
+      }
+    }
+  }
+}
