@@ -294,16 +294,30 @@ impl Document {
         self.blocks.iter().find(|b| b.id == id)
     }
 
+    /// Opening text for lists and cards. Short formulas keep their symbols,
+    /// long ones become an ellipsis, so raw TeX never fills the preview.
     pub fn excerpt(&self, max_chars: usize) -> String {
         let mut out = String::new();
         for block in &self.blocks {
-            if !matches!(
-                block.kind,
-                BlockKind::Paragraph { .. } | BlockKind::ListItem { .. }
-            ) {
-                continue;
-            }
-            let text = block.plain_text();
+            let runs = match &block.kind {
+                BlockKind::Paragraph { runs } | BlockKind::ListItem { runs, .. } => runs,
+                _ => continue,
+            };
+            let text: String = runs
+                .iter()
+                .map(|r| {
+                    if !r.math {
+                        r.text.clone()
+                    } else if r.text.chars().count() <= 12 {
+                        r.text
+                            .chars()
+                            .filter(|c| !matches!(c, '\\' | '{' | '}'))
+                            .collect()
+                    } else {
+                        "…".to_string()
+                    }
+                })
+                .collect();
             let text = text.trim();
             if text.is_empty() {
                 continue;

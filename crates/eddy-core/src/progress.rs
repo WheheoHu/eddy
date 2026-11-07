@@ -258,9 +258,10 @@ impl Engine {
         }
         // Many docs sites build their table of contents with JavaScript.
         if page.strategy != "webview"
-            && let Some(rendered) = fetcher.render(url).await {
-                return Ok(detect_series(&rendered.html, &rendered.final_url));
-            }
+            && let Some(rendered) = fetcher.render(url).await
+        {
+            return Ok(detect_series(&rendered.html, &rendered.final_url));
+        }
         Ok(None)
     }
 

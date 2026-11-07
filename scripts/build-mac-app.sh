@@ -2,10 +2,12 @@
 # Builds the Rust core, regenerates the Xcode project and builds Eddy.app.
 #
 # Usage: scripts/build-mac-app.sh [debug|release]
+# SCHEME=UXDemo scripts/build-mac-app.sh builds the UX demo instead.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROFILE="${1:-debug}"
+SCHEME="${SCHEME:-Eddy}"
 source "$ROOT/scripts/env.sh"
 
 "$ROOT/scripts/build-apple.sh" "$PROFILE"
@@ -20,7 +22,7 @@ fi
 
 mkdir -p "$ROOT/build"
 LOG="$ROOT/build/xcodebuild.log"
-if ! xcodebuild -project Eddy.xcodeproj -scheme Eddy -configuration "$CONFIGURATION" \
+if ! xcodebuild -project Eddy.xcodeproj -scheme "$SCHEME" -configuration "$CONFIGURATION" \
   -derivedDataPath "$ROOT/apple/DerivedData" -destination 'platform=macOS,arch=arm64' \
   build >"$LOG" 2>&1; then
   grep -E "error:" "$LOG" | sort -u >&2 || true
@@ -29,5 +31,4 @@ if ! xcodebuild -project Eddy.xcodeproj -scheme Eddy -configuration "$CONFIGURAT
 fi
 grep -E "warning: .*/apple/Eddy/" "$LOG" | sort -u || true
 
-APP="$ROOT/apple/DerivedData/Build/Products/$CONFIGURATION/Eddy.app"
-echo "Built $APP"
+echo "Built $SCHEME ($CONFIGURATION) in $ROOT/apple/DerivedData/Build/Products/$CONFIGURATION"

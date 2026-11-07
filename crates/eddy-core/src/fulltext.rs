@@ -136,6 +136,7 @@ impl Inner {
             })
             .await
             .map_err(|e| EngineError::Network(e.to_string()))?;
+        reject_bot_wall(&page.html)?;
         let pin = row.item.kind != ItemKind::Feed;
         let (ingested, _) = self.ingest_page(
             item_id,
@@ -256,6 +257,7 @@ impl Inner {
             })
             .await
             .map_err(|e| EngineError::Network(e.to_string()))?;
+        reject_bot_wall(&page.html)?;
         self.create_saved(&page.final_url, &page.html, ContentOrigin::Extracted, None)
     }
 
@@ -330,6 +332,17 @@ impl Inner {
         });
         scheduled
     }
+}
+
+/// A bot-protection page instead of the article: point the user at the
+/// browser capture, which saves what their browser already shows.
+fn reject_bot_wall(html: &str) -> Result<()> {
+    if eddy_fetch::is_bot_wall(html) {
+        return Err(EngineError::Invalid(
+            "这个网站要求浏览器验证，暂时无法自动抓取。可以在 Chrome 里打开它，用 Eddy 扩展保存这一页。".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]

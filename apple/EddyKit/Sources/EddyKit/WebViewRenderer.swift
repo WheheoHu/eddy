@@ -54,10 +54,24 @@ private final class RenderJob: NSObject, WKNavigationDelegate {
 
     nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         Task { @MainActor in
-            try? await Task.sleep(for: .seconds(settleDelay))
-            let html = try? await webView.evaluateJavaScript("'<!doctype html>\\n' + document.documentElement.outerHTML") as? String
-            finish(html)
+            // Bot checks ("Checking your browser…") resolve themselves after a
+            // few seconds and navigate on; keep waiting until the real page is
+            // there or time runs out.
+            for _ in 0..<12 {
+                try? await Task.sleep(for: .seconds(settleDelay))
+                guard continuation != nil else { return }
+                let html = try? await webView.evaluateJavaScript("'<!doctype html>\\n' + document.documentElement.outerHTML") as? String
+                if let html, !Self.looksLikeChallenge(html) {
+                    finish(html)
+                    return
+                }
+            }
+            finish(nil)
         }
+    }
+
+    private static func looksLikeChallenge(_ html: String) -> Bool {
+        ["Checking your browser", "Just a moment...", "challenge-platform", "cf-browser-verification", "captcha-delivery.com"].contains { html.contains($0) }
     }
 
     nonisolated func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {

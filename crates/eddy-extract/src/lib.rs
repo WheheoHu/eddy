@@ -197,9 +197,9 @@ fn main_heading(doc: &Html) -> Option<String> {
             .iter()
             .filter_map(|h| title.find(&h.to_lowercase()).map(|i| (i, h)))
             .min_by_key(|(i, _)| *i)
-        {
-            return Some(h.clone());
-        }
+    {
+        return Some(h.clone());
+    }
     headings.into_iter().next()
 }
 
@@ -215,9 +215,11 @@ fn clean_title(title: String, heading: Option<&str>) -> String {
     };
     for sep in TITLE_SEPARATORS {
         if let Some((rest, last)) = title.rsplit_once(sep)
-            && last.trim().eq_ignore_ascii_case(h) && !rest.trim().is_empty() {
-                return rest.trim().to_string();
-            }
+            && last.trim().eq_ignore_ascii_case(h)
+            && !rest.trim().is_empty()
+        {
+            return rest.trim().to_string();
+        }
     }
     if h.len() < title.len() && title.to_lowercase().contains(&h.to_lowercase()) {
         return h.to_string();

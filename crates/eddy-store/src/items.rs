@@ -188,7 +188,7 @@ impl Store {
     pub fn unread_counts(&self) -> Result<Vec<(String, u32)>> {
         self.with(|c| {
             let mut stmt = c.prepare(
-                "SELECT source_id, COUNT(*) FROM items WHERE read=0 AND deleted=0 AND source_id IS NOT NULL GROUP BY source_id",
+                "SELECT source_id, COUNT(*) FROM items WHERE read=0 AND deleted=0 AND kind!='chapter' AND source_id IS NOT NULL GROUP BY source_id",
             )?;
             let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)

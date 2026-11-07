@@ -134,11 +134,19 @@ impl Fetcher {
             };
             match result {
                 Ok(page) => {
-                    if page.strategy != "webview" && needs_js(&page.html) && self.webview.is_some()
+                    let wall = is_bot_wall(&page.html);
+                    if page.strategy != "webview"
+                        && (wall || needs_js(&page.html))
+                        && self.webview.is_some()
                     {
                         if !order.iter().any(|s| s == "webview") {
                             order.push("webview".into());
                         }
+                        unrendered.get_or_insert(page);
+                        continue;
+                    }
+                    if wall {
+                        // Never accept an interstitial as the article.
                         unrendered.get_or_insert(page);
                         continue;
                     }
@@ -149,7 +157,17 @@ impl Fetcher {
                         best = Some(page);
                     }
                 }
-                Err(e) => last_error = Some(e),
+                Err(e) => {
+                    // Bot walls answer plain requests with 403/429/503; a real
+                    // browser engine usually gets through.
+                    if matches!(e, FetchError::Http(403 | 429 | 503))
+                        && self.webview.is_some()
+                        && !order.iter().any(|s| s == "webview")
+                    {
+                        order.push("webview".into());
+                    }
+                    last_error = Some(e);
+                }
             }
         }
         best.or(unrendered)
@@ -277,17 +295,34 @@ static SCRIPT_OR_STYLE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock:
 static TAG: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"(?s)<[^>]*>").unwrap());
 
+/// Bot-protection interstitials (Cloudflare, DataDome and similar) that
+/// stand in for the real page.
+pub fn is_bot_wall(html: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "Checking your browser",
+        "Just a moment...",
+        "cf-browser-verification",
+        "challenge-platform",
+        "Attention Required! | Cloudflare",
+        "captcha-delivery.com",
+        "Please enable JS and disable any ad blocker",
+        "DDoS protection by",
+    ];
+    html.len() < 400_000 && MARKERS.iter().any(|m| html.contains(m))
+}
+
 /// Pages whose content only exists after JavaScript runs: client-side
 /// document renderers (Markdeep, Docsify) and empty single-page-app shells.
 pub fn needs_js(html: &str) -> bool {
+    // Markdeep loads its script at the very end of long documents.
+    if html.contains("markdeep.min.js") || html.contains("window.$docsify") {
+        return true;
+    }
     let lower_head: String = html
         .chars()
         .take(200_000)
         .collect::<String>()
         .to_lowercase();
-    if lower_head.contains("markdeep.min.js") || lower_head.contains("window.$docsify") {
-        return true;
-    }
     let shell = lower_head.contains("<div id=\"root\"></div>")
         || lower_head.contains("<div id=\"app\"></div>")
         || lower_head.contains("enable javascript");
