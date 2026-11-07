@@ -7,6 +7,7 @@ publish = false
 
 [dependencies]
 async-trait = { workspace = true }
+eddy-ai = { path = "../eddy-ai" }
 eddy-doc = { workspace = true }
 eddy-extract = { path = "../eddy-extract" }
 eddy-fetch = { path = "../eddy-fetch" }

@@ -189,7 +189,7 @@ impl Engine {
             Ok(summary) => {
                 inner.store.meta_set("last_refresh", &now_ms().to_string())?;
                 inner.store.meta_delete("last_error")?;
-                inner.auto_full_text(summary.new_item_ids.clone());
+                inner.auto_process(summary.new_item_ids.clone());
             }
             Err(e) => {
                 inner.store.meta_set("last_error", &e.to_string())?;

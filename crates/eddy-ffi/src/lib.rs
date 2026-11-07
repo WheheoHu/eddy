@@ -1,5 +1,6 @@
 //! UniFFI surface of the Eddy engine for Swift and Kotlin.
 
+mod ai;
 mod views;
 
 use std::path::PathBuf;
@@ -7,6 +8,7 @@ use std::sync::Arc;
 
 use eddy_core::{Engine, EngineError, EngineOptions, LogLevel, Platform};
 
+pub use ai::*;
 pub use views::*;
 
 uniffi::setup_scaffolding!();
@@ -128,7 +130,7 @@ pub fn core_version() -> String {
 
 #[derive(uniffi::Object)]
 pub struct EddyEngine {
-    engine: Engine,
+    pub(crate) engine: Engine,
 }
 
 #[uniffi::export(async_runtime = "tokio")]

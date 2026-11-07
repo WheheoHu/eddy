@@ -18,7 +18,49 @@ final class DebugModel {
     var username = ""
     var password = ""
     var saveURL = ""
+    var llmURL = ""
+    var llmModel = ""
+    var llmKey = ""
     private var spoolWatcher: SpoolWatcher?
+
+    func saveAI() {
+        guard let engine else { return }
+        do {
+            var settings = try engine.aiSettings()
+            settings = AiSettingsView(
+                provider: ProviderView(baseUrl: llmURL, model: llmModel),
+                targetLanguage: settings.targetLanguage,
+                glossary: settings.glossary,
+                syncTranslations: settings.syncTranslations,
+                syncSummaries: settings.syncSummaries,
+                dailyAutoLimit: settings.dailyAutoLimit,
+                rules: settings.rules
+            )
+            try engine.setAiSettings(settings: settings)
+            if !llmKey.isEmpty { try engine.setAiKey(key: llmKey) }
+            llmKey = ""
+            message = "模型设置已保存"
+        } catch {
+            message = "保存模型设置失败：\(error.localizedDescription)"
+        }
+    }
+
+    func ai(_ action: String) {
+        guard let id = selected else { return }
+        run(action) { engine in
+            switch action {
+            case "翻译":
+                let t = try await engine.translate(itemId: id, force: false, listener: nil)
+                return "译文 \(t.segments.count) 段\(t.cached ? "（缓存）" : "")：\(t.segments["title"] ?? "")"
+            case "摘要":
+                let s = try await engine.summarize(itemId: id, force: false)
+                return "摘要：\(s.tldr) · " + s.points.joined(separator: " / ")
+            default:
+                let tags = try await engine.suggestTags(itemId: id)
+                return "标签：\(tags.tags.map(\.name).joined(separator: ", ")) · 建议：\(tags.suggestions.joined(separator: ", "))"
+            }
+        }
+    }
 
     init() {
         do {
@@ -156,6 +198,15 @@ struct DebugView: View {
                 Button("保存", action: model.save).disabled(model.busy || model.saveURL.isEmpty)
                 Button("抓全文", action: model.fetchFullText).disabled(model.busy || model.selected == nil)
                 Button("连接 Chrome 扩展", action: model.installChromeHost)
+            }
+            HStack {
+                TextField("模型 API 地址", text: $model.llmURL)
+                TextField("模型 ID", text: $model.llmModel).frame(width: 160)
+                SecureField("API Key", text: $model.llmKey).frame(width: 160)
+                Button("保存模型", action: model.saveAI)
+                ForEach(["翻译", "摘要", "标签"], id: \.self) { action in
+                    Button(action) { model.ai(action) }.disabled(model.busy || model.selected == nil)
+                }
             }
             Text(model.message).font(.caption).foregroundStyle(.secondary)
             HSplitView {

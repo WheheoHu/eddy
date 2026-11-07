@@ -231,7 +231,7 @@ impl Store {
                 order = "i.chapter_index ASC, i.id";
             }
             ItemFilter::Tag(tag) => {
-                clauses.push("EXISTS(SELECT 1 FROM item_tags t WHERE t.item_id=i.id AND t.tag_id=? AND t.state='confirmed')".into());
+                clauses.push("EXISTS(SELECT 1 FROM item_tags t WHERE t.item_id=i.id AND t.tag_id=? AND t.state IN ('confirmed','auto'))".into());
                 values.push(Value::Text(tag.clone()));
             }
             ItemFilter::Ids(ids) => {
@@ -390,6 +390,28 @@ impl Store {
         self.with(|c| {
             let mut stmt = c.prepare("SELECT id, name FROM tags WHERE deleted=0 ORDER BY name COLLATE NOCASE")?;
             let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
+    /// Tags with the number of items carrying them: (id, name, count).
+    pub fn tag_counts(&self) -> Result<Vec<(String, String, u32)>> {
+        self.with(|c| {
+            let mut stmt = c.prepare(
+                "SELECT t.id, t.name, (SELECT COUNT(*) FROM item_tags it JOIN items i ON i.id=it.item_id
+                    WHERE it.tag_id=t.id AND it.state IN ('confirmed','auto') AND i.deleted=0)
+                 FROM tags t WHERE t.deleted=0 ORDER BY t.name COLLATE NOCASE",
+            )?;
+            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
+    /// Item tag states: (tag_id, state).
+    pub fn item_tag_states(&self, item_id: &str) -> Result<Vec<(String, String)>> {
+        self.with(|c| {
+            let mut stmt = c.prepare("SELECT tag_id, state FROM item_tags WHERE item_id=?")?;
+            let rows = stmt.query_map([item_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
     }

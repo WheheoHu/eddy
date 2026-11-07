@@ -22,6 +22,12 @@ pub fn feed_item_id(account_id: &str, upstream_item_id: &str) -> String {
     v5(&format!("item\u{1f}{account_id}\u{1f}{upstream_item_id}"))
 }
 
+/// Tags are identified by their normalized name, so the same tag created on
+/// two devices merges into one.
+pub fn tag_id(name: &str) -> String {
+    v5(&format!("tag\u{1f}{}", name.trim().to_lowercase()))
+}
+
 /// The built-in source that holds pages saved by the user.
 pub fn saved_source_id() -> String {
     v5("source\u{1f}local\u{1f}saved")

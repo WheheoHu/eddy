@@ -260,3 +260,123 @@ async fn private_rule_packs_load_from_the_data_directory() {
     assert_eq!(engine.inner.fetcher.read().rule_for("https://www.example.com/a").unwrap().strategies, ["archive"]);
     assert!(engine.inner.fetcher.read().rule_for("https://news.example.org/a").is_some());
 }
+
+async fn mock_llm() -> MockServer {
+    let server = MockServer::start().await;
+    let reply = |content: serde_json::Value| {
+        ResponseTemplate::new(200).set_body_json(json!({"choices": [{"message": {"content": content.to_string()}}]}))
+    };
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_string_contains("You summarize articles"))
+        .respond_with(reply(json!({"tldr": "一句话", "points": ["要点"]})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_string_contains("reader's own tags"))
+        .respond_with(reply(json!({"tags": ["Rendering", "Rust"], "suggestions": ["Sampling"]})))
+        .mount(&server)
+        .await;
+    // Translation: echo every segment ID back with a prefix.
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_string_contains("Translate each input segment"))
+        .respond_with(|req: &wiremock::Request| {
+            let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+            let user: serde_json::Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+            let translations: Vec<_> = user["segments"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| json!({"id": s["id"], "text": format!("译：{}", s["text"].as_str().unwrap())}))
+                .collect();
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"choices": [{"message": {"content": json!({"translations": translations}).to_string()}}]}))
+        })
+        .mount(&server)
+        .await;
+    server
+}
+
+fn configure_ai(engine: &Engine, llm: &MockServer, rules: Vec<AutoRule>) {
+    engine
+        .set_ai_settings(AiSettings {
+            provider: Some(ProviderSettings { base_url: llm.uri(), model: "test-model".into() }),
+            rules,
+            ..Default::default()
+        })
+        .unwrap();
+    engine.set_ai_key(Some("sk-test-secret-key")).unwrap();
+}
+
+#[tokio::test]
+async fn translation_summary_and_tags_with_caching() {
+    let pages = mock_pages().await;
+    let llm = mock_llm().await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    configure_ai(&engine, &llm, vec![]);
+    assert!(engine.ai_settings().unwrap().provider.unwrap().base_url.ends_with("/v1"));
+    let row = engine.save_url(&format!("{}/essay", pages.uri())).await.unwrap();
+
+    let batches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = batches.clone();
+    let callback: BatchCallback = Arc::new(move |_| {
+        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    });
+    let t = engine.translate(&row.item.id, false, Some(callback)).await.unwrap();
+    assert!(!t.cached);
+    assert_eq!(t.segments["title"], "译：An Essay");
+    let doc = engine.document(&row.item.id).await.unwrap().unwrap().document;
+    let first_para = doc.blocks.iter().find(|b| matches!(b.kind, BlockKind::Paragraph { .. })).unwrap();
+    assert!(t.segments[&first_para.id].starts_with("译：Paragraph 0"));
+    assert!(batches.load(std::sync::atomic::Ordering::SeqCst) >= 3);
+    let requests_after_first = llm.received_requests().await.unwrap().len();
+
+    let again = engine.translate(&row.item.id, false, None).await.unwrap();
+    assert!(again.cached);
+    assert_eq!(llm.received_requests().await.unwrap().len(), requests_after_first);
+    assert_eq!(engine.cached_translation(&row.item.id).unwrap().unwrap().segments, t.segments);
+
+    let s = engine.summarize(&row.item.id, false).await.unwrap();
+    assert_eq!(s.summary.tldr, "一句话");
+    assert!(engine.summarize(&row.item.id, false).await.unwrap().cached);
+
+    let rendering = engine.create_tag("Rendering").unwrap();
+    assert_eq!(engine.create_tag(" rendering ").unwrap(), rendering);
+    let tags = engine.suggest_tags(&row.item.id).await.unwrap();
+    assert_eq!(tags.tags.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["Rendering"]);
+    assert_eq!(tags.suggestions, ["Rust", "Sampling"]);
+    engine.accept_tag_suggestion(&row.item.id, "Sampling").unwrap();
+    engine.set_item_tag(&row.item.id, &rendering, false).unwrap();
+    let after = engine.suggest_tags(&row.item.id).await.unwrap();
+    assert_eq!(after.tags.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["Sampling"]);
+    assert_eq!(engine.items(&ItemQuery { filter: ItemFilter::Tag(eddy_model::ids::tag_id("sampling")), ..Default::default() }).unwrap().len(), 1);
+
+    // The key lives in the keychain, never in the database.
+    let db = std::fs::read(dir.path().join("eddy.sqlite3")).unwrap();
+    let wal = std::fs::read(dir.path().join("eddy.sqlite3-wal")).unwrap_or_default();
+    let needle = b"sk-test-secret-key";
+    assert!(!db.windows(needle.len()).any(|w| w == needle) && !wal.windows(needle.len()).any(|w| w == needle));
+}
+
+#[tokio::test]
+async fn automatic_rules_run_on_new_items() {
+    let pages = mock_pages().await;
+    let llm = mock_llm().await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    configure_ai(&engine, &llm, vec![AutoRule { scope: RuleScope::All, action: AutoAction::Summarize, min_chars: 100, only_foreign: true }]);
+    let row = engine.save_url(&format!("{}/essay", pages.uri())).await.unwrap();
+    let mut summary = None;
+    for _ in 0..50 {
+        summary = engine.cached_summary(&row.item.id).unwrap();
+        if summary.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(summary.unwrap().tldr, "一句话");
+    assert_eq!(engine.ai_usage_today().unwrap(), 1);
+}

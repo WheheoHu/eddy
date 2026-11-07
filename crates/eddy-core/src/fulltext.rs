@@ -163,10 +163,18 @@ impl Inner {
     }
 
     /// Fetches full text in the background for new items whose source needs
-    /// it: always-on sources, and auto sources that look truncated.
-    pub(crate) fn auto_full_text(self: &Arc<Self>, item_ids: Vec<String>) {
+    /// it: always-on sources, and auto sources that look truncated. Automatic
+    /// AI rules run on the remaining items now and on fetched ones once their
+    /// full text arrives, so nothing is processed twice.
+    pub(crate) fn auto_process(self: &Arc<Self>, item_ids: Vec<String>) {
+        let scheduled = self.auto_full_text(&item_ids);
+        self.auto_ai(item_ids.into_iter().filter(|id| !scheduled.contains(id)).collect());
+    }
+
+    /// Returns the IDs scheduled for fetching.
+    fn auto_full_text(self: &Arc<Self>, item_ids: &[String]) -> Vec<String> {
         let mut candidates = Vec::new();
-        for id in item_ids {
+        for id in item_ids.iter().cloned() {
             let Ok(Some(row)) = self.store.item(&id) else { continue };
             let Some(source) = row.item.source_id.as_deref().and_then(|s| self.store.source(s).ok().flatten()) else { continue };
             let wanted = match source.full_text {
@@ -185,9 +193,10 @@ impl Inner {
             }
         }
         if candidates.is_empty() {
-            return;
+            return candidates;
         }
         let inner = self.clone();
+        let scheduled = candidates.clone();
         tokio::spawn(async move {
             use futures::StreamExt;
             futures::stream::iter(candidates)
@@ -197,10 +206,12 @@ impl Inner {
                         if let Err(e) = inner.fetch_full_text(&id).await {
                             inner.platform.log(LogLevel::Info, &format!("auto full text skipped: {e}"));
                         }
+                        inner.auto_ai(vec![id]);
                     }
                 })
                 .await;
         });
+        scheduled
     }
 }
 
@@ -222,7 +233,9 @@ impl Engine {
 
     /// Saves a web page for later reading.
     pub async fn save_url(&self, url: &str) -> Result<ItemRow> {
-        self.inner.save_url(url).await
+        let row = self.inner.save_url(url).await?;
+        self.inner.auto_ai(vec![row.item.id.clone()]);
+        Ok(row)
     }
 
     /// Directory where the browser capture host drops pages.
@@ -259,16 +272,14 @@ impl Engine {
     async fn import_capture(&self, path: &Path) -> Result<()> {
         let text = std::fs::read_to_string(path).map_err(|e| EngineError::Invalid(e.to_string()))?;
         let capture: Capture = serde_json::from_str(&text)?;
-        match capture.html.filter(|h| !h.trim().is_empty()) {
-            Some(html) => {
-                if self.inner.saved_by_url(&capture.url)?.is_none() {
-                    self.inner.create_saved(&capture.url, &html, ContentOrigin::Captured, capture.title.as_deref())?;
-                }
-            }
-            None => {
-                self.inner.save_url(&capture.url).await?;
-            }
-        }
+        let row = match capture.html.filter(|h| !h.trim().is_empty()) {
+            Some(html) => match self.inner.saved_by_url(&capture.url)? {
+                Some(existing) => existing,
+                None => self.inner.create_saved(&capture.url, &html, ContentOrigin::Captured, capture.title.as_deref())?,
+            },
+            None => self.inner.save_url(&capture.url).await?,
+        };
+        self.inner.auto_ai(vec![row.item.id]);
         Ok(())
     }
 }
