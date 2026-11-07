@@ -81,6 +81,13 @@ pub trait PdfTextExtractor: Send + Sync {
     fn extract(&self, path: String) -> Option<PdfTextView>;
 }
 
+/// Receives the running total of older articles added while FreshRSS
+/// history loads.
+#[uniffi::export(with_foreign)]
+pub trait HistoryListener: Send + Sync {
+    fn on_progress(&self, added: u32);
+}
+
 struct PdfAdapter(Arc<dyn PdfTextExtractor>);
 
 impl eddy_core::PdfReader for PdfAdapter {
@@ -232,6 +239,15 @@ impl EddyEngine {
 
     pub async fn refresh(&self) -> R<RefreshSummaryView> {
         Ok(self.engine.refresh().await?.into())
+    }
+
+    /// Loads older FreshRSS articles page by page until the history is
+    /// complete. Returns how many were added; returns at once when there is
+    /// nothing left or a walk is already running.
+    pub async fn backfill_history(&self, listener: Option<Arc<dyn HistoryListener>>) -> R<u32> {
+        let callback = listener
+            .map(|l| Arc::new(move |added| l.on_progress(added)) as eddy_core::HistoryCallback);
+        Ok(self.engine.backfill_history(callback).await?)
     }
 
     pub fn sources(&self) -> R<Vec<SourceView>> {

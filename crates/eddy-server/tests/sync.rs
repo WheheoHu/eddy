@@ -9,7 +9,7 @@ use std::time::Duration;
 use eddy_core::{Engine, EngineOptions, ItemFilter, ItemQuery, MemoryPlatform, Mode};
 use eddy_server::{AppState, ServerConfig, create_pairing_code, router};
 use serde_json::json;
-use wiremock::matchers::{method, path, path_regex};
+use wiremock::matchers::{method, path, path_regex, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 const READ: &str = "user/-/state/com.google/read";
@@ -395,6 +395,81 @@ async fn standalone_client_migrates_and_a_second_device_joins() {
     b.disconnect_server().unwrap();
     assert_eq!(b.status().unwrap().mode, Mode::Unconfigured);
     assert_eq!(b.items(&ItemQuery::default()).unwrap().len(), 5);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn server_loads_history_in_the_background_and_announces_it() {
+    let (fresh, _) = stateful_freshrss().await;
+    let contents = "^/api/greader.php/reader/api/0/stream/contents/.*";
+    let read_entry = |n: u64, title: &str| {
+        json!({
+            "id": format!("tag:google.com,2005:reader/item/{n:016x}"), "title": title, "published": 1_700_000_000 + n,
+            "categories": ["user/-/state/com.google/reading-list", READ], "alternate": [{"href": format!("https://blog.example/{n}")}],
+            "summary": {"content": format!("<p>Body of {title}.</p>")},
+            "origin": {"streamId": "feed/1", "title": "Graphics Blog"}
+        })
+    };
+    Mock::given(method("GET"))
+        .and(path_regex(contents))
+        .and(query_param_is_missing("c"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(
+                json!({"items": [read_entry(1, "Old post")], "continuation": "older"}),
+            ),
+        )
+        .with_priority(1)
+        .mount(&fresh)
+        .await;
+    // Slow enough that the client has connected before the page lands.
+    Mock::given(method("GET"))
+        .and(path_regex(contents))
+        .and(query_param("c", "older"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(1))
+                .set_body_json(json!({"items": [read_entry(9, "Archived")]})),
+        )
+        .with_priority(1)
+        .expect(1)
+        .mount(&fresh)
+        .await;
+
+    let server_dir = tempfile::tempdir().unwrap();
+    let state = AppState::open(&ServerConfig {
+        data_dir: server_dir.path().to_path_buf(),
+        master_key: [3u8; 32],
+    })
+    .unwrap();
+    state
+        .engine
+        .configure_freshrss(&fresh.uri(), "me", "pw")
+        .await
+        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(axum::serve(listener, router(state.clone())).into_future());
+
+    let dir = tempfile::tempdir().unwrap();
+    let device = client(dir.path());
+    let code = create_pairing_code(&state.store, Duration::from_secs(60)).unwrap();
+    device.connect_server(&url, &code, "Mac").await.unwrap();
+    let has_archived = |engine: &Engine| {
+        engine
+            .items(&ItemQuery::default())
+            .unwrap()
+            .iter()
+            .any(|r| r.item.title == "Archived")
+    };
+    assert!(!has_archived(&device), "history is not part of the refresh");
+
+    device.start_live_sync();
+    let watched = device.clone();
+    assert!(
+        eventually(move || has_archived(&watched)).await,
+        "the server announced the history page"
+    );
+    assert!(find(&device, "Archived").item.read);
+    device.stop_live_sync();
 }
 
 #[tokio::test]

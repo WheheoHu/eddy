@@ -1,4 +1,6 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use eddy_model::{
@@ -6,8 +8,12 @@ use eddy_model::{
 };
 use eddy_source_greader::{GReaderClient, READ, READING_LIST, STARRED, UpstreamItem, history_path};
 
-use crate::engine::{Inner, RefreshSummary};
+use crate::engine::{Engine, Inner, RefreshSummary};
 use crate::{LogLevel, Result};
+
+/// Receives the running total of articles added, after each history page
+/// that added some.
+pub type HistoryCallback = Arc<dyn Fn(u32) + Send + Sync>;
 
 /// Where the engine gets content and sends local changes. Standalone mode
 /// talks to FreshRSS directly; server mode syncs with `eddy-server`. Every
@@ -36,8 +42,6 @@ pub(crate) struct DirectUpstream {
 
 const ID_CAP: usize = 50_000;
 const MISSING_FETCH_CAP: usize = 1_000;
-/// Older reading-list pages (100 items each) backfilled per sync.
-const HISTORY_PAGES_PER_SYNC: usize = 10;
 
 #[async_trait]
 impl Upstream for DirectUpstream {
@@ -191,17 +195,14 @@ impl Upstream for DirectUpstream {
         missing.truncate(MISSING_FETCH_CAP);
         incoming.extend(self.client.contents(&missing).await?);
 
-        let mut seen: HashSet<String> = known.into_keys().collect();
         let mut new_item_ids = Vec::new();
         for up in incoming {
-            seen.insert(up.id.clone());
             let source_id = feed_to_source.get(&up.feed_id).cloned();
             if let Some(id) = self.ingest(inner, &up, source_id)? {
                 new_item_ids.push(id);
             }
         }
-        self.backfill_history(inner, &feed_to_source, &mut seen, recent.continuation)
-            .await?;
+        self.start_history(inner, recent.continuation)?;
 
         let mut state_changes = 0;
         for (id, up, _, _) in inner.store.upstream_items(account_id)? {
@@ -238,63 +239,53 @@ impl Upstream for DirectUpstream {
 }
 
 impl DirectUpstream {
-    /// Walks the reading list past its first page, a few pages per sync, so
-    /// articles already read upstream become local too. They are history, not
-    /// new arrivals, so automatic processing skips them. A failed page is
-    /// retried on the next sync from the saved cursor.
-    async fn backfill_history(
-        &self,
-        inner: &Inner,
-        feed_to_source: &HashMap<String, String>,
-        seen: &mut HashSet<String>,
-        after_first_page: Option<String>,
-    ) -> Result<()> {
-        // An empty value marks the end: it is never a valid continuation.
-        let key = format!("history_cursor:{}", self.account.id);
-        let mut cursor = match inner.store.meta_get(&key)? {
-            Some(saved) if saved.is_empty() => return Ok(()),
-            Some(saved) => saved,
-            None => match after_first_page {
-                Some(next) => next,
-                None => {
-                    inner.store.meta_set(&key, "")?;
-                    return Ok(());
-                }
-            },
-        };
-        for _ in 0..HISTORY_PAGES_PER_SYNC {
-            let page: eddy_source_greader::Result<_> = async {
-                let path = history_path("all", false, Some(&cursor))?;
-                self.client.stream_page(&path, Some(&cursor)).await
-            }
-            .await;
-            let page = match page {
-                Ok(page) => page,
-                Err(e) => {
-                    inner
-                        .platform
-                        .log(LogLevel::Warn, &format!("history backfill paused: {e}"));
-                    return Ok(());
-                }
-            };
-            for up in page.items {
-                if seen.insert(up.id.clone()) {
-                    let source_id = feed_to_source.get(&up.feed_id).cloned();
-                    self.ingest(inner, &up, source_id)?;
-                }
-            }
-            match page.continuation {
-                Some(next) => {
-                    inner.store.meta_set(&key, &next)?;
-                    cursor = next;
-                }
-                None => {
-                    inner.store.meta_set(&key, "")?;
-                    break;
-                }
-            }
+    /// Where the reading list continues past pages already ingested. An empty
+    /// value marks the end: it is never a valid continuation.
+    fn history_key(&self) -> String {
+        format!("history_cursor:{}", self.account.id)
+    }
+
+    /// On the first sync, remembers where history continues past the newest
+    /// page. Later first pages only add articles on top of it.
+    fn start_history(&self, inner: &Inner, after_first_page: Option<String>) -> Result<()> {
+        let key = self.history_key();
+        if inner.store.meta_get(&key)?.is_none() {
+            inner
+                .store
+                .meta_set(&key, after_first_page.as_deref().unwrap_or(""))?;
         }
         Ok(())
+    }
+
+    /// Ingests the next older reading-list page and saves the cursor past it.
+    /// Returns how many articles were new, or `None` when there is nothing
+    /// left to walk (history complete, or no sync has run yet).
+    async fn history_page(&self, inner: &Inner) -> Result<Option<u32>> {
+        let key = self.history_key();
+        let cursor = match inner.store.meta_get(&key)? {
+            Some(cursor) if !cursor.is_empty() => cursor,
+            _ => return Ok(None),
+        };
+        let path = history_path("all", false, Some(&cursor))?;
+        let page = self.client.stream_page(&path, Some(&cursor)).await?;
+        let feed_to_source: HashMap<String, String> = inner
+            .store
+            .sources()?
+            .into_iter()
+            .filter(|s| s.account_id.as_deref() == Some(self.account.id.as_str()))
+            .filter_map(|s| Some((s.upstream_id?, s.id)))
+            .collect();
+        let mut added = 0;
+        for up in page.items {
+            let source_id = feed_to_source.get(&up.feed_id).cloned();
+            if self.ingest(inner, &up, source_id)?.is_some() {
+                added += 1;
+            }
+        }
+        inner
+            .store
+            .meta_set(&key, page.continuation.as_deref().unwrap_or(""))?;
+        Ok(Some(added))
     }
 
     /// Stores a new upstream item. Returns its ID when it was new.
@@ -422,5 +413,57 @@ impl DirectUpstream {
             )?;
         }
         Ok(true)
+    }
+}
+
+/// Clears the running flag however the walk ends, cancellation included.
+struct Running<'a>(&'a AtomicBool);
+
+impl Drop for Running<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+impl Engine {
+    /// Walks the FreshRSS reading list back to its oldest page, so articles
+    /// read before this device (or server) joined become local too. Runs
+    /// alongside refreshes and saves its position after every page, so a
+    /// failed or interrupted walk resumes there on the next call. Backfilled
+    /// articles are history, not arrivals: they are not counted as new or
+    /// processed automatically. Returns how many were added; returns at once when
+    /// the history is complete, no FreshRSS account is set up here, or another
+    /// walk is running.
+    pub async fn backfill_history(&self, on_page: Option<HistoryCallback>) -> Result<u32> {
+        let inner = &self.inner;
+        if inner.backfilling.swap(true, Ordering::SeqCst) {
+            return Ok(0);
+        }
+        let _running = Running(&inner.backfilling);
+        let mut added = 0;
+        loop {
+            // Looked up per page: the account may be replaced or removed
+            // while the walk is under way.
+            let direct = inner.direct.read().clone();
+            let Some(direct) = direct else { break };
+            let page = match direct.history_page(inner).await {
+                Ok(Some(page)) => page,
+                Ok(None) => break,
+                Err(e) => {
+                    inner
+                        .platform
+                        .log(LogLevel::Warn, &format!("history backfill paused: {e}"));
+                    return Err(e);
+                }
+            };
+            self.settle()?;
+            if page > 0 {
+                added += page;
+                if let Some(on_page) = &on_page {
+                    on_page(added);
+                }
+            }
+        }
+        Ok(added)
     }
 }

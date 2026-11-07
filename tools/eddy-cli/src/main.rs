@@ -141,12 +141,18 @@ async fn main() {
             }
             None => println!("no table of contents found"),
         }),
-        ["sync"] => engine.refresh().await.map(|s| {
-            println!(
-                "new items {}, state changes {}",
-                s.new_items, s.state_changes
-            )
-        }),
+        ["sync"] => match engine.refresh().await {
+            Ok(s) => {
+                println!(
+                    "new items {}, state changes {}",
+                    s.new_items, s.state_changes
+                );
+                let progress: eddy_core::HistoryCallback =
+                    Arc::new(|added| println!("history: {added} older articles"));
+                engine.backfill_history(Some(progress)).await.map(|_| ())
+            }
+            Err(e) => Err(e),
+        },
         ["search", query] => engine.search_all(query, 10).await.map(|hits| {
             for h in hits {
                 println!("{}  {}  …{}…", h.item.item.id, h.item.item.title, h.snippet);

@@ -279,7 +279,7 @@ struct StatusFooter: View {
             Image(systemName: icon)
             Text(text).lineLimit(1)
             Spacer()
-            if model.busy { ProgressView().controlSize(.mini) }
+            if model.busy || model.historyAdded > 0 { ProgressView().controlSize(.mini) }
         }
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -297,6 +297,7 @@ struct StatusFooter: View {
     private var text: String {
         switch model.status?.mode {
         case .server: "Syncing with server"
+        case .standalone where model.historyAdded > 0: "Loading history · \(model.historyAdded.formatted()) older articles"
         case .standalone: model.status?.account.map { "FreshRSS · \($0.username)" } ?? "FreshRSS"
         default: "On this Mac"
         }
