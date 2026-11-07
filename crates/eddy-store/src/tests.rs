@@ -177,6 +177,23 @@ fn item_queries_filter_and_order() {
     );
     assert_eq!(
         ids(ItemQuery {
+            unread_only: true,
+            keep: Some("b".into()),
+            ..Default::default()
+        }),
+        ["b", "c", "a"]
+    );
+    assert_eq!(
+        ids(ItemQuery {
+            filter: ItemFilter::Saved,
+            unread_only: true,
+            keep: Some("b".into()),
+            ..Default::default()
+        }),
+        ["c"]
+    );
+    assert_eq!(
+        ids(ItemQuery {
             filter: ItemFilter::Starred,
             ..Default::default()
         }),

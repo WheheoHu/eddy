@@ -119,6 +119,7 @@ impl Engine {
         let saved = inner.store.items(&ItemQuery {
             filter: ItemFilter::Saved,
             unread_only: false,
+            keep: None,
             limit: 100_000,
             offset: 0,
         })?;

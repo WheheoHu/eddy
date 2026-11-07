@@ -66,6 +66,7 @@ impl Inner {
         Ok(self.store.items(&ItemQuery {
             filter: ItemFilter::Series(series_id.into()),
             unread_only: false,
+            keep: None,
             limit: 10_000,
             offset: 0,
         })?)

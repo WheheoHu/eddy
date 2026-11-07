@@ -81,9 +81,10 @@ final class AppModel {
         revision += 1
     }
 
-    func items(_ filter: ItemFilterView, unreadOnly: Bool = false, limit: UInt32 = 500) -> [ItemView] {
+    /// `keep` stays in an unread-only list after it is read.
+    func items(_ filter: ItemFilterView, unreadOnly: Bool = false, keep: String? = nil, limit: UInt32 = 500) -> [ItemView] {
         _ = revision
-        return (try? engine?.items(query: ItemQueryView(filter: filter, unreadOnly: unreadOnly, limit: limit, offset: 0))) ?? []
+        return (try? engine?.items(query: ItemQueryView(filter: filter, unreadOnly: unreadOnly, keep: keep, limit: limit, offset: 0))) ?? []
     }
 
     func item(_ id: String) -> ItemView? {

@@ -223,6 +223,8 @@ impl From<ItemFilterView> for eddy_core::ItemFilter {
 pub struct ItemQueryView {
     pub filter: ItemFilterView,
     pub unread_only: bool,
+    /// Listed by `unread_only` even when read: the article being read.
+    pub keep: Option<String>,
     pub limit: u32,
     pub offset: u32,
 }
@@ -232,6 +234,7 @@ impl From<ItemQueryView> for eddy_core::ItemQuery {
         eddy_core::ItemQuery {
             filter: q.filter.into(),
             unread_only: q.unread_only,
+            keep: q.keep,
             limit: q.limit,
             offset: q.offset,
         }

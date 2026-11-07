@@ -25,6 +25,9 @@ pub enum ItemFilter {
 pub struct ItemQuery {
     pub filter: ItemFilter,
     pub unread_only: bool,
+    /// Listed by `unread_only` even when read, so the article being read
+    /// stays in place until another one is opened.
+    pub keep: Option<String>,
     pub limit: u32,
     pub offset: u32,
 }
@@ -34,6 +37,7 @@ impl Default for ItemQuery {
         ItemQuery {
             filter: ItemFilter::All,
             unread_only: false,
+            keep: None,
             limit: 200,
             offset: 0,
         }
@@ -296,7 +300,13 @@ impl Store {
             }
         }
         if q.unread_only {
-            clauses.push("i.read=0".into());
+            match &q.keep {
+                Some(id) => {
+                    clauses.push("(i.read=0 OR i.id=?)".into());
+                    values.push(Value::Text(id.clone()));
+                }
+                None => clauses.push("i.read=0".into()),
+            }
         }
         let sql = format!(
             "SELECT {ITEM_COLUMNS} FROM {ITEM_JOINS} WHERE {} ORDER BY {order} LIMIT {} OFFSET {}",
