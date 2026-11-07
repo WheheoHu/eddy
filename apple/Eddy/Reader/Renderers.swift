@@ -41,6 +41,9 @@ struct WebPageView: NSViewRepresentable {
     let url: URL
     var onSwipe: ((SwipeDirection) -> Void)?
     var onEscape: (() -> Void)?
+    /// Keyboard focus belongs in the page.
+    var focused = false
+    var onFocus: (() -> Void)?
 
     func makeCoordinator() -> SwipeTracker { SwipeTracker() }
 
@@ -57,6 +60,8 @@ struct WebPageView: NSViewRepresentable {
     func updateNSView(_ view: ReaderWebView, context: Context) {
         context.coordinator.onSwipe = onSwipe
         view.onEscape = onEscape
+        view.onFocus = onFocus
+        view.wantsFocus = focused
         if view.url?.absoluteString != url.absoluteString, !view.isLoading {
             view.load(URLRequest(url: url))
         }
@@ -66,6 +71,21 @@ struct WebPageView: NSViewRepresentable {
 final class ReaderWebView: WKWebView {
     weak var swipes: SwipeTracker?
     var onEscape: (() -> Void)?
+    var onFocus: (() -> Void)?
+    var wantsFocus = false {
+        didSet { if wantsFocus, !oldValue { claimFocus(self) } }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if wantsFocus { claimFocus(self) }
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let became = super.becomeFirstResponder()
+        if became { onFocus?() }
+        return became
+    }
 
     override func scrollWheel(with event: NSEvent) {
         if swipes?.handle(event) == true { return }

@@ -36,6 +36,10 @@ struct ArticleTextView: NSViewRepresentable {
     var onStep: ((Direction) -> Void)?
     var onEscape: (() -> Void)?
     var onSwipe: ((SwipeDirection) -> Void)?
+    /// Keyboard focus belongs in the text; it takes it when this turns on,
+    /// or when it appears with it on.
+    var focused = false
+    var onFocus: (() -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -84,6 +88,8 @@ struct ArticleTextView: NSViewRepresentable {
         guard let textView = scroll.documentView as? ReaderTextView else { return }
         textView.onStep = onStep
         textView.onEscape = onEscape
+        textView.onFocus = onFocus
+        textView.wantsFocus = focused
         textView.lineStep = style.fontSize * style.lineHeight
         if textView.maxWidth != style.maxWidth {
             textView.maxWidth = style.maxWidth
@@ -226,9 +232,12 @@ struct ArticleTextView: NSViewRepresentable {
             guard let scroll, let textView, let tlm = textView.textLayoutManager, let article else { return }
             var y: CGFloat
             if target.toEnd {
-                tlm.ensureLayout(for: tlm.documentRange)
+                // TextKit 2 estimates the height of text it hasn't laid out,
+                // and the estimate moves; laying out around the last
+                // character puts the end where the view's height says it is.
+                textView.scrollRangeToVisible(NSRange(location: textView.textStorage?.length ?? 0, length: 0))
                 y = textView.frame.height
-                // The view takes its full height once layout resizes it.
+                // Before the view is in a window it has no width to lay out in.
                 if !settlingEnd {
                     settlingEnd = true
                     DispatchQueue.main.async { [weak self] in
@@ -327,6 +336,22 @@ final class ReaderTextView: NSTextView {
     weak var pulls: PullTracker?
     var onStep: ((Direction) -> Void)?
     var onEscape: (() -> Void)?
+    var onFocus: (() -> Void)?
+    /// Takes keyboard focus when this turns on or the view reaches a window.
+    var wantsFocus = false {
+        didSet { if wantsFocus, !oldValue { claimFocus(self) } }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if wantsFocus { claimFocus(self) }
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let became = super.becomeFirstResponder()
+        if became { onFocus?() }
+        return became
+    }
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)

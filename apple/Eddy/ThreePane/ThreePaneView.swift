@@ -25,6 +25,10 @@ struct ThreePaneView: View {
     @State private var arrival: Edge = .bottom
     /// A previous chapter, opened at its end.
     @State private var landAtEnd: String?
+    @FocusState private var focus: PaneFocus?
+    /// Keyboard focus is in the reader, which keeps it from one item to the
+    /// next; a list taking focus clears it.
+    @State private var readerFocused = false
 
     enum Smart: String, CaseIterable {
         case all = "All Articles", unread = "Unread", starred = "Starred", continueReading = "Continue Reading"
@@ -79,6 +83,7 @@ struct ThreePaneView: View {
         }
         .onChange(of: selection) { history.reset(model.currentItemID) }
         .onChange(of: query) { history.reset(model.currentItemID) }
+        .onChange(of: focus) { _, new in if new != nil { readerFocused = false } }
         .task(id: query) {
             guard !query.isEmpty else { results = nil; return }
             try? await Task.sleep(for: .milliseconds(250))
@@ -131,7 +136,27 @@ struct ThreePaneView: View {
             }
         }
         .listStyle(.sidebar)
+        .pane($focus, .sidebar, onReturn: { focus = .list })
+        .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in folderKey(press.key) }
         .safeAreaInset(edge: .bottom) { StatusFooter() }
+    }
+
+    /// Left folds the selected folder, or goes up to it from a subscription
+    /// inside it; Right unfolds it.
+    private func folderKey(_ key: KeyEquivalent) -> KeyPress.Result {
+        switch selection {
+        case let .folder(name):
+            let open = !collapsedFolders.contains(name)
+            guard key == .leftArrow ? open : !open else { return .ignored }
+            withAnimation(.easeInOut(duration: 0.15)) { expanded(name).wrappedValue = !open }
+            return .handled
+        case let .feed(id):
+            guard key == .leftArrow, let folder = model.feeds.first(where: { $0.id == id })?.category else { return .ignored }
+            choose(.folder(folder))
+            return .handled
+        default:
+            return .ignored
+        }
     }
 
     private func badge(_ smart: Smart) -> Int {
@@ -186,7 +211,10 @@ struct ThreePaneView: View {
     @ViewBuilder
     private var middle: some View {
         if results == nil, let kinds = selection?.kinds {
-            CollectionList(kinds: kinds, sort: collectionSort, selection: Binding(get: { entryID }, set: openEntry))
+            CollectionList(
+                kinds: kinds, sort: collectionSort, selection: Binding(get: { entryID }, set: openEntry),
+                focus: $focus, onReturn: read, onEscape: { focus = .sidebar }
+            )
                 .toolbar {
                     ToolbarItem {
                         Menu {
@@ -211,19 +239,22 @@ struct ThreePaneView: View {
         let rows = results ?? rowsForSelection
         return List(rows, selection: $model.currentItemID) { item in
             ArticleRow(item: item).tag(item.id)
-                .contextMenu {
-                    Button(item.starred ? "Unstar" : "Star") { model.setStarred(item, !item.starred) }
-                    Button(item.read ? "Mark as Unread" : "Mark as Read") { model.setRead(item, !item.read) }
-                    if let url = item.url.flatMap(URL.init(string:)) {
-                        Button("Open in Browser") { NSWorkspace.shared.open(url) }
-                        Button("Copy Link") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(url.absoluteString, forType: .string)
-                        }
+        }
+        .contextMenu(forSelectionType: String.self) { ids in
+            if let id = ids.first, let item = rows.first(where: { $0.id == id }) {
+                Button(item.starred ? "Unstar" : "Star") { model.setStarred(item, !item.starred) }
+                Button(item.read ? "Mark as Unread" : "Mark as Read") { model.setRead(item, !item.read) }
+                if let url = item.url.flatMap(URL.init(string:)) {
+                    Button("Open in Browser") { NSWorkspace.shared.open(url) }
+                    Button("Copy Link") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(url.absoluteString, forType: .string)
                     }
                 }
-        }
+            }
+        } primaryAction: { _ in read() }
         .listStyle(.inset)
+        .pane($focus, .list, onReturn: read, onEscape: { focus = .sidebar })
         .overlay {
             if rows.isEmpty {
                 ContentUnavailableView(results != nil ? "No Results" : "Nothing Here", systemImage: results != nil ? "magnifyingglass" : "tray")
@@ -274,6 +305,19 @@ struct ThreePaneView: View {
         model.currentItemID = itemID
     }
 
+    /// Return in a list: keyboard focus goes to the text.
+    private func read() {
+        guard model.currentItemID != nil else { return }
+        readerFocused = true
+    }
+
+    /// Esc in the reader: back to the contents panel when it is open, else
+    /// to the middle column.
+    private func leaveReader(contentsShown: Bool) {
+        readerFocused = false
+        focus = contentsShown ? .contents : .list
+    }
+
     /// j/k move through the list, s stars, m toggles read.
     private func keyboard(_ rows: [ItemView]) -> some View {
         Group {
@@ -305,7 +349,10 @@ struct ThreePaneView: View {
             let entry = model.entry(containing: item)
             HStack(spacing: 0) {
                 if let entry, showContents {
-                    EntryContents(entry: entry, currentItemID: id, open: open, jump: jump)
+                    EntryContents(
+                        entry: entry, currentItemID: id, open: open, jump: jump,
+                        focus: $focus, onReturn: read, onEscape: { focus = .list }
+                    )
                         .frame(width: 260)
                         .background(.background.secondary)
                     Divider()
@@ -314,7 +361,9 @@ struct ThreePaneView: View {
                     ReaderPane(
                         itemID: id, scrollTarget: $scrollTarget, pageTarget: pageTarget, openItem: open,
                         showContents: entry == nil ? nil : $showContents,
-                        neighbors: neighbors(of: item, in: entry), startAtEnd: landAtEnd == id
+                        neighbors: neighbors(of: item, in: entry), startAtEnd: landAtEnd == id,
+                        onEscape: { leaveReader(contentsShown: entry != nil && showContents) },
+                        focused: readerFocused, onFocus: { readerFocused = true }
                     )
                     .id(id)
                     .transition(.push(from: arrival))
@@ -364,6 +413,10 @@ struct CollectionList: View {
     let kinds: [CollectionKindView]
     let sort: CollectionSort
     @Binding var selection: String?
+    var focus: FocusState<PaneFocus?>.Binding?
+    /// Return: read the entry selected.
+    var onReturn: (() -> Void)?
+    var onEscape: (() -> Void)?
     /// The order taken when the list appears or its filter or sort changes.
     /// Reading an entry changes its last-read time and progress; re-sorting
     /// on that would move rows away from under the pointer.
@@ -391,7 +444,8 @@ struct CollectionList: View {
                 }
                 Button("Delete…", role: .destructive) { model.requestDelete(entry) }
             }
-        }
+        } primaryAction: { _ in onReturn?() }
+        .pane(focus, .list, onReturn: onReturn, onEscape: onEscape)
         .onDeleteCommand(perform: deleteSelected)
         .onKeyPress(keys: [.delete], phases: .down) { press in
             guard press.modifiers.contains(.command) else { return .ignored }

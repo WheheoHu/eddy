@@ -58,6 +58,10 @@ struct EntryContents: View {
     let open: (String) -> Void
     /// Moves within the open page or PDF.
     let jump: (OutlineEntry.Target) -> Void
+    var focus: FocusState<PaneFocus?>.Binding?
+    /// Return: read from here.
+    var onReturn: (() -> Void)?
+    var onEscape: (() -> Void)?
 
     @State private var query = ""
     @State private var outline: [OutlineEntry] = []
@@ -118,6 +122,7 @@ struct EntryContents: View {
             }
         }
         .listStyle(.sidebar)
+        .pane(focus, .contents, onReturn: onReturn, onEscape: onEscape)
     }
 
     private var outlineList: some View {
@@ -144,6 +149,7 @@ struct EntryContents: View {
             }
         }
         .listStyle(.sidebar)
+        .pane(focus, .contents, onReturn: onReturn, onEscape: onEscape)
     }
 
     private func loadOutline() async {

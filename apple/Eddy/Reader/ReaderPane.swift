@@ -22,6 +22,10 @@ struct ReaderPane: View {
     var startAtEnd = false
     /// Esc in the text: focus goes back a column.
     var onEscape: (() -> Void)?
+    /// Keyboard focus belongs in the reader; its view takes it.
+    var focused = false
+    /// The reader's view took focus, by a click or by `focused`.
+    var onFocus: (() -> Void)?
 
     @State private var document: DocumentView?
     @State private var pdfURL: URL?
@@ -92,7 +96,7 @@ struct ReaderPane: View {
                     PDFReaderView(url: pdfURL, target: pageTarget ?? resumePage, onPage: { page, count in
                         lastPage = (page, count)
                         model.recordPage(itemID, page: page, of: count)
-                    })
+                    }, focused: focused, onFocus: onFocus, onEscape: onEscape)
                     .accessibilityLabel(Text("PDF: \(item.title)"))
                 } else if loading {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -100,7 +104,7 @@ struct ReaderPane: View {
                     ContentUnavailableView("PDF Unavailable", systemImage: "doc.richtext", description: Text("The file isn’t on this Mac and couldn’t be downloaded."))
                 }
             } else if rendererID == RendererRegistry.web.id || (document == nil && !loading), let url = item.url.flatMap(URL.init(string:)) {
-                WebPageView(url: url, onSwipe: swipe, onEscape: onEscape)
+                WebPageView(url: url, onSwipe: swipe, onEscape: onEscape, focused: focused, onFocus: onFocus)
             } else if let document {
                 let version = "\(document.contentHash)|\(mode.rawValue)|\(translations.count)|\(fontSize)|\(serif)|\(lineHeight)"
                 let article = cache.article(version) {
@@ -125,7 +129,9 @@ struct ReaderPane: View {
                     onPullRelease: { neighbors?.go($0, .vertical) },
                     onStep: neighbors.map { neighbors in { neighbors.go($0, .vertical) } },
                     onEscape: onEscape,
-                    onSwipe: swipe
+                    onSwipe: swipe,
+                    focused: focused,
+                    onFocus: onFocus
                 )
                 .id(itemID)
                 .background(Color(nsColor: .textBackgroundColor))
