@@ -24,6 +24,8 @@ final class AppModel {
     /// Everything that is not a subscription article.
     var collection: [CollectionEntryView] = []
     var tags: [TagView] = []
+    /// Articles, pages and chapters started but not finished.
+    var continueReadingCount = 0
     var revision = 0
     var busy = false
     /// Older articles added so far while FreshRSS history loads; 0 otherwise.
@@ -78,6 +80,8 @@ final class AppModel {
         series = (try? engine.seriesList()) ?? []
         collection = (try? engine.collection()) ?? []
         tags = (try? engine.tags()) ?? []
+        let started = ItemQueryView(filter: .continueReading, unreadOnly: false, keep: nil, limit: 0, offset: 0)
+        continueReadingCount = Int((try? engine.itemCount(query: started)) ?? 0)
         revision += 1
     }
 

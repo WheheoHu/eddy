@@ -254,6 +254,23 @@ fn item_queries_filter_and_order() {
         }),
         ["a"]
     );
+    assert_eq!(
+        s.count_items(&ItemQuery {
+            filter: ItemFilter::ContinueReading,
+            limit: 0,
+            ..Default::default()
+        })
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        s.count_items(&ItemQuery {
+            filter: ItemFilter::Ids(vec![]),
+            ..Default::default()
+        })
+        .unwrap(),
+        0
+    );
     assert_eq!(s.progress("a").unwrap().unwrap().progression, 0.4);
 }
 

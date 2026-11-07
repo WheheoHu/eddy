@@ -81,7 +81,7 @@ struct ThreePaneView: View {
             Section("Library") {
                 ForEach(Smart.allCases, id: \.self) { smart in
                     Label(smart.rawValue, systemImage: smart.icon)
-                        .badge(smart == .unread ? model.unreadTotal : 0)
+                        .badge(badge(smart))
                         .tag(Selection.smart(smart))
                 }
                 Label("Saved", systemImage: "bookmark").badge(model.collection.count).tag(Selection.saved)
@@ -120,6 +120,14 @@ struct ThreePaneView: View {
         }
         .listStyle(.sidebar)
         .safeAreaInset(edge: .bottom) { StatusFooter() }
+    }
+
+    private func badge(_ smart: Smart) -> Int {
+        switch smart {
+        case .unread: model.unreadTotal
+        case .continueReading: model.continueReadingCount
+        default: 0
+        }
     }
 
     private func feedRows(_ feeds: [SourceView]) -> some View {

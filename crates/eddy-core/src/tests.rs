@@ -950,7 +950,9 @@ async fn series_from_a_table_of_contents() {
     // Opening a chapter fetches its content on demand.
     let doc = engine.document(&first).await.unwrap().unwrap().document;
     let last = doc.blocks.last().unwrap().id.clone();
-    engine.record_progress(&first, &last, 0, false, true).unwrap();
+    engine
+        .record_progress(&first, &last, 0, false, true)
+        .unwrap();
     let second = engine
         .items(&ItemQuery {
             filter: ItemFilter::Series(series_id.clone()),
@@ -961,7 +963,9 @@ async fn series_from_a_table_of_contents() {
         .id
         .clone();
     let mid = para_ids(&engine.document(&second).await.unwrap().unwrap().document)[5].clone();
-    engine.record_progress(&second, &mid, 0, false, true).unwrap();
+    engine
+        .record_progress(&second, &mid, 0, false, true)
+        .unwrap();
 
     let info = engine.series_info(&series_id).unwrap().unwrap();
     assert_eq!(info.finished, 1);

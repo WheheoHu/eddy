@@ -263,6 +263,11 @@ impl EddyEngine {
             .collect())
     }
 
+    /// How many items `items` would list without its limit and offset.
+    pub fn item_count(&self, query: ItemQueryView) -> R<u32> {
+        Ok(self.engine.item_count(&query.into())?)
+    }
+
     pub fn item(&self, id: String) -> R<Option<ItemView>> {
         Ok(self.engine.item(&id)?.map(Into::into))
     }

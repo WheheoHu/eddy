@@ -319,6 +319,11 @@ impl Engine {
         Ok(self.inner.store.items(query)?)
     }
 
+    /// How many items `items` would list without its limit and offset.
+    pub fn item_count(&self, query: &ItemQuery) -> Result<u32> {
+        Ok(self.inner.store.count_items(query)?)
+    }
+
     pub fn item(&self, id: &str) -> Result<Option<ItemRow>> {
         Ok(self.inner.store.item(id)?)
     }
