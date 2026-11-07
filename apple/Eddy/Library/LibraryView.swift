@@ -114,6 +114,13 @@ struct LibraryView: View {
     @State private var open: Book?
     /// Scrolled back into view when the shelf returns.
     @State private var lastOpened: String?
+    @FocusState private var focus: PaneFocus?
+    /// The cover picked with the arrow keys.
+    @State private var selectedBook: Book.ID?
+    /// Columns the covers grid lays out, for Up and Down.
+    @State private var gridColumns = 1
+    /// Coming back from a book: the shelf takes focus once it is there.
+    @State private var focusShelf = false
 
     var body: some View {
         Group {
@@ -139,7 +146,7 @@ struct LibraryView: View {
 
     private var shelf: some View {
         LeadingColumn(visible: showSidebar, width: 220) {
-            LibrarySidebar(selection: $filter)
+            LibrarySidebar(selection: $filter, focus: $focus, onReturn: enterShelf)
         } content: {
             let books = shelfBooks
             Group {
@@ -194,21 +201,63 @@ struct LibraryView: View {
     private func covers(_ books: [Book]) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 118, maximum: 150), spacing: 18, alignment: .top)], alignment: .leading, spacing: 22) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: Self.coverWidth, maximum: 150), spacing: Self.coverSpacing, alignment: .top)], alignment: .leading, spacing: 22) {
                     ForEach(books) { book in
-                        BookTile(book: book)
-                            .onTapGesture { show(book) }
+                        BookTile(book: book, selected: focus == .list && selectedBook == book.id)
+                            .onTapGesture {
+                                selectedBook = book.id
+                                show(book)
+                            }
                             .contextMenu { menu(for: book) }
                             .accessibilityAddTraits(.isButton)
                             .accessibilityLabel(Text("\(book.title), \(book.detail)"))
                     }
                 }
-                .padding(28)
+                .padding(Self.shelfPadding)
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { gridColumns = Self.columns(in: $0) }
+            }
+            .focusable()
+            .focusEffectDisabled()
+            .pane($focus, .list, onReturn: { if let book = books.first(where: { $0.id == selectedBook }) { show(book) } }, onEscape: { focus = .sidebar })
+            .onKeyPress(keys: [.upArrow, .downArrow, .leftArrow, .rightArrow]) { press in
+                moveSelection(press.key, in: books, proxy: proxy)
             }
             .onAppear {
                 if let lastOpened { proxy.scrollTo(lastOpened, anchor: .center) }
+                claimShelfFocus()
             }
         }
+    }
+
+    private static let coverWidth: CGFloat = 118
+    private static let coverSpacing: CGFloat = 18
+    private static let shelfPadding: CGFloat = 28
+
+    /// How many columns the adaptive grid fits in `width`.
+    private static func columns(in width: CGFloat) -> Int {
+        max(1, Int((width - 2 * shelfPadding + coverSpacing) / (coverWidth + coverSpacing)))
+    }
+
+    /// Left and Right move one cover, Up and Down one row; Down past the
+    /// last full row lands on the last cover.
+    private func moveSelection(_ key: KeyEquivalent, in books: [Book], proxy: ScrollViewProxy) -> KeyPress.Result {
+        guard !books.isEmpty else { return .ignored }
+        guard let index = books.firstIndex(where: { $0.id == selectedBook }) else {
+            selectedBook = books[0].id
+            return .handled
+        }
+        let step = switch key {
+        case .leftArrow: -1
+        case .rightArrow: 1
+        case .upArrow: -gridColumns
+        default: gridColumns
+        }
+        var target = index + step
+        if target >= books.count, key == .downArrow, index / gridColumns < (books.count - 1) / gridColumns { target = books.count - 1 }
+        guard books.indices.contains(target) else { return .handled }
+        selectedBook = books[target].id
+        withAnimation(.easeInOut(duration: 0.15)) { proxy.scrollTo(books[target].id) }
+        return .handled
     }
 
     private func table(_ books: [Book]) -> some View {
@@ -255,6 +304,7 @@ struct LibraryView: View {
             } primaryAction: { ids in
                 if let book = rows.first(where: { ids.contains($0.id) }) { show(book) }
             }
+            .pane($focus, .list, onReturn: { if let book = rows.first(where: { tableSelection.contains($0.id) }) { show(book) } }, onEscape: { focus = .sidebar })
             .onDeleteCommand {
                 if tableSelection.count == 1, let entry = rows.first(where: { tableSelection.contains($0.id) })?.entry {
                     model.requestDelete(entry)
@@ -265,6 +315,7 @@ struct LibraryView: View {
                     tableSelection = [lastOpened]
                     proxy.scrollTo(lastOpened, anchor: .center)
                 }
+                claimShelfFocus()
             }
         }
     }
@@ -304,8 +355,28 @@ struct LibraryView: View {
         open = book
     }
 
+    /// Back to the shelf, with the book just read selected.
     private func close() {
         open = nil
+        selectedBook = lastOpened
+        tableSelection = lastOpened.map { [$0] } ?? []
+        focusShelf = true
+    }
+
+    private func claimShelfFocus() {
+        guard focusShelf else { return }
+        focusShelf = false
+        DispatchQueue.main.async { focus = .list }
+    }
+
+    /// Return in the sidebar: the shelf takes focus, on the book read last
+    /// when it is in this filter, else the first one.
+    private func enterShelf() {
+        let books = layout == .list ? shelfBooks.sorted(using: tableSort) : shelfBooks
+        let pick = books.first { $0.id == lastOpened }?.id ?? books.first?.id
+        selectedBook = pick
+        tableSelection = pick.map { [$0] } ?? []
+        focus = .list
     }
 
     /// Switching from three-pane mode keeps reading the same item.
@@ -375,6 +446,9 @@ struct LibraryView: View {
 private struct LibrarySidebar: View {
     @Environment(AppModel.self) private var model
     @Binding var selection: LibraryFilter
+    var focus: FocusState<PaneFocus?>.Binding?
+    /// Return: on to the shelf.
+    var onReturn: (() -> Void)?
 
     var body: some View {
         List(selection: Binding(get: { selection }, set: { if let new = $0 { selection = new } })) {
@@ -409,6 +483,7 @@ private struct LibrarySidebar: View {
             }
         }
         .listStyle(.sidebar)
+        .pane(focus, .sidebar, onReturn: onReturn)
         .safeAreaInset(edge: .bottom) { StatusFooter() }
     }
 
@@ -437,6 +512,8 @@ private struct DateCell: View {
 
 private struct BookTile: View {
     let book: Book
+    /// Picked with the keyboard.
+    var selected = false
     @State private var hovering = false
 
     var body: some View {
@@ -444,6 +521,11 @@ private struct BookTile: View {
             BookCover(title: book.title, subtitle: book.subtitle, imageItemID: book.coverItemID, imageURL: book.coverURL, pdfItemID: book.pdfItemID, symbol: book.symbol)
                 .aspectRatio(2 / 3, contentMode: .fit)
                 .shadow(color: .black.opacity(hovering ? 0.28 : 0.16), radius: hovering ? 9 : 5, y: hovering ? 5 : 3)
+                .overlay {
+                    if selected {
+                        RoundedRectangle(cornerRadius: 8).strokeBorder(Color.accentColor, lineWidth: 3).padding(-4)
+                    }
+                }
                 .overlay(alignment: .topTrailing) {
                     if book.unread > 0, case .feed = book.kind {
                         Text("\(book.unread)")

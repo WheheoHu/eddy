@@ -19,6 +19,9 @@ struct LibraryReader: View {
     @State private var arrival: Edge = .bottom
     /// A previous chapter, opened at its end.
     @State private var landAtEnd: String?
+    @FocusState private var focus: PaneFocus?
+    /// Keyboard focus is in the text; opening a book is going to read it.
+    @State private var readerFocused = true
 
     /// The entry as it is now, with current progress.
     private var entry: CollectionEntryView? {
@@ -42,8 +45,7 @@ struct LibraryReader: View {
             ColumnToggle(visible: $showContents)
             ToolbarItem(placement: .navigation) {
                 Button(action: close) { Label("Home", systemImage: "house") }
-                    .help("Back to the library (Esc)")
-                    .keyboardShortcut(.cancelAction)
+                    .help("Back to the library")
             }
             ModeToolbar(mode: $mode, model: model)
         }
@@ -53,24 +55,43 @@ struct LibraryReader: View {
             history.opened(new)
             if new != landAtEnd { landAtEnd = nil }
         }
+        .onChange(of: focus) { _, new in if new != nil { readerFocused = false } }
     }
 
     // MARK: Contents column
 
+    /// Return reads from here; Esc goes back to the shelf.
     @ViewBuilder
     private var contents: some View {
         if let entry {
-            EntryContents(entry: entry, currentItemID: currentID, open: select, jump: jump)
+            EntryContents(
+                entry: entry, currentItemID: currentID, open: select, jump: jump,
+                focus: $focus, onReturn: { readerFocused = true }, onEscape: close
+            )
         } else {
-            FeedContents(title: book.title, items: entries, currentID: currentID, select: select)
+            FeedContents(
+                title: book.title, items: entries, currentID: currentID, select: select,
+                focus: $focus, onReturn: { readerFocused = true }, onEscape: close
+            )
         }
+    }
+
+    /// Esc in the text: to the contents column when it shows, else back to
+    /// the shelf.
+    private func leaveReader() {
+        readerFocused = false
+        if showContents { focus = .contents } else { close() }
     }
 
     @ViewBuilder
     private var reader: some View {
         if let id = currentID {
             VStack(spacing: 0) {
-                ReaderPane(itemID: id, scrollTarget: $scrollTarget, pageTarget: pageTarget, openItem: select, neighbors: neighbors(of: id), startAtEnd: landAtEnd == id)
+                ReaderPane(
+                    itemID: id, scrollTarget: $scrollTarget, pageTarget: pageTarget, openItem: select,
+                    neighbors: neighbors(of: id), startAtEnd: landAtEnd == id,
+                    onEscape: leaveReader, focused: readerFocused, onFocus: { readerFocused = true }
+                )
                     .id(id)
                     .transition(.push(from: arrival))
                 if entries.count > 1 {
@@ -143,6 +164,9 @@ private struct FeedContents: View {
     let items: [ItemView]
     let currentID: String?
     let select: (String) -> Void
+    var focus: FocusState<PaneFocus?>.Binding?
+    var onReturn: (() -> Void)?
+    var onEscape: (() -> Void)?
 
     @State private var query = ""
 
@@ -168,6 +192,7 @@ private struct FeedContents: View {
                 }
             }
             .listStyle(.sidebar)
+            .pane(focus, .contents, onReturn: onReturn, onEscape: onEscape)
         }
     }
 }
