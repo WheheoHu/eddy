@@ -6,11 +6,12 @@
 //! eddy-cli [--data DIR] items
 //! eddy-cli [--data DIR] doc ITEM_ID
 //! eddy-cli [--data DIR] fulltext ITEM_ID
+//! eddy-cli [--data DIR] import FILE.epub|FILE.pdf
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use eddy_core::{Engine, EngineOptions, ItemQuery, Platform};
+use eddy_core::{Engine, EngineOptions, ItemFilter, ItemQuery, Platform};
 use eddy_model::{BlockKind, Document};
 
 /// Development-only keychain: secrets in `cli-secrets.json` (mode 0600)
@@ -151,9 +152,33 @@ async fn main() {
                 println!("{}  {}  …{}…", h.item.item.id, h.item.item.title, h.snippet);
             }
         }),
+        ["import", path] => match engine.import_file(std::path::Path::new(path)).await {
+            Ok(imported) => {
+                let verb = if imported.existing {
+                    "already imported"
+                } else {
+                    "imported"
+                };
+                println!("{verb} {} — {}", imported.item_id, imported.title);
+                let chapters = match &imported.series_id {
+                    Some(series) => engine.items(&ItemQuery {
+                        filter: ItemFilter::Series(series.clone()),
+                        limit: 10_000,
+                        ..Default::default()
+                    }),
+                    None => Ok(Vec::new()),
+                };
+                chapters.map(|rows| {
+                    for r in rows {
+                        println!("  {:>6} chars  {}", r.item.text_len, r.item.title);
+                    }
+                })
+            }
+            Err(e) => Err(e),
+        },
         _ => {
             eprintln!(
-                "usage: eddy-cli [--data DIR] save URL | items | doc ID | fulltext ID | connect URL CODE | sync | search QUERY"
+                "usage: eddy-cli [--data DIR] save URL | items | doc ID | fulltext ID | connect URL CODE | sync | search QUERY | import FILE"
             );
             std::process::exit(2);
         }

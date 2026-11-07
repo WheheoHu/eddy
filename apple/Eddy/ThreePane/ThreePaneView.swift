@@ -37,6 +37,15 @@ struct ThreePaneView: View {
             detail
         }
         .searchable(text: $query, placement: .toolbar, prompt: "Search")
+        .onChange(of: model.revealed) { _, revealed in
+            switch revealed {
+            case let .publication(id): selection = .publication(id)
+            case let .document(id): selection = model.item(id).map { .savedSite($0.host) } ?? .savedAll
+            case nil: return
+            }
+            query = ""
+            model.revealed = nil
+        }
         .task(id: query) {
             guard !query.isEmpty else { results = nil; return }
             try? await Task.sleep(for: .milliseconds(250))
@@ -60,7 +69,7 @@ struct ThreePaneView: View {
                 Section("Saved") {
                     Label("All Saved Pages", systemImage: "bookmark").badge(sites.reduce(0) { $0 + $1.count }).tag(Selection.savedAll)
                     ForEach(sites, id: \.host) { site in
-                        Label(site.host, systemImage: "globe").badge(site.count).tag(Selection.savedSite(site.host))
+                        Label(site.host, systemImage: site.pdf ? "doc.richtext" : "globe").badge(site.count).tag(Selection.savedSite(site.host))
                     }
                 }
             }
@@ -215,6 +224,7 @@ struct ChapterList: View {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(info.title).font(.title3.weight(.semibold))
+                        if let author = info.author { Text(author).foregroundStyle(.secondary) }
                         ProgressView(value: info.progress)
                         HStack {
                             Text("\(info.finished) of \(info.chapters) chapters read").font(.caption).foregroundStyle(.secondary)

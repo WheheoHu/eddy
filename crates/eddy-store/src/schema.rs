@@ -82,6 +82,13 @@ const MIGRATIONS: &[&str] = &[
     CREATE TABLE pairing_codes(code_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);
     CREATE TABLE server_config(key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
     "#,
+    // 3: imported books
+    r#"
+    ALTER TABLE series ADD COLUMN author TEXT;
+    ALTER TABLE series ADD COLUMN cover TEXT;
+    CREATE INDEX content_versions_raw ON content_versions(raw_blob);
+    CREATE INDEX content_versions_source ON content_versions(source_url);
+    "#,
 ];
 
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {

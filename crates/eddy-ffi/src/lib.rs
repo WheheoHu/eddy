@@ -67,6 +67,45 @@ impl eddy_core::WebRenderer for RendererAdapter {
 }
 
 #[derive(uniffi::Record, Clone, Debug)]
+pub struct PdfTextView {
+    pub title: Option<String>,
+    pub author: Option<String>,
+    /// Text of each page, in order.
+    pub pages: Vec<String>,
+}
+
+/// Implemented by the host app: reads the text of the PDF at `path`
+/// (PDFKit on Apple), or `None` when it cannot be opened.
+#[uniffi::export(with_foreign)]
+pub trait PdfTextExtractor: Send + Sync {
+    fn extract(&self, path: String) -> Option<PdfTextView>;
+}
+
+struct PdfAdapter(Arc<dyn PdfTextExtractor>);
+
+impl eddy_core::PdfReader for PdfAdapter {
+    fn read(&self, path: &std::path::Path) -> Option<eddy_core::PdfText> {
+        self.0
+            .extract(path.to_string_lossy().into_owned())
+            .map(|t| eddy_core::PdfText {
+                title: t.title,
+                author: t.author,
+                pages: t.pages,
+            })
+    }
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct ImportResultView {
+    /// What to open: the PDF, or the book's first chapter.
+    pub item_id: String,
+    pub series_id: Option<String>,
+    pub title: String,
+    /// The file had been imported before.
+    pub existing: bool,
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
 pub struct RulePackView {
     pub name: String,
     pub sites: u32,
@@ -281,5 +320,37 @@ impl EddyEngine {
         let renderer =
             renderer.map(|r| Arc::new(RendererAdapter(r)) as Arc<dyn eddy_core::WebRenderer>);
         Ok(self.engine.set_web_renderer(renderer)?)
+    }
+
+    pub fn set_pdf_text_extractor(&self, extractor: Option<Arc<dyn PdfTextExtractor>>) {
+        self.engine.set_pdf_reader(
+            extractor.map(|e| Arc::new(PdfAdapter(e)) as Arc<dyn eddy_core::PdfReader>),
+        );
+    }
+
+    /// Imports an EPUB (as a publication) or a PDF (as a saved document).
+    pub async fn import_file(&self, path: String) -> R<ImportResultView> {
+        let imported = self.engine.import_file(std::path::Path::new(&path)).await?;
+        Ok(ImportResultView {
+            item_id: imported.item_id,
+            series_id: imported.series_id,
+            title: imported.title,
+            existing: imported.existing,
+        })
+    }
+
+    /// Local path of an item's original file (an imported PDF), downloaded
+    /// from the sync server when needed.
+    pub async fn content_file(&self, item_id: String) -> R<Option<String>> {
+        Ok(self
+            .engine
+            .content_file(&item_id)
+            .await?
+            .map(|p| p.to_string_lossy().into_owned()))
+    }
+
+    /// The chapter an in-book link (`epub://…`) points to.
+    pub fn item_for_link(&self, url: String) -> R<Option<String>> {
+        Ok(self.engine.item_for_link(&url)?)
     }
 }

@@ -88,6 +88,7 @@ pub(crate) struct Inner {
     pub options: EngineOptions,
     pub fetcher: RwLock<Arc<Fetcher>>,
     pub web_renderer: RwLock<Option<Arc<dyn WebRenderer>>>,
+    pub pdf_reader: RwLock<Option<Arc<dyn crate::PdfReader>>>,
     pub progress_throttle:
         parking_lot::Mutex<std::collections::HashMap<String, (std::time::Instant, f64)>>,
     pub search: Option<eddy_search::SearchIndex>,
@@ -132,6 +133,7 @@ impl Engine {
                     .map_err(|e| EngineError::Network(e.to_string()))?,
             )),
             web_renderer: RwLock::new(None),
+            pdf_reader: RwLock::new(None),
             progress_throttle: parking_lot::Mutex::new(Default::default()),
             search: eddy_search::SearchIndex::open(&data_dir.join("index")).ok(),
             live: std::sync::atomic::AtomicBool::new(false),

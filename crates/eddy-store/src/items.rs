@@ -1,6 +1,6 @@
 use eddy_model::{
-    ContentOrigin, ContentVersion, FullTextMode, Item, ItemKind, Locator, Series, Source,
-    SourceKind, now_ms,
+    ContentFormat, ContentOrigin, ContentVersion, FullTextMode, Item, ItemKind, Locator, Series,
+    Source, SourceKind, now_ms,
 };
 use rusqlite::{OptionalExtension, Row, params, params_from_iter, types::Value};
 
@@ -40,21 +40,27 @@ impl Default for ItemQuery {
     }
 }
 
-/// An item joined with its source title for list display.
+/// An item joined with its source title and content format for list display.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ItemRow {
     pub item: Item,
     pub source_title: Option<String>,
+    pub format: ContentFormat,
 }
 
 const ITEM_COLUMNS: &str =
     "i.id, i.source_id, i.account_id, i.upstream_id, i.kind, i.url, i.title, i.author,
     i.published_at, i.added_at, i.read, i.starred, i.series_id, i.chapter_index, i.current_version,
-    i.excerpt, i.lang, i.text_len, i.progress, i.finished, i.last_read_at, s.title";
+    i.excerpt, i.lang, i.text_len, i.progress, i.finished, i.last_read_at, s.title, cv.raw_mime";
+
+const ITEM_JOINS: &str = "items i LEFT JOIN sources s ON s.id=i.source_id
+    LEFT JOIN content_versions cv ON cv.hash=i.current_version";
 
 fn item_row(r: &Row) -> rusqlite::Result<ItemRow> {
     let kind: String = r.get(4)?;
+    let raw_mime: Option<String> = r.get(22)?;
     Ok(ItemRow {
+        format: ContentFormat::from_mime(raw_mime.as_deref()),
         item: Item {
             id: r.get(0)?,
             source_id: r.get(1)?,
@@ -99,6 +105,17 @@ fn source_row(r: &Row) -> rusqlite::Result<Source> {
         site_url: r.get(6)?,
         full_text: FullTextMode::parse(&full_text),
         truncated: r.get(8)?,
+    })
+}
+
+fn series_row(r: &Row) -> rusqlite::Result<Series> {
+    Ok(Series {
+        id: r.get(0)?,
+        title: r.get(1)?,
+        toc_url: r.get(2)?,
+        created_at: r.get(3)?,
+        author: r.get(4)?,
+        cover: r.get(5)?,
     })
 }
 
@@ -233,7 +250,7 @@ impl Store {
     pub fn item(&self, id: &str) -> Result<Option<ItemRow>> {
         self.with(|c| {
             Ok(c.query_row(
-                &format!("SELECT {ITEM_COLUMNS} FROM items i LEFT JOIN sources s ON s.id=i.source_id WHERE i.id=?"),
+                &format!("SELECT {ITEM_COLUMNS} FROM {ITEM_JOINS} WHERE i.id=?"),
                 [id],
                 item_row,
             )
@@ -282,7 +299,7 @@ impl Store {
             clauses.push("i.read=0".into());
         }
         let sql = format!(
-            "SELECT {ITEM_COLUMNS} FROM items i LEFT JOIN sources s ON s.id=i.source_id WHERE {} ORDER BY {order} LIMIT {} OFFSET {}",
+            "SELECT {ITEM_COLUMNS} FROM {ITEM_JOINS} WHERE {} ORDER BY {order} LIMIT {} OFFSET {}",
             clauses.join(" AND "),
             q.limit,
             q.offset
@@ -440,14 +457,12 @@ impl Store {
     pub fn series_list(&self) -> Result<Vec<(Series, u32, u32)>> {
         self.with(|c| {
             let mut stmt = c.prepare(
-                "SELECT s.id, s.title, s.toc_url, s.created_at,
+                "SELECT s.id, s.title, s.toc_url, s.created_at, s.author, s.cover,
                    (SELECT COUNT(*) FROM items i WHERE i.series_id=s.id AND i.deleted=0),
                    (SELECT COUNT(*) FROM items i WHERE i.series_id=s.id AND i.deleted=0 AND i.finished=1)
                  FROM series s WHERE s.deleted=0 ORDER BY s.created_at DESC",
             )?;
-            let rows = stmt.query_map([], |r| {
-                Ok((Series { id: r.get(0)?, title: r.get(1)?, toc_url: r.get(2)?, created_at: r.get(3)? }, r.get(4)?, r.get(5)?))
-            })?;
+            let rows = stmt.query_map([], |r| Ok((series_row(r)?, r.get(6)?, r.get(7)?)))?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
     }
@@ -455,16 +470,35 @@ impl Store {
     pub fn series(&self, id: &str) -> Result<Option<Series>> {
         self.with(|c| {
             Ok(c.query_row(
-                "SELECT id,title,toc_url,created_at FROM series WHERE id=? AND deleted=0",
+                "SELECT id,title,toc_url,created_at,author,cover FROM series WHERE id=? AND deleted=0",
                 [id],
-                |r| {
-                    Ok(Series {
-                        id: r.get(0)?,
-                        title: r.get(1)?,
-                        toc_url: r.get(2)?,
-                        created_at: r.get(3)?,
-                    })
-                },
+                series_row,
+            )
+            .optional()?)
+        })
+    }
+
+    /// Items whose content versions are stored from the raw blob `key` (the
+    /// chapters of an imported book, an imported PDF).
+    pub fn items_with_raw_blob(&self, key: &str) -> Result<Vec<String>> {
+        self.with(|c| {
+            let mut stmt = c.prepare(
+                "SELECT DISTINCT i.id FROM content_versions cv JOIN items i ON i.id=cv.item_id
+                 WHERE cv.raw_blob=? AND i.deleted=0 ORDER BY i.chapter_index",
+            )?;
+            let rows = stmt.query_map([key], |r| r.get(0))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
+    /// The item whose current content came from `url`.
+    pub fn item_by_source_url(&self, url: &str) -> Result<Option<String>> {
+        self.with(|c| {
+            Ok(c.query_row(
+                "SELECT i.id FROM content_versions cv JOIN items i ON i.current_version=cv.hash
+                 WHERE cv.source_url=? AND i.deleted=0 LIMIT 1",
+                [url],
+                |r| r.get(0),
             )
             .optional()?)
         })

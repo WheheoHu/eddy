@@ -2,7 +2,10 @@ use std::time::{Duration, Instant};
 
 use eddy_doc::{locator_at, remap_locator};
 use eddy_extract::{SeriesProposal, detect_series};
-use eddy_model::{ContentOrigin, Entity, Item, ItemKind, Locator, Position, fields, ids, now_ms};
+use eddy_model::{
+    ContentOrigin, Entity, Item, ItemKind, Locator, PDF_MIME, Position, TextQuote, fields, ids,
+    now_ms,
+};
 use eddy_store::{ItemFilter, ItemQuery, ItemRow};
 
 use crate::engine::{Engine, Inner};
@@ -20,6 +23,8 @@ pub struct ResumePoint {
     pub locator: Locator,
     pub block_id: Option<String>,
     pub offset: u32,
+    /// Page of a PDF (0-based).
+    pub page: Option<u32>,
     pub updated_at: i64,
     /// Device that recorded it.
     pub device: Option<String>,
@@ -35,6 +40,9 @@ pub struct SeriesInfo {
     pub id: String,
     pub title: String,
     pub toc_url: Option<String>,
+    pub author: Option<String>,
+    /// Cover image URL, for `Engine::image`.
+    pub cover: Option<String>,
     pub chapters: u32,
     pub finished: u32,
     /// Overall progress through the series, 0..=1.
@@ -83,6 +91,8 @@ impl Inner {
             id: series.id,
             title: series.title,
             toc_url: series.toc_url,
+            author: series.author,
+            cover: series.cover,
             chapters: total,
             finished,
             progress,
@@ -133,6 +143,10 @@ impl Engine {
         let Some(doc) = inner.current_document(item_id)? else {
             return Ok(None);
         };
+        // A PDF's position is its page; its text view must not replace it.
+        if doc.version.raw_mime == PDF_MIME {
+            return Ok(None);
+        }
         let Some(mut locator) = locator_at(&doc.document, &doc.version.hash, block_id, offset)
         else {
             return Ok(None);
@@ -141,8 +155,53 @@ impl Engine {
         if at_end {
             locator.progression = locator.progression.max(FINISHED_AT);
         }
+        inner.record_locator(item_id, locator, force)
+    }
+
+    /// Records the page a PDF view shows (0-based). Reaching the last page
+    /// of a multi-page document finishes it.
+    pub fn record_page_progress(
+        &self,
+        item_id: &str,
+        page: u32,
+        page_count: u32,
+        force: bool,
+    ) -> Result<Option<Locator>> {
+        let row = self
+            .inner
+            .store
+            .item(item_id)?
+            .ok_or(EngineError::NotFound)?;
+        let (Some(content_hash), true) = (row.item.current_version, page_count > 0) else {
+            return Ok(None);
+        };
+        let page = page.min(page_count - 1);
+        let mut progression = page as f64 / page_count as f64;
+        if page_count > 1 && page + 1 == page_count {
+            progression = progression.max(FINISHED_AT);
+        }
+        let locator = Locator {
+            content_hash,
+            position: Position::Pdf {
+                page,
+                progression: 0.0,
+            },
+            quote: TextQuote::default(),
+            progression,
+        };
+        self.inner.record_locator(item_id, locator, force)
+    }
+}
+
+impl Inner {
+    fn record_locator(
+        &self,
+        item_id: &str,
+        locator: Locator,
+        force: bool,
+    ) -> Result<Option<Locator>> {
         {
-            let mut last = inner.progress_throttle.lock();
+            let mut last = self.progress_throttle.lock();
             if let Some((when, progression)) = last.get(item_id)
                 && !force
                 && when.elapsed() < PROGRESS_INTERVAL
@@ -152,24 +211,26 @@ impl Engine {
             }
             last.insert(item_id.to_string(), (Instant::now(), locator.progression));
         }
-        inner.record(
+        self.record(
             Entity::Progress,
             item_id,
             fields::LOCATOR,
             serde_json::to_value(&locator)?,
             false,
         )?;
-        inner.store.meta_set(
+        self.store.meta_set(
             &format!("local_progress:{item_id}"),
             &serde_json::to_string(&locator)?,
         )?;
-        let row = inner.store.item(item_id)?.ok_or(EngineError::NotFound)?;
+        let row = self.store.item(item_id)?.ok_or(EngineError::NotFound)?;
         if locator.progression >= FINISHED_AT && !row.item.finished {
-            inner.record(Entity::Item, item_id, fields::FINISHED, true.into(), false)?;
+            self.record(Entity::Item, item_id, fields::FINISHED, true.into(), false)?;
         }
         Ok(Some(locator))
     }
+}
 
+impl Engine {
     pub fn set_finished(&self, item_id: &str, finished: bool) -> Result<()> {
         self.inner.record(
             Entity::Item,
@@ -196,6 +257,10 @@ impl Engine {
             Position::Block { block_id, offset } => (Some(block_id.clone()), *offset),
             _ => (None, 0),
         };
+        let page = match &locator.position {
+            Position::Pdf { page, .. } => Some(*page),
+            _ => None,
+        };
         let clock = inner
             .store
             .field_clock(Entity::Progress, item_id, fields::LOCATOR)?;
@@ -218,6 +283,7 @@ impl Engine {
             locator,
             block_id,
             offset,
+            page,
             updated_at: clock.map(|h| h.wall_ms as i64).unwrap_or(0),
             from_other_device,
             device,

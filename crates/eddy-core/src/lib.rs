@@ -7,6 +7,7 @@ mod engine;
 mod fulltext;
 mod hub;
 mod images;
+mod import;
 mod native_host;
 mod platform;
 mod progress;
@@ -24,6 +25,7 @@ pub use engine::{
     Engine, EngineOptions, EngineStatus, Mode, RefreshSummary, SourceInfo, SourceStats,
 };
 pub use hub::{ServerStatus, plausible_hlc};
+pub use import::{Imported, MAX_IMPORT_BYTES, PdfReader, PdfText};
 pub use native_host::{CHROME_EXTENSION_ID, NATIVE_HOST_NAME, install_native_host};
 pub use platform::{LogLevel, MemoryPlatform, Platform};
 pub use progress::{ResumePoint, SeriesInfo};

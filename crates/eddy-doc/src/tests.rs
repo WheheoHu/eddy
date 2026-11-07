@@ -47,6 +47,41 @@ fn keeps_semantic_structure_and_drops_unsafe_markup() {
 }
 
 #[test]
+fn archive_references_resolve_only_inside_an_archive() {
+    let html = r#"<p><a href="/OEBPS/ch2.xhtml#n1">note</a></p><img src="/OEBPS/img/a%20b.png" alt="A">
+        <p><a href="epub://other/x.xhtml">elsewhere</a></p>"#;
+    let d = html_to_document(
+        html,
+        &ConvertOptions {
+            base_url: Some("epub://abc/OEBPS/ch1.xhtml"),
+            title: None,
+        },
+    );
+    let BlockKind::Paragraph { runs } = &d.blocks[0].kind else {
+        panic!()
+    };
+    assert_eq!(
+        runs[0].link.as_deref(),
+        Some("epub://abc/OEBPS/ch2.xhtml#n1")
+    );
+    assert!(
+        matches!(&d.blocks[1].kind, BlockKind::Image { src, .. } if src == "epub://abc/OEBPS/img/a%20b.png")
+    );
+    // A web page cannot point into a book.
+    let web =
+        doc(r#"<p><a href="epub://abc/OEBPS/ch2.xhtml">x</a></p><img src="epub://abc/a.png">"#);
+    assert!(
+        web.blocks
+            .iter()
+            .all(|b| !matches!(b.kind, BlockKind::Image { .. }))
+    );
+    let BlockKind::Paragraph { runs } = &web.blocks[0].kind else {
+        panic!()
+    };
+    assert!(runs.iter().all(|r| r.link.is_none()));
+}
+
+#[test]
 fn nested_lists_quotes_and_continuations() {
     let d = doc(
         "<ol start=3><li>one</li><li>two<ul><li>inner</li></ul><p>more</p></li></ol><blockquote><p>q</p><blockquote>qq</blockquote></blockquote>",

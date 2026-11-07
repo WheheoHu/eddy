@@ -1,6 +1,7 @@
 import AppKit
 import EddyKit
 import Observation
+import PDFKit
 import SwiftUI
 
 enum AppMode: String, CaseIterable, Identifiable {
@@ -29,6 +30,14 @@ final class AppModel {
     /// What is being read; shared by both modes so switching keeps context.
     var currentItemID: String?
 
+    /// Something just imported, for the current mode to bring into view.
+    var revealed: Revealed?
+
+    enum Revealed: Equatable {
+        case publication(String)
+        case document(String)
+    }
+
     private var leadImages: [String: String?] = [:]
     private var imageCache = NSCache<NSString, NSImage>()
     private var spoolWatcher: SpoolWatcher?
@@ -38,6 +47,7 @@ final class AppModel {
         do {
             let engine = try EddyCore.openDefault()
             try engine.setWebRenderer(renderer: WebViewRenderer())
+            engine.setPdfTextExtractor(extractor: PDFKitTextExtractor())
             self.engine = engine
         } catch {
             engine = nil
@@ -78,11 +88,11 @@ final class AppModel {
     var savedSourceID: String? { sources.first { $0.saved }?.id }
     var unreadTotal: Int { feeds.reduce(0) { $0 + Int($1.unread) } }
 
-    /// Saved pages grouped by site.
-    var savedSites: [(host: String, count: Int)] {
+    /// Saved pages grouped by site; imported PDFs form their own group.
+    var savedSites: [(host: String, count: Int, pdf: Bool)] {
         let saved = items(.saved, limit: 5000)
         let groups = Dictionary(grouping: saved, by: \.host)
-        return groups.map { ($0.key, $0.value.count) }.sorted { $0.host < $1.host }
+        return groups.map { ($0.key, $0.value.count, $0.value.first?.format == .pdf) }.sorted { $0.host < $1.host }
     }
 
     func chapters(_ seriesID: String) -> [ItemView] {
@@ -148,8 +158,62 @@ final class AppModel {
         reload()
     }
 
+    func recordPage(_ itemID: String, page: Int, of count: Int, force: Bool = false) {
+        _ = try? engine?.recordPageProgress(itemId: itemID, page: UInt32(max(0, page)), pageCount: UInt32(max(0, count)), force: force)
+        if force { reload() }
+    }
+
     func resume(_ itemID: String) -> ResumePointView? {
         try? engine?.resumePoint(itemId: itemID)
+    }
+
+    /// The original file of an imported PDF.
+    func contentFile(_ itemID: String) async -> URL? {
+        guard let path = try? await engine?.contentFile(itemId: itemID) else { return nil }
+        return URL(fileURLWithPath: path)
+    }
+
+    /// The chapter an in-book link points to.
+    func item(forLink url: URL) -> String? {
+        (try? engine?.itemForLink(url: url.absoluteString)) ?? nil
+    }
+
+    /// First page of a PDF, for shelf covers.
+    func pdfCover(_ itemID: String) async -> NSImage? {
+        let key = "pdf:\(itemID)" as NSString
+        if let cached = imageCache.object(forKey: key) { return cached }
+        guard let url = await contentFile(itemID) else { return nil }
+        let image = await Task.detached {
+            PDFDocument(url: url)?.page(at: 0)?.thumbnail(of: CGSize(width: 300, height: 450), for: .cropBox)
+        }.value
+        if let image { imageCache.setObject(image, forKey: key) }
+        return image
+    }
+
+    /// Imports EPUB books and PDFs, then brings the last one into view.
+    func importFiles(_ urls: [URL]) async {
+        guard let engine, !urls.isEmpty else { return }
+        busy = true
+        defer { busy = false }
+        var imported: [ImportResultView] = []
+        for url in urls {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            do {
+                imported.append(try await engine.importFile(path: url.path))
+            } catch {
+                message = "\(url.lastPathComponent): \(error.localizedDescription)"
+            }
+        }
+        reload()
+        guard let last = imported.last else { return }
+        if imported.count > 1 {
+            message = "Imported \(imported.count) files"
+        } else {
+            message = last.existing ? "“\(last.title)” is already in your library" : "Imported “\(last.title)”"
+        }
+        currentItemID = last.itemId
+        revealed = last.seriesId.map(Revealed.publication) ?? .document(last.itemId)
     }
 
     func refresh() async {

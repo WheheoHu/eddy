@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 pub enum ItemKind {
     /// Article delivered by a subscription.
     Feed,
-    /// Web page saved by the user.
+    /// Web page or document (PDF) saved by the user.
     Saved,
     /// Chapter of a series (multi-page tutorial, book).
     Chapter,
@@ -134,6 +134,8 @@ pub enum ContentOrigin {
     Extracted,
     /// Page captured from the user's browser.
     Captured,
+    /// File imported by the user (EPUB, PDF).
+    Imported,
 }
 
 impl ContentOrigin {
@@ -142,6 +144,7 @@ impl ContentOrigin {
             ContentOrigin::Feed => "feed",
             ContentOrigin::Extracted => "extracted",
             ContentOrigin::Captured => "captured",
+            ContentOrigin::Imported => "imported",
         }
     }
 
@@ -150,7 +153,31 @@ impl ContentOrigin {
             "feed" => Some(ContentOrigin::Feed),
             "extracted" => Some(ContentOrigin::Extracted),
             "captured" => Some(ContentOrigin::Captured),
+            "imported" => Some(ContentOrigin::Imported),
             _ => None,
+        }
+    }
+}
+
+pub const EPUB_MIME: &str = "application/epub+zip";
+pub const PDF_MIME: &str = "application/pdf";
+/// URL scheme of files inside an imported EPUB: `epub://<blob key>/<path>`.
+pub const EPUB_SCHEME: &str = "epub";
+
+/// How an item's content is presented, decided by its current version's raw
+/// source. Everything except PDF is a reflowable document.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ContentFormat {
+    #[default]
+    Article,
+    Pdf,
+}
+
+impl ContentFormat {
+    pub fn from_mime(raw_mime: Option<&str>) -> Self {
+        match raw_mime {
+            Some(PDF_MIME) => ContentFormat::Pdf,
+            _ => ContentFormat::Article,
         }
     }
 }
@@ -177,4 +204,9 @@ pub struct Series {
     pub title: String,
     pub toc_url: Option<String>,
     pub created_at: i64,
+    #[serde(default)]
+    pub author: Option<String>,
+    /// Cover image URL (imported books).
+    #[serde(default)]
+    pub cover: Option<String>,
 }

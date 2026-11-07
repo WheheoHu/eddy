@@ -121,10 +121,27 @@ pub enum ItemKindView {
     Chapter,
 }
 
+/// How to present an item: the reflowed reader, or a PDF view.
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContentFormatView {
+    Article,
+    Pdf,
+}
+
+impl From<m::ContentFormat> for ContentFormatView {
+    fn from(f: m::ContentFormat) -> Self {
+        match f {
+            m::ContentFormat::Article => ContentFormatView::Article,
+            m::ContentFormat::Pdf => ContentFormatView::Pdf,
+        }
+    }
+}
+
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct ItemView {
     pub id: String,
     pub kind: ItemKindView,
+    pub format: ContentFormatView,
     pub title: String,
     pub url: Option<String>,
     pub author: Option<String>,
@@ -153,6 +170,7 @@ impl From<ItemRow> for ItemView {
                 m::ItemKind::Saved => ItemKindView::Saved,
                 m::ItemKind::Chapter => ItemKindView::Chapter,
             },
+            format: r.format.into(),
             title: i.title,
             url: i.url,
             author: i.author,
@@ -455,13 +473,16 @@ pub enum ContentOriginView {
     Feed,
     Extracted,
     Captured,
+    Imported,
 }
 
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct DocumentView {
     pub content_hash: String,
     pub origin: ContentOriginView,
+    pub format: ContentFormatView,
     pub source_url: Option<String>,
+    /// For a PDF, its text (empty when it has none).
     pub blocks: Vec<BlockView>,
 }
 
@@ -473,7 +494,9 @@ impl From<eddy_core::LoadedDocument> for DocumentView {
                 m::ContentOrigin::Feed => ContentOriginView::Feed,
                 m::ContentOrigin::Extracted => ContentOriginView::Extracted,
                 m::ContentOrigin::Captured => ContentOriginView::Captured,
+                m::ContentOrigin::Imported => ContentOriginView::Imported,
             },
+            format: m::ContentFormat::from_mime(Some(&d.version.raw_mime)).into(),
             source_url: d.version.source_url,
             blocks: d.document.blocks.into_iter().map(Into::into).collect(),
         }
