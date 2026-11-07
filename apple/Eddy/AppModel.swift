@@ -24,6 +24,8 @@ final class AppModel {
     var tags: [TagView] = []
     var revision = 0
     var busy = false
+    /// Older articles added so far while FreshRSS history loads; 0 otherwise.
+    var historyAdded = 0
     var message: String?
     var openError: String?
 
@@ -42,6 +44,7 @@ final class AppModel {
     private var imageCache = NSCache<NSString, NSImage>()
     private var spoolWatcher: SpoolWatcher?
     private var refreshTimer: Timer?
+    private var loadingHistory = false
 
     init() {
         do {
@@ -223,6 +226,7 @@ final class AppModel {
         do {
             let s = try await engine.refresh()
             if s.newItems > 0 { message = "\(s.newItems) new articles" }
+            loadHistory()
         } catch EddyError.NotConfigured {
             message = "Connect FreshRSS or a sync server in Settings to load subscriptions."
         } catch {
@@ -230,6 +234,24 @@ final class AppModel {
         }
         leadImages.removeAll()
         reload()
+    }
+
+    /// Walks older FreshRSS articles in the background, refreshing lists as
+    /// each page arrives. The engine resumes where it stopped and returns at
+    /// once when the history is complete.
+    private func loadHistory() {
+        guard let engine, !loadingHistory else { return }
+        loadingHistory = true
+        Task {
+            let listener = HistoryProgress { [weak self] added in
+                guard let self, loadingHistory else { return }
+                historyAdded = added
+                reload()
+            }
+            _ = try? await engine.backfillHistory(listener: listener)
+            loadingHistory = false
+            historyAdded = 0
+        }
     }
 
     func save(url: String) async {
@@ -315,6 +337,20 @@ final class AppModel {
         }
         let stale = status.lastRefresh.map { Date().timeIntervalSince1970 * 1000 - Double($0) > 10 * 60 * 1000 } ?? true
         if status.mode != .unconfigured, stale { Task { await refresh() } }
+    }
+}
+
+/// Forwards history progress to the main actor.
+final class HistoryProgress: HistoryListener, @unchecked Sendable {
+    private let handler: @MainActor (Int) -> Void
+
+    init(_ handler: @escaping @MainActor (Int) -> Void) {
+        self.handler = handler
+    }
+
+    func onProgress(added: UInt32) {
+        let handler = handler
+        Task { @MainActor in handler(Int(added)) }
     }
 }
 

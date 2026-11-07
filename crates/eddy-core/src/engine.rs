@@ -93,6 +93,7 @@ pub(crate) struct Inner {
         parking_lot::Mutex<std::collections::HashMap<String, (std::time::Instant, f64)>>,
     pub search: Option<eddy_search::SearchIndex>,
     pub live: std::sync::atomic::AtomicBool,
+    pub backfilling: std::sync::atomic::AtomicBool,
 }
 
 /// Cheap to clone; all clones share one engine.
@@ -137,6 +138,7 @@ impl Engine {
             progress_throttle: parking_lot::Mutex::new(Default::default()),
             search: eddy_search::SearchIndex::open(&data_dir.join("index")).ok(),
             live: std::sync::atomic::AtomicBool::new(false),
+            backfilling: std::sync::atomic::AtomicBool::new(false),
         });
         inner.rebuild_fetcher()?;
         inner.store.upsert_source(&Source {
@@ -264,13 +266,19 @@ impl Engine {
                     .log(LogLevel::Warn, &format!("refresh failed: {e}"));
             }
         }
-        if let Err(e) = inner.store.evict(self.cache_limit()?) {
-            inner
+        self.settle()?;
+        result
+    }
+
+    /// Trims the cache and makes newly stored content searchable.
+    pub(crate) fn settle(&self) -> Result<()> {
+        if let Err(e) = self.inner.store.evict(self.cache_limit()?) {
+            self.inner
                 .platform
                 .log(LogLevel::Warn, &format!("cache eviction failed: {e}"));
         }
-        inner.commit_index();
-        result
+        self.inner.commit_index();
+        Ok(())
     }
 
     pub fn sources(&self) -> Result<Vec<SourceInfo>> {

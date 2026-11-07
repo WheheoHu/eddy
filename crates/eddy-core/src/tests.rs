@@ -156,7 +156,7 @@ async fn standalone_refresh_ingests_items_and_reconciles_state() {
 }
 
 #[tokio::test]
-async fn standalone_refresh_backfills_read_history_across_syncs() {
+async fn read_history_backfills_in_the_background_and_resumes() {
     let server = mock_freshrss().await;
     let contents = "^/api/greader.php/reader/api/0/stream/contents/.*";
     let item = |n: u64, title: &str| item_at("https://blog.example", n, title, true);
@@ -216,10 +216,26 @@ async fn standalone_refresh_backfills_read_history_across_syncs() {
             .collect()
     };
 
-    // A failing history page does not fail the refresh.
+    // Nothing to walk before the first sync has found where history starts.
+    assert_eq!(engine.backfill_history(None).await.unwrap(), 0);
+
+    // A refresh takes only the newest page; history stays out of its way.
     let summary = engine.refresh().await.unwrap();
-    assert_eq!(summary.new_items, 3, "history is not announced as new");
-    assert!(titles(&engine).contains(&"Archived one".to_string()));
+    assert_eq!(summary.new_items, 3);
+    assert!(!titles(&engine).contains(&"Archived one".to_string()));
+
+    // The walk reports progress per page and stops at a failing one; a
+    // second walk started meanwhile returns at once.
+    let totals = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let seen = totals.clone();
+    let on_page: HistoryCallback = Arc::new(move |added| seen.lock().push(added));
+    let (walk, overlapping) = tokio::join!(
+        engine.backfill_history(Some(on_page)),
+        engine.backfill_history(None)
+    );
+    assert!(walk.is_err());
+    assert_eq!(overlapping.unwrap(), 0);
+    assert_eq!(*totals.lock(), [1]);
     assert!(!titles(&engine).contains(&"Archived two".to_string()));
     let archived = engine
         .items(&ItemQuery::default())
@@ -230,11 +246,14 @@ async fn standalone_refresh_backfills_read_history_across_syncs() {
     assert!(archived.item.read);
     assert_eq!(archived.source_title.as_deref(), Some("Graphics Blog"));
 
-    // The next refresh resumes at the saved cursor and reaches the end.
+    // Refreshing keeps the saved position; the next walk resumes there and
+    // reaches the end.
     assert_eq!(engine.refresh().await.unwrap().new_items, 0);
+    assert_eq!(engine.backfill_history(None).await.unwrap(), 1);
     assert!(titles(&engine).contains(&"Archived two".to_string()));
 
     // Once complete, older pages are not requested again.
+    assert_eq!(engine.backfill_history(None).await.unwrap(), 0);
     engine.refresh().await.unwrap();
 }
 

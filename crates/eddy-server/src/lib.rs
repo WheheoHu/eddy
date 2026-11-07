@@ -15,7 +15,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
-use eddy_core::{Engine, EngineOptions};
+use eddy_core::{Engine, EngineOptions, HistoryCallback};
 use eddy_model::ids::sha256_hex;
 use eddy_store::Store;
 use eddy_sync::{
@@ -91,8 +91,9 @@ impl AppState {
         }
     }
 
-    /// Pulls FreshRSS now; announces new ops to listening devices.
-    pub async fn refresh(&self) -> Result<(), String> {
+    /// Pulls FreshRSS now; announces new ops to listening devices. Older
+    /// history then keeps loading in the background, announced page by page.
+    pub async fn refresh(self: &Arc<Self>) -> Result<(), String> {
         if self.engine.server_account().is_none() {
             return Ok(());
         }
@@ -106,7 +107,20 @@ impl AppState {
         if self.engine.server_cursor().unwrap_or(0) > before {
             self.announce();
         }
+        if result.is_ok() {
+            self.backfill_in_background();
+        }
         result
+    }
+
+    fn backfill_in_background(self: &Arc<Self>) {
+        let state = self.clone();
+        tokio::spawn(async move {
+            let announcer = state.clone();
+            let on_page: HistoryCallback = Arc::new(move |_| announcer.announce());
+            // The engine logs a failed page; the next refresh resumes from it.
+            let _ = state.engine.backfill_history(Some(on_page)).await;
+        });
     }
 }
 

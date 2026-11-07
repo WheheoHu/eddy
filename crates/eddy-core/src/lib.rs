@@ -31,6 +31,7 @@ pub use platform::{LogLevel, MemoryPlatform, Platform};
 pub use progress::{ResumePoint, SeriesInfo};
 pub use rules::RulePackSummary;
 pub use search::SearchResult;
+pub use upstream::HistoryCallback;
 
 pub use eddy_store::{ItemFilter, ItemQuery, ItemRow};
 
