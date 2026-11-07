@@ -28,6 +28,16 @@ extension CollectionKindView: @retroactive Identifiable {
         }
     }
 
+    /// `title` as a string, for lists built from data.
+    var pluralName: String {
+        switch self {
+        case .book: String(localized: "Books")
+        case .pdf: String(localized: "PDFs")
+        case .webPage: String(localized: "Web Pages")
+        case .webSeries: String(localized: "Web Series")
+        }
+    }
+
     var name: String {
         switch self {
         case .book: String(localized: "Book")

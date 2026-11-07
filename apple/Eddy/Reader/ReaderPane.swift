@@ -79,6 +79,11 @@ struct ReaderPane: View {
         .toolbar { toolbar }
         .task(id: itemID) { await load() }
         .onDisappear(perform: flush)
+        .onChange(of: model.readerCommand) { _, request in
+            guard let command = request?.value, command.itemID == itemID else { return }
+            model.readerCommand = nil
+            perform(command.action)
+        }
         .onChange(of: mode) { _, new in
             guard new != .original else { return }
             // Translations show in the reflowed text.
@@ -276,6 +281,30 @@ struct ReaderPane: View {
 
     private func toggleSummary(_ show: Bool) {
         withAnimation(.easeInOut(duration: 0.2)) { showSummary = show }
+    }
+
+    private func perform(_ action: ReaderCommand.Action) {
+        switch action {
+        case .summary:
+            toggleSummary(true)
+        case let .readingMode(new):
+            mode = new
+        case .toggleWeb:
+            guard let item else { return }
+            let hasPage = RendererRegistry.web.supports(RenderContext(item: item, document: document))
+            let hasText = document?.blocks.isEmpty == false
+            withAnimation(.easeInOut(duration: 0.2)) {
+                if rendererID == RendererRegistry.web.id, hasText {
+                    rendererID = RendererRegistry.article.id
+                } else if rendererID != RendererRegistry.web.id, hasPage {
+                    rendererID = RendererRegistry.web.id
+                }
+            }
+        case .fetchFullText:
+            Task { if await model.fetchFullText(itemID) { await reloadDocument() } }
+        case let .step(direction):
+            neighbors?.go(direction, .vertical)
+        }
     }
 
     /// Right shows the web page, left comes back to the reader; an item

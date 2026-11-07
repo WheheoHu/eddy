@@ -213,6 +213,16 @@ fn item_queries_filter_and_order() {
         }),
         ["a", "ch"]
     );
+    // Titles are the IDs; the chapter "ch" is left to its series.
+    let titled = |text: &str| {
+        ids(ItemQuery {
+            filter: ItemFilter::Title(text.into()),
+            ..Default::default()
+        })
+    };
+    assert_eq!(titled("C"), ["c"]);
+    assert!(titled("%").is_empty());
+    assert!(titled("  ").is_empty());
 
     let loc = |p: f64| Locator {
         content_hash: "h".into(),

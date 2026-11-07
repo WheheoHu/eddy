@@ -84,6 +84,18 @@ struct ThreePaneView: View {
         .onChange(of: selection) { history.reset(model.currentItemID) }
         .onChange(of: query) { history.reset(model.currentItemID) }
         .onChange(of: focus) { _, new in if new != nil { readerFocused = false } }
+        .onChange(of: model.navigation) { _, request in
+            guard case let .threePane(destination) = request?.value else { return }
+            model.navigation = nil
+            query = ""
+            choose(destination)
+            focus = .list
+        }
+        .onChange(of: model.revealedItem) { _, request in
+            guard let id = request?.value else { return }
+            model.revealedItem = nil
+            reveal(id)
+        }
         .task(id: query) {
             guard !query.isEmpty else { results = nil; return }
             try? await Task.sleep(for: .milliseconds(250))
@@ -198,6 +210,21 @@ struct ThreePaneView: View {
     /// Coming from the library mode, the entry being read stays in view.
     private func showCurrentEntry() {
         if let entry = model.entry(containing: model.currentItemID) { show(entryID: entry.id) }
+    }
+
+    /// Opens an item from anywhere: a collection item in its entry, an
+    /// article in its subscription.
+    private func reveal(_ id: String) {
+        guard let item = model.item(id) else { return }
+        query = ""
+        if let entry = model.entry(containing: item) {
+            show(entryID: entry.id)
+        } else if let sourceID = item.sourceId {
+            selection = .feed(sourceID)
+            entryID = nil
+        }
+        open(id)
+        readerFocused = true
     }
 
     private func show(entryID id: String) {
@@ -326,6 +353,7 @@ struct ThreePaneView: View {
             Button("Star") { if let item = current(rows) { model.setStarred(item, !item.starred) } }.keyboardShortcut("s", modifiers: [])
             Button("Read") { if let item = current(rows) { model.setRead(item, !item.read) } }.keyboardShortcut("m", modifiers: [])
         }
+        .disabled(model.paletteVisible)
         .opacity(0)
         .frame(width: 0, height: 0)
         .accessibilityHidden(true)

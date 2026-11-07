@@ -11,6 +11,36 @@ enum AppMode: String, CaseIterable, Identifiable {
     var icon: String { self == .threePane ? "rectangle.split.3x1" : "books.vertical" }
 }
 
+/// Something picked in the command palette, for the view that can do it.
+/// The token makes picking the same thing twice a change.
+struct PaletteRequest<Value: Equatable>: Equatable {
+    let value: Value
+    var token = UUID()
+}
+
+/// A sidebar entry of the current mode.
+enum Destination: Equatable {
+    case threePane(ThreePaneView.Selection)
+    case library(LibraryFilter)
+    /// A subscription on the library's shelf.
+    case libraryFeed(sourceID: String)
+}
+
+/// What the palette asks of the reader showing `itemID`.
+struct ReaderCommand: Equatable {
+    enum Action: Equatable {
+        case summary
+        case readingMode(ReadingMode)
+        /// Between the reflowed text and the web page.
+        case toggleWeb
+        case fetchFullText
+        case step(Direction)
+    }
+
+    let itemID: String
+    let action: Action
+}
+
 /// App-wide state over the engine. Views read lists through it so a single
 /// `revision` bump refreshes everything after a change.
 @Observable
@@ -38,6 +68,13 @@ final class AppModel {
 
     /// A collection entry just imported, for the current mode to bring into view.
     var revealed: String?
+
+    var paletteVisible = false
+    /// Picked in the palette, for the current mode: a sidebar entry, an item
+    /// to open, a command for the reader.
+    var navigation: PaletteRequest<Destination>?
+    var revealedItem: PaletteRequest<String>?
+    var readerCommand: PaletteRequest<ReaderCommand>?
 
     /// A collection entry waiting for the user to confirm its deletion.
     var pendingDeletion: CollectionEntryView?
@@ -132,6 +169,11 @@ final class AppModel {
 
     func chapters(_ seriesID: String) -> [ItemView] {
         items(.series(id: seriesID), limit: 2000)
+    }
+
+    /// Articles and saved pages by title, newest first.
+    func titleMatches(_ text: String, limit: UInt32 = 20) -> [ItemView] {
+        items(.title(text: text), limit: limit)
     }
 
     func search(_ query: String) async -> [SearchResultView] {

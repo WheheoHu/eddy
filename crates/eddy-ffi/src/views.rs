@@ -197,10 +197,22 @@ pub enum ItemFilterView {
     Starred,
     Saved,
     ContinueReading,
-    Source { id: String },
-    Category { name: String },
-    Series { id: String },
-    Tag { id: String },
+    Source {
+        id: String,
+    },
+    Category {
+        name: String,
+    },
+    Series {
+        id: String,
+    },
+    Tag {
+        id: String,
+    },
+    /// Articles and saved pages whose title contains `text`.
+    Title {
+        text: String,
+    },
 }
 
 impl From<ItemFilterView> for eddy_core::ItemFilter {
@@ -215,6 +227,7 @@ impl From<ItemFilterView> for eddy_core::ItemFilter {
             ItemFilterView::Category { name } => F::Category(name),
             ItemFilterView::Series { id } => F::Series(id),
             ItemFilterView::Tag { id } => F::Tag(id),
+            ItemFilterView::Title { text } => F::Title(text),
         }
     }
 }

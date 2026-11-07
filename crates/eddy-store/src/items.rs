@@ -19,6 +19,9 @@ pub enum ItemFilter {
     Series(String),
     Tag(String),
     Ids(Vec<String>),
+    /// Articles and saved pages whose title contains the text, ignoring
+    /// ASCII case; chapters are found through their series.
+    Title(String),
 }
 
 #[derive(Clone, Debug)]
@@ -347,6 +350,18 @@ fn conditions(q: &ItemQuery) -> Option<Conditions> {
             }
             clauses.push(format!("i.id IN ({})", vec!["?"; ids.len()].join(",")));
             values.extend(ids.iter().map(|i| Value::Text(i.clone())));
+        }
+        ItemFilter::Title(text) => {
+            let text = text.trim();
+            if text.is_empty() {
+                return None;
+            }
+            let escaped = text
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            clauses.push("i.kind!='chapter' AND i.title LIKE ? ESCAPE '\\'".into());
+            values.push(Value::Text(format!("%{escaped}%")));
         }
     }
     if q.unread_only {

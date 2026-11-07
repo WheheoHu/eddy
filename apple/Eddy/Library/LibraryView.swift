@@ -140,6 +140,27 @@ struct LibraryView: View {
         .onChange(of: model.revision) {
             if let entry = open?.entry, model.entry(entry.id) == nil { open = nil }
         }
+        .onChange(of: model.navigation) { _, request in
+            switch request?.value {
+            case let .library(destination):
+                model.navigation = nil
+                open = nil
+                query = ""
+                filter = destination
+                focusShelf = true
+                DispatchQueue.main.async { claimShelfFocus() }
+            case let .libraryFeed(sourceID):
+                model.navigation = nil
+                if let book = allBooks.first(where: { $0.kind == .feed(sourceID: sourceID) }) { show(book) }
+            default:
+                break
+            }
+        }
+        .onChange(of: model.revealedItem) { _, request in
+            guard let id = request?.value else { return }
+            model.revealedItem = nil
+            reveal(id)
+        }
     }
 
     // MARK: Shelf
@@ -381,7 +402,14 @@ struct LibraryView: View {
 
     /// Switching from three-pane mode keeps reading the same item.
     private func openCurrent() {
-        guard open == nil, let id = model.currentItemID, let item = model.item(id) else { return }
+        guard open == nil, let id = model.currentItemID else { return }
+        reveal(id)
+    }
+
+    /// Opens the book an item belongs to, at that item: its entry, or its
+    /// subscription. A book already open moves to the item itself.
+    private func reveal(_ id: String) {
+        guard let item = model.item(id) else { return }
         let target: Book? = if let entry = model.entry(containing: item) {
             allBooks.first { $0.entry?.id == entry.id }
         } else if let sourceID = item.sourceId, item.kind == .feed {
@@ -389,7 +417,9 @@ struct LibraryView: View {
         } else {
             nil
         }
-        if let target { show(target) }
+        guard let target else { return }
+        model.currentItemID = id
+        if open?.id != target.id { show(target) }
     }
 
     // MARK: Books

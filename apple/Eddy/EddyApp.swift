@@ -28,6 +28,9 @@ struct EddyApp: App {
                 }
                 Divider()
             }
+            CommandMenu("Go") {
+                Button("Go To or Search…") { model.paletteVisible.toggle() }.keyboardShortcut("k", modifiers: .command)
+            }
         }
         Settings {
             SettingsView().environment(model)
@@ -55,6 +58,9 @@ struct RootView: View {
             }
         }
         .overlay(alignment: .bottom) { MessageBanner() }
+        .overlay {
+            if model.paletteVisible { CommandPalette() }
+        }
         .confirmationDialog(
             Text("Delete “\(model.pendingDeletion?.title ?? "")”?"),
             isPresented: Binding(get: { model.pendingDeletion != nil }, set: { if !$0 { model.pendingDeletion = nil } }),

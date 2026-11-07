@@ -56,6 +56,12 @@ struct LibraryReader: View {
             if new != landAtEnd { landAtEnd = nil }
         }
         .onChange(of: focus) { _, new in if new != nil { readerFocused = false } }
+        // An item of this book picked elsewhere (the command palette).
+        .onChange(of: model.currentItemID) { _, new in
+            guard let new, new != currentID, entries.contains(where: { $0.id == new }) else { return }
+            select(new)
+            readerFocused = true
+        }
     }
 
     // MARK: Contents column
