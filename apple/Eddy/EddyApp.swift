@@ -125,7 +125,7 @@ private struct SeriesProposalSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Add “\(proposal.title)” as a Publication?").font(.headline)
+            Text("Add “\(proposal.title)” as a Web Series?").font(.headline)
             Text("This page looks like a table of contents with \(proposal.chapters.count) chapters. Eddy can track your progress through all of them.")
                 .foregroundStyle(.secondary)
             List(Array(proposal.chapters.prefix(50).enumerated()), id: \.offset) { index, chapter in
@@ -135,7 +135,7 @@ private struct SeriesProposalSheet: View {
             HStack {
                 Spacer()
                 Button("Not Now") { model.pendingSeries = nil; dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Add Publication") { model.createSeries(proposal); dismiss() }.keyboardShortcut(.defaultAction)
+                Button("Add Web Series") { model.createSeries(proposal); dismiss() }.keyboardShortcut(.defaultAction)
             }
         }
         .padding(20)

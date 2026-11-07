@@ -272,6 +272,9 @@ struct LibraryView: View {
     @ViewBuilder
     private func menu(for book: Book) -> some View {
         if let entry = book.entry {
+            if entry.kind == .webPage {
+                Button("Convert to Web Series…") { Task { await model.convertToSeries(entry) } }
+            }
             Button("Delete…", role: .destructive) { model.requestDelete(entry) }
         }
     }
@@ -395,11 +398,11 @@ private struct LibrarySidebar: View {
             if !model.feeds.isEmpty {
                 Section("Subscriptions") {
                     Label("All Subscriptions", systemImage: "dot.radiowaves.up.forward")
-                        .badge(model.feeds.count)
+                        .badge(model.unreadTotal)
                         .tag(LibraryFilter.subscriptions)
                     if categories.count > 1 {
                         ForEach(categories, id: \.self) { category in
-                            Label(category, systemImage: "folder").tag(LibraryFilter.category(category))
+                            Label(category, systemImage: "folder").badge(unread(in: category)).tag(LibraryFilter.category(category))
                         }
                     }
                 }
@@ -411,6 +414,11 @@ private struct LibrarySidebar: View {
 
     private var categories: [String] {
         Array(Set(model.feeds.map { $0.category ?? "Subscriptions" })).sorted()
+    }
+
+    /// Shelf categories file subscriptions without a folder under "Subscriptions".
+    private func unread(in category: String) -> Int {
+        model.feeds.filter { ($0.category ?? "Subscriptions") == category }.reduce(0) { $0 + Int($1.unread) }
     }
 }
 
