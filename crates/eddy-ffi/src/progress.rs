@@ -240,6 +240,12 @@ impl EddyEngine {
         Ok(self.engine.set_finished(&item_id, finished)?)
     }
 
+    /// Back to unread and never started: read, finished and the reading
+    /// position are all reset.
+    pub fn mark_unread(&self, item_ids: Vec<String>) -> R<()> {
+        Ok(self.engine.mark_unread(&item_ids)?)
+    }
+
     pub fn resume_point(&self, item_id: String) -> R<Option<ResumePointView>> {
         Ok(self.engine.resume_point(&item_id)?.map(Into::into))
     }

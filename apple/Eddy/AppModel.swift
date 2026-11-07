@@ -221,6 +221,22 @@ final class AppModel {
         }
     }
 
+    /// Back to unread and never started, on every device (and FreshRSS).
+    func markUnread(_ itemIDs: [String]) {
+        guard !itemIDs.isEmpty else { return }
+        do {
+            try engine?.markUnread(itemIds: itemIDs)
+        } catch {
+            message = error.localizedDescription
+        }
+        reload()
+    }
+
+    /// A book or series resets all its chapters; a page or PDF itself.
+    func markUnread(entry: CollectionEntryView) {
+        markUnread(entry.seriesId.map { chapters($0).map(\.id) } ?? [entry.id])
+    }
+
     func markOpened(_ id: String) {
         guard let item = item(id), !item.read else { return }
         setRead(item, true)

@@ -166,6 +166,7 @@ struct LibraryReader: View {
 
 /// A subscription's articles, newest first, under a filter field.
 private struct FeedContents: View {
+    @Environment(AppModel.self) private var model
     let title: String
     let items: [ItemView]
     let currentID: String?
@@ -194,6 +195,13 @@ private struct FeedContents: View {
                         }
                         .padding(.vertical, 2)
                         .tag(item.id)
+                        .contextMenu {
+                            if item.hasBeenRead {
+                                Button("Mark as Unread") { model.markUnread([item.id]) }
+                            } else {
+                                Button("Mark as Read") { model.setRead(item, true) }
+                            }
+                        }
                     }
                 }
             }

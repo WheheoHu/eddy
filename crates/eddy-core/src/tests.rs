@@ -860,6 +860,59 @@ async fn end_on_screen_finishes_without_waiting_for_the_last_block() {
 }
 
 #[tokio::test]
+async fn mark_unread_resets_reading_but_the_top_of_the_text_is_still_read() {
+    let pages = mock_pages().await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let row = engine
+        .save_url(&format!("{}/essay", pages.uri()))
+        .await
+        .unwrap();
+    let id = row.item.id.clone();
+    let doc = engine.document(&id).await.unwrap().unwrap().document;
+    let paras = para_ids(&doc);
+    let continue_reading = |e: &Engine| {
+        e.items(&ItemQuery {
+            filter: ItemFilter::ContinueReading,
+            ..Default::default()
+        })
+        .unwrap()
+        .len()
+    };
+
+    // Back at the very top: a position at 0 that still counts as read.
+    engine
+        .record_progress(&id, &doc.blocks[0].id, 0, false, true)
+        .unwrap();
+    assert!(
+        engine
+            .item(&id)
+            .unwrap()
+            .unwrap()
+            .item
+            .last_read_at
+            .is_some()
+    );
+
+    engine.set_read(&id, true).await.unwrap();
+    engine
+        .record_progress(&id, &paras[paras.len() / 2], 0, false, true)
+        .unwrap();
+    engine.set_finished(&id, true).unwrap();
+    engine.set_finished(&id, false).unwrap();
+    assert_eq!(continue_reading(&engine), 1);
+
+    engine.mark_unread(std::slice::from_ref(&id)).unwrap();
+    let item = engine.item(&id).unwrap().unwrap().item;
+    assert!(!item.read);
+    assert!(!item.finished);
+    assert_eq!(item.progress, 0.0);
+    assert!(item.last_read_at.is_none());
+    assert!(engine.resume_point(&id).unwrap().is_none());
+    assert_eq!(continue_reading(&engine), 0);
+}
+
+#[tokio::test]
 async fn resume_point_follows_the_switch_to_full_text() {
     let pages = MockServer::start().await;
     // Feed excerpt and full page share the second paragraph.

@@ -206,8 +206,8 @@ struct CommandPalette: View {
             PaletteItem(id: "star", group: .reader, title: item.starred ? String(localized: "Unstar") : String(localized: "Star"), icon: item.starred ? "star.slash" : "star") {
                 model.setStarred(item, !item.starred)
             },
-            PaletteItem(id: "read", group: .reader, title: item.read ? String(localized: "Mark as Unread") : String(localized: "Mark as Read"), icon: item.read ? "circle.inset.filled" : "circle") {
-                model.setRead(item, !item.read)
+            PaletteItem(id: "read", group: .reader, title: item.hasBeenRead ? String(localized: "Mark as Unread") : String(localized: "Mark as Read"), icon: item.hasBeenRead ? "circle.inset.filled" : "circle") {
+                if item.hasBeenRead { model.markUnread([item.id]) } else { model.setRead(item, true) }
             },
         ]
         if item.seriesId != nil || item.kind == .feed {

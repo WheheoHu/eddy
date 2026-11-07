@@ -296,6 +296,8 @@ struct ReaderPane: View {
     }
 
     private func flush() {
+        // Marked unread while open: leaving doesn't put the position back.
+        guard model.item(itemID)?.read != false else { return }
         if let lastPosition { model.flushProgress(itemID, blockID: lastPosition.block, offset: lastPosition.offset, atEnd: lastPosition.atEnd) }
         if let lastPage { model.recordPage(itemID, page: lastPage.page, of: lastPage.count, force: true) }
     }

@@ -270,7 +270,11 @@ struct ThreePaneView: View {
         .contextMenu(forSelectionType: String.self) { ids in
             if let id = ids.first, let item = rows.first(where: { $0.id == id }) {
                 Button(item.starred ? "Unstar" : "Star") { model.setStarred(item, !item.starred) }
-                Button(item.read ? "Mark as Unread" : "Mark as Read") { model.setRead(item, !item.read) }
+                if item.hasBeenRead {
+                    Button("Mark as Unread") { model.markUnread([item.id]) }
+                } else {
+                    Button("Mark as Read") { model.setRead(item, true) }
+                }
                 if let url = item.url.flatMap(URL.init(string:)) {
                     Button("Open in Browser") { NSWorkspace.shared.open(url) }
                     Button("Copy Link") {
@@ -467,6 +471,9 @@ struct CollectionList: View {
         .listStyle(.inset)
         .contextMenu(forSelectionType: String.self) { ids in
             if let id = ids.first, let entry = model.entry(id) {
+                if entry.hasBeenRead {
+                    Button("Mark as Unread") { model.markUnread(entry: entry) }
+                }
                 if entry.kind == .webPage {
                     Button("Convert to Web Series…") { Task { await model.convertToSeries(entry) } }
                 }

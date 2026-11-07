@@ -269,12 +269,55 @@ impl Engine {
         )
     }
 
+    /// Back to unread and never started: not read (on FreshRSS too), not
+    /// finished, no reading position, out of Continue Reading and recently
+    /// read lists.
+    pub fn mark_unread(&self, item_ids: &[String]) -> Result<()> {
+        let inner = &self.inner;
+        let mut upstream = false;
+        for id in item_ids {
+            let row = inner.store.item(id)?.ok_or(EngineError::NotFound)?;
+            if row.item.read {
+                let pending = row.item.upstream_id.is_some();
+                upstream |= pending;
+                inner.record(Entity::Item, id, fields::READ, false.into(), pending)?;
+            }
+            if row.item.finished {
+                inner.record(Entity::Item, id, fields::FINISHED, false.into(), false)?;
+            }
+            if row.item.progress > 0.0 || row.item.last_read_at.is_some() {
+                let hash = row.item.current_version.clone().unwrap_or_default();
+                let locator = Locator::not_started(&hash);
+                inner.progress_throttle.lock().remove(id);
+                inner.record(
+                    Entity::Progress,
+                    id,
+                    fields::LOCATOR,
+                    serde_json::to_value(&locator)?,
+                    false,
+                )?;
+                inner.store.meta_set(
+                    &format!("local_progress:{id}"),
+                    &serde_json::to_string(&locator)?,
+                )?;
+            }
+        }
+        if upstream {
+            inner.push_in_background();
+        }
+        Ok(())
+    }
+
     /// Where to resume reading, re-anchored to the current content version
     /// (the position may have been taken in the feed excerpt, or on another
     /// device).
     pub fn resume_point(&self, item_id: &str) -> Result<Option<ResumePoint>> {
         let inner = &self.inner;
-        let Some(stored) = inner.store.progress(item_id)? else {
+        let Some(stored) = inner
+            .store
+            .progress(item_id)?
+            .filter(|l| !l.is_not_started())
+        else {
             return Ok(None);
         };
         let Some(doc) = inner.current_document(item_id)? else {

@@ -69,6 +69,9 @@ extension CollectionEntryView {
 
     var inProgress: Bool { progress > 0.01 && progress < 0.995 }
 
+    /// Started or finished: "Mark as Unread" has something to reset.
+    var hasBeenRead: Bool { progress > 0 || finished > 0 || lastReadAt != nil }
+
     var readingMinutes: Int {
         let perMinute = (lang == "cmn" || lang == "jpn") ? 400.0 : 1200.0
         return max(1, Int((Double(textLen) / perMinute).rounded()))

@@ -344,6 +344,9 @@ struct LibraryView: View {
     @ViewBuilder
     private func menu(for book: Book) -> some View {
         if let entry = book.entry {
+            if entry.hasBeenRead {
+                Button("Mark as Unread") { model.markUnread(entry: entry) }
+            }
             if entry.kind == .webPage {
                 Button("Convert to Web Series…") { Task { await model.convertToSeries(entry) } }
             }

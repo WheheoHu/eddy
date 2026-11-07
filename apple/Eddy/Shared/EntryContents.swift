@@ -119,6 +119,11 @@ struct EntryContents: View {
                     }
                     .padding(.vertical, 2)
                     .tag(chapter.id)
+                    .contextMenu {
+                        if chapter.hasBeenRead {
+                            Button("Mark as Unread") { model.markUnread([chapter.id]) }
+                        }
+                    }
                 }
             }
         }
