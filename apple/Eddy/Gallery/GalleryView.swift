@@ -54,6 +54,70 @@ final class GalleryMedia {
         let ids = entries.filter { $0.media == nil && sets[$0.item.id] == nil && prefetched.insert($0.item.id).inserted }.map(\.item.id)
         model.prefetchMedia(ids)
     }
+
+    /// Width over height of thumbnails as they load, for items whose media
+    /// doesn't say.
+    private(set) var loadedAspects: [String: CGFloat] = [:]
+
+    func noteAspect(_ aspect: CGFloat, for itemID: String) {
+        guard aspect.isFinite, aspect > 0, loadedAspects[itemID] == nil else { return }
+        loadedAspects[itemID] = aspect
+    }
+
+    /// The shape an item takes in the grid: its media's own size, players
+    /// at 16:9, else its thumbnail once loaded; square until known.
+    func aspect(for entry: GalleryEntryView) -> CGFloat {
+        let first = set(for: entry)?.items.first
+        let known: CGFloat? = if let w = first?.width, let h = first?.height, w > 0, h > 0 {
+            CGFloat(w) / CGFloat(h)
+        } else if first?.kind == .embed {
+            16 / 9
+        } else {
+            loadedAspects[entry.item.id]
+        }
+        return min(max(known ?? 1, 0.45), 2.6)
+    }
+}
+
+/// Rows of the Gallery grid: each row's items keep their shapes and are
+/// scaled so the row spans the width; the last row keeps the target
+/// height and starts at the leading edge.
+struct JustifiedRow: Identifiable {
+    struct Cell {
+        let entry: GalleryEntryView
+        let index: Int
+        let width: CGFloat
+    }
+
+    let cells: [Cell]
+    let height: CGFloat
+    var id: String { cells.first?.entry.id ?? "" }
+
+    static func rows(_ entries: [GalleryEntryView], width: CGFloat, targetHeight: CGFloat, spacing: CGFloat, aspect: (GalleryEntryView) -> CGFloat) -> [JustifiedRow] {
+        guard width > 0 else { return [] }
+        var rows: [JustifiedRow] = []
+        var pending: [(GalleryEntryView, Int, CGFloat)] = []
+        var aspectSum: CGFloat = 0
+        func close(height: CGFloat) {
+            rows.append(JustifiedRow(cells: pending.map { Cell(entry: $0.0, index: $0.1, width: ($0.2 * height).rounded(.down)) }, height: height.rounded(.down)))
+            pending = []
+            aspectSum = 0
+        }
+        for (index, entry) in entries.enumerated() {
+            let a = aspect(entry)
+            pending.append((entry, index, a))
+            aspectSum += a
+            let gaps = spacing * CGFloat(pending.count - 1)
+            if aspectSum * targetHeight + gaps >= width {
+                close(height: (width - gaps) / aspectSum)
+            }
+        }
+        if !pending.isEmpty {
+            let gaps = spacing * CGFloat(pending.count - 1)
+            close(height: min(targetHeight, (width - gaps) / aspectSum))
+        }
+        return rows
+    }
 }
 
 /// Gallery mode: media from marked subscriptions and folders and from
@@ -73,8 +137,13 @@ struct GalleryView: View {
     /// the items being looked at don't move.
     @State private var stale = false
 
+    @State private var gridWidth: CGFloat = 0
+
     private static let pageSize = 200
     private static let prefetchAhead = 20
+    private static let rowHeight: CGFloat = 220
+    private static let spacing: CGFloat = 6
+    private static let gridPadding: CGFloat = 8
 
     private var scope: GalleryScopeView { GalleryScopeView(key: scopeKey) }
 
@@ -141,23 +210,37 @@ struct GalleryView: View {
                 ContentUnavailableView(unreadOnly ? "Nothing Unread" : "Nothing Here", systemImage: "photo.on.rectangle")
             }
         } else if let media {
+            let rows = JustifiedRow.rows(items, width: gridWidth - 2 * Self.gridPadding, targetHeight: Self.rowHeight, spacing: Self.spacing, aspect: media.aspect(for:))
             ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 170, maximum: 280), spacing: 6)], spacing: 6) {
-                    ForEach(Array(items.enumerated()), id: \.element.id) { index, entry in
-                        GalleryTile(entry: entry, mediaSet: media.set(for: entry))
-                            .onTapGesture { open(index) }
-                            .contextMenu { menu(for: entry.item) }
-                            .accessibilityAddTraits(.isButton)
-                            .accessibilityLabel(Text(entry.item.title))
-                            .task(id: entry.id) {
-                                media.prefetch(items[min(index + 1, items.count)..<min(index + 1 + Self.prefetchAhead, items.count)])
-                                if index >= items.count - Self.prefetchAhead { loadMore() }
-                                await media.resolve(entry.item.id)
+                LazyVStack(alignment: .leading, spacing: Self.spacing) {
+                    ForEach(rows) { row in
+                        HStack(spacing: Self.spacing) {
+                            ForEach(row.cells, id: \.entry.id) { cell in
+                                tile(cell, in: items, media: media)
+                                    .frame(width: cell.width, height: row.height)
                             }
+                        }
                     }
                 }
-                .padding(8)
+                .padding(Self.gridPadding)
             }
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { gridWidth = $0 }
+        }
+    }
+
+    private func tile(_ cell: JustifiedRow.Cell, in items: [GalleryEntryView], media: GalleryMedia) -> some View {
+        let (entry, index) = (cell.entry, cell.index)
+        return GalleryTile(entry: entry, mediaSet: media.set(for: entry)) { aspect in
+            media.noteAspect(aspect, for: entry.item.id)
+        }
+        .onTapGesture { open(index) }
+        .contextMenu { menu(for: entry.item) }
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel(Text(entry.item.title))
+        .task(id: entry.id) {
+            media.prefetch(items[min(index + 1, items.count)..<min(index + 1 + Self.prefetchAhead, items.count)])
+            if index >= items.count - Self.prefetchAhead { loadMore() }
+            await media.resolve(entry.item.id)
         }
     }
 
@@ -203,34 +286,37 @@ struct GalleryTile: View {
     @Environment(AppModel.self) private var model
     let entry: GalleryEntryView
     let mediaSet: MediaSetView?
+    /// The thumbnail's width over height, once loaded.
+    var onAspect: (CGFloat) -> Void = { _ in }
     @State private var image: NSImage?
 
     private var thumbnail: String? { mediaSet?.thumbnail ?? entry.thumbnail }
 
     var body: some View {
-        ZStack {
-            Rectangle().fill(.quaternary)
-            if let image {
-                Image(nsImage: image).resizable().scaledToFill()
-            } else {
-                Image(systemName: "photo").font(.title).foregroundStyle(.tertiary)
+        // The picture fills the size the row gives without taking part in
+        // layout: a filled image would otherwise widen the tile past it.
+        Rectangle()
+            .fill(.quaternary)
+            .overlay {
+                if let image {
+                    Image(nsImage: image).resizable().scaledToFill()
+                } else {
+                    Image(systemName: "photo").font(.title).foregroundStyle(.tertiary)
+                }
             }
-        }
-        .frame(height: 210)
-        .frame(maxWidth: .infinity)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .contentShape(RoundedRectangle(cornerRadius: 6))
-        .overlay(alignment: .bottomLeading) { MediaBadges(mediaSet: mediaSet).padding(6) }
-        .overlay(alignment: .topTrailing) {
-            if !entry.item.read {
-                Circle().fill(.tint).frame(width: 8, height: 8).padding(7).accessibilityLabel("Unread")
+            .contentShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(alignment: .bottomLeading) { MediaBadges(mediaSet: mediaSet).padding(6) }
+            .overlay(alignment: .topTrailing) {
+                if !entry.item.read {
+                    Circle().fill(.tint).frame(width: 8, height: 8).padding(7).accessibilityLabel("Unread")
+                }
             }
-        }
-        .help(entry.item.title)
-        .task(id: thumbnail) {
-            guard let thumbnail else { return }
-            image = await model.image(thumbnail)
-        }
+            .help(entry.item.title)
+            .task(id: thumbnail) {
+                guard let thumbnail else { return }
+                image = await model.image(thumbnail)
+                if let size = image?.size, size.height > 0 { onAspect(size.width / size.height) }
+            }
     }
 }
 
