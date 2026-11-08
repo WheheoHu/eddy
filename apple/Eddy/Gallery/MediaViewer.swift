@@ -27,6 +27,11 @@ struct MediaViewer: View {
     @State private var resolving = false
     @State private var seek = SeekRequest()
     @State private var scroll = ViewerScroll()
+    /// How far the items are dragged up (negative) or down.
+    @State private var dragOffset: CGFloat = 0
+    @State private var stageHeight: CGFloat = 600
+    /// An item is sliding into place; drags and steps wait.
+    @State private var sliding = false
     @FocusState private var focused: Bool
 
     /// Seconds a Left or Right press moves a video.
@@ -42,7 +47,18 @@ struct MediaViewer: View {
     var body: some View {
         ZStack {
             Color.black.opacity(0.96).ignoresSafeArea()
-            stage
+            ZStack {
+                // The items before and after wait just out of view and come
+                // in with the drag.
+                if dragOffset != 0 {
+                    if index > 0 { NeighborPreview(entry: entries[index - 1], media: media).offset(y: dragOffset - stageHeight) }
+                    if index < entries.count - 1 { NeighborPreview(entry: entries[index + 1], media: media).offset(y: dragOffset + stageHeight) }
+                }
+                stage.offset(y: dragOffset)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { stageHeight = max($0, 1) }
         }
         .overlay(alignment: .top) { topBar }
         .overlay(alignment: .bottom) { if items.count > 1 { strip } }
@@ -200,9 +216,50 @@ struct MediaViewer: View {
     }
 
     private func step(_ by: Int) -> KeyPress.Result {
-        let target = index + by
-        if entries.indices.contains(target) { index = target }
+        slide(by)
         return .handled
+    }
+
+    /// The items follow the fingers; past the ends they give a little.
+    private func drag(_ travelled: CGFloat) {
+        guard !sliding else { return }
+        let toward = travelled < 0 ? 1 : -1
+        dragOffset = entries.indices.contains(index + toward) ? travelled : travelled * 0.25
+    }
+
+    /// Lets go: on to the neighbor when dragged far or flicked, else back.
+    private func release(_ travelled: CGFloat, speed: CGFloat) {
+        guard !sliding else { return }
+        let far = abs(travelled) > stageHeight * 0.18
+        let flicked = abs(speed) > 12 && abs(travelled) > 30
+        if far || flicked {
+            slide(travelled < 0 ? 1 : -1)
+        } else {
+            withAnimation(.spring(duration: 0.3)) { dragOffset = 0 }
+        }
+    }
+
+    /// Slides the next (`by` 1) or previous item into place, from wherever
+    /// a drag left things; at the ends the items spring back.
+    private func slide(_ by: Int) {
+        guard !sliding else { return }
+        let target = index + by
+        guard entries.indices.contains(target) else {
+            withAnimation(.spring(duration: 0.3)) { dragOffset = 0 }
+            return
+        }
+        sliding = true
+        withAnimation(.easeOut(duration: 0.22)) {
+            dragOffset = by > 0 ? -stageHeight : stageHeight
+        } completion: {
+            var still = Transaction()
+            still.disablesAnimations = true
+            withTransaction(still) {
+                index = target
+                dragOffset = 0
+            }
+            sliding = false
+        }
     }
 
     private func turn(_ by: Int) {
@@ -224,7 +281,9 @@ struct MediaViewer: View {
     }
 
     private func configureScroll() {
-        scroll.onVertical = { _ = step($0) }
+        scroll.onVertical = { slide($0) }
+        scroll.onDrag = { drag($0) }
+        scroll.onRelease = { release($0, speed: $1) }
         scroll.onSideways = { turn($0) }
         scroll.onScrub = scrubs ? { seek = seek.by($0) } : nil
     }
@@ -250,13 +309,19 @@ struct SeekRequest: Equatable {
     }
 }
 
-/// Scrolling over the viewer, turned into steps. One gesture makes one
-/// step however far it goes, and its momentum is swallowed, so a flick
-/// doesn't run through several items. A mouse wheel steps a notch at a
-/// time. Sideways scrolling over a video scrubs it instead.
+/// Scrolling over the viewer. Up and down on a trackpad drags the items
+/// (`onDrag` with the distance so far, in the direction content moves) and
+/// `onRelease` decides where they land, like flicking through short
+/// videos; the gesture's momentum is swallowed, so one flick is one item.
+/// A mouse wheel steps a notch at a time. Sideways scrolling steps through
+/// pictures, or scrubs a video.
 @MainActor
 final class ViewerScroll {
     weak var window: NSWindow?
+    var onDrag: (CGFloat) -> Void = { _ in }
+    /// Distance travelled and the speed at the end (points per event).
+    var onRelease: (CGFloat, CGFloat) -> Void = { _, _ in }
+    /// A mouse wheel notch.
     var onVertical: (Int) -> Void = { _ in }
     var onSideways: (Int) -> Void = { _ in }
     /// Seconds to seek by; set when sideways scrolling scrubs.
@@ -266,6 +331,7 @@ final class ViewerScroll {
     private var travelled = CGSize.zero
     private var axis: Axis?
     private var stepped = false
+    private var recent: [CGFloat] = []
     private var lastWheelStep = Date.distantPast
 
     /// Points a trackpad gesture travels before it steps.
@@ -299,18 +365,22 @@ final class ViewerScroll {
             travelled = .zero
             axis = nil
             stepped = false
+            recent = []
         }
         travelled.width += event.scrollingDeltaX
         travelled.height += event.scrollingDeltaY
         if axis == nil, max(abs(travelled.width), abs(travelled.height)) > 4 {
             axis = abs(travelled.width) > abs(travelled.height) ? .horizontal : .vertical
         }
+        let ended = event.phase.contains(.ended) || event.phase.contains(.cancelled)
         switch axis {
         case .vertical:
-            if !stepped, abs(travelled.height) > Self.threshold {
-                stepped = true
-                // Content moving up (a negative delta) brings the next one.
-                onVertical(travelled.height < 0 ? 1 : -1)
+            if event.scrollingDeltaY != 0 { recent = Array((recent + [event.scrollingDeltaY]).suffix(3)) }
+            onDrag(travelled.height)
+            if ended {
+                let speed = recent.isEmpty ? 0 : recent.reduce(0, +) / CGFloat(recent.count)
+                onRelease(travelled.height, speed)
+                axis = nil
             }
         case .horizontal:
             if let onScrub {
@@ -360,6 +430,34 @@ private struct WindowReader: NSViewRepresentable {
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             found(window)
+        }
+    }
+}
+
+/// The item above or below, as its picture, while the items are dragged.
+private struct NeighborPreview: View {
+    @Environment(AppModel.self) private var model
+    let entry: GalleryEntryView
+    let media: GalleryMedia
+    @State private var image: NSImage?
+
+    private var src: String? {
+        let set = media.set(for: entry)
+        return set?.items.first?.preview ?? set?.thumbnail ?? entry.thumbnail
+    }
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image).resizable().scaledToFit()
+            } else {
+                Color.clear
+            }
+        }
+        .padding(.vertical, 44)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task(id: src) {
+            if let src { image = await model.image(src) }
         }
     }
 }

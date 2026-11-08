@@ -585,9 +585,10 @@ final class AppModel {
         (try? engine?.galleryItems(scope: scope, unreadOnly: unreadOnly, limit: UInt32(limit), offset: UInt32(offset))) ?? []
     }
 
-    func galleryCount(_ scope: GalleryScopeView) -> Int {
+    /// Unread items in a part of the Gallery.
+    func galleryUnread(_ scope: GalleryScopeView) -> Int {
         _ = revision
-        return Int((try? engine?.galleryCount(scope: scope, unreadOnly: false)) ?? 0)
+        return Int((try? engine?.galleryCount(scope: scope, unreadOnly: true)) ?? 0)
     }
 
     func resolveMedia(_ itemID: String, force: Bool = false) async -> MediaSetView? {

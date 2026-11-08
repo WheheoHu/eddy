@@ -451,10 +451,11 @@ private struct GallerySidebar: View {
         List(selection: Binding<String?>(get: { scopeKey }, set: { if let key = $0 { scopeKey = key } })) {
             Section("Gallery") {
                 Label("All Media", systemImage: "photo.on.rectangle.angled")
-                    .badge(model.galleryCount(.all))
                     .tag(GalleryScopeView.all.key)
                 if model.collection.contains(where: { $0.kind == .media }) {
-                    Label("Saved Media", systemImage: "play.rectangle").tag(GalleryScopeView.saved.key)
+                    Label("Saved Media", systemImage: "play.rectangle")
+                        .badge(model.galleryUnread(.saved))
+                        .tag(GalleryScopeView.saved.key)
                 }
             }
             if !model.galleryFolders.isEmpty {
@@ -473,6 +474,7 @@ private struct GallerySidebar: View {
                 Section("Subscriptions") {
                     ForEach(feeds) { feed in
                         Label(feed.title, systemImage: "dot.radiowaves.up.forward")
+                            .badge(model.galleryUnread(.source(id: feed.id)))
                             .tag(GalleryScopeView.source(id: feed.id).key)
                             .contextMenu {
                                 if feed.gallery {
