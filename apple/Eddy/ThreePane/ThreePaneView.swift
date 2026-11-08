@@ -64,7 +64,7 @@ struct ThreePaneView: View {
             detail
         }
         .searchable(text: $query, placement: .toolbar, prompt: "Search")
-        .toolbar { ModeToolbar(mode: $mode, model: model) }
+        .toolbar { AddToolbar(model: model) }
         .toolbar(removing: .title)
         .onAppear(perform: showCurrentEntry)
         .onChange(of: model.revealed) { _, revealed in

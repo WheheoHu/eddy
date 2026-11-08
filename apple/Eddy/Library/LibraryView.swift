@@ -190,7 +190,7 @@ struct LibraryView: View {
         .searchable(text: $query, placement: .toolbar, prompt: "Filter")
         .toolbar {
             ColumnToggle(visible: $showSidebar)
-            ModeToolbar(mode: $mode, model: model)
+            AddToolbar(model: model)
             ToolbarItem {
                 Picker("Layout", selection: layoutBinding) {
                     Label("Covers", systemImage: "square.grid.2x2").tag(ShelfLayout.covers)

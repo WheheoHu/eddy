@@ -47,7 +47,7 @@ struct LibraryReader: View {
                 Button(action: close) { Label("Home", systemImage: "house") }
                     .help("Back to the library")
             }
-            ModeToolbar(mode: $mode, model: model)
+            AddToolbar(model: model)
         }
         .navigationTitle(book.title)
         .onAppear {

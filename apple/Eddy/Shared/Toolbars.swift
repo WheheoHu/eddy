@@ -39,21 +39,13 @@ struct ColumnToggle: ToolbarContent {
     }
 }
 
-/// The mode switch and the Add menu. Each screen places them after its own
-/// leading controls (the column toggle, Home while reading in the library),
-/// so the toolbar reads the same way everywhere.
-struct ModeToolbar: ToolbarContent {
-    @Binding var mode: AppMode
+/// The Add menu. Each screen places it after its own leading controls (the
+/// column toggle, Home while reading in the library), so the toolbar reads
+/// the same way everywhere.
+struct AddToolbar: ToolbarContent {
     let model: AppModel
 
     var body: some ToolbarContent {
-        ToolbarItem(placement: .navigation) {
-            Picker("Mode", selection: $mode) {
-                ForEach(AppMode.allCases) { Label($0.rawValue, systemImage: $0.icon).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .help("Three-Pane (⌘1), Library (⌘2) or Gallery (⌘3)")
-        }
         ToolbarItem(placement: .navigation) {
             Menu {
                 Button("Save Page…") { model.savingURL = true }
