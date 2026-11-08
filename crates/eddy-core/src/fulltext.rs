@@ -119,7 +119,14 @@ impl Inner {
         Ok(())
     }
 
-    pub(crate) async fn fetch_full_text(&self, item_id: &str) -> Result<LoadedDocument> {
+    /// `background` fetches only replace feed content the page clearly
+    /// extends: a short page there is a sign-in prompt or a cookie notice
+    /// more often than the article.
+    pub(crate) async fn fetch_full_text(
+        &self,
+        item_id: &str,
+        background: bool,
+    ) -> Result<LoadedDocument> {
         let row = self.store.item(item_id)?.ok_or(EngineError::NotFound)?;
         let url = row
             .item
@@ -136,7 +143,17 @@ impl Inner {
             })
             .await
             .map_err(|e| EngineError::Network(e.to_string()))?;
-        reject_bot_wall(&page.html)?;
+        reject_wall(&page.html)?;
+        if background && feed_len > 0 {
+            let page_len = extract(&page.html, &page.final_url, rule.as_ref())
+                .map(|e| e.text_len)
+                .unwrap_or(0);
+            if !is_truncated(feed_len, page_len) {
+                return Err(EngineError::Invalid(
+                    "原网页没有比订阅更多的正文，已保留订阅内容。".into(),
+                ));
+            }
+        }
         let pin = row.item.kind != ItemKind::Feed;
         let (ingested, _) = self.ingest_page(
             item_id,
@@ -165,6 +182,57 @@ impl Inner {
             version: ingested.version,
             document: ingested.document,
         })
+    }
+
+    /// Puts feed content back where background fetching replaced it with a
+    /// wall or a page no longer than the feed. Runs once per data directory.
+    pub(crate) fn restore_feed_versions(&self) -> Result<u32> {
+        const DONE: &str = "restored_feed_versions";
+        if self.store.meta_get(DONE)?.is_some() {
+            return Ok(0);
+        }
+        let mut restored = 0;
+        for item_id in self.store.feed_items_on_extracted_versions()? {
+            let Some(row) = self.store.item(&item_id)? else {
+                continue;
+            };
+            let versions = self.store.content_versions(&item_id)?;
+            let (Some(feed), Some(current)) = (
+                versions.iter().find(|v| v.origin == ContentOrigin::Feed),
+                versions
+                    .iter()
+                    .find(|v| Some(&v.hash) == row.item.current_version.as_ref()),
+            ) else {
+                continue;
+            };
+            let wall = self
+                .store
+                .get_blob(&current.raw_blob)?
+                .map(|raw| String::from_utf8_lossy(&raw).into_owned())
+                .is_some_and(|html| {
+                    eddy_fetch::is_bot_wall(&html) || eddy_fetch::is_login_wall(&html)
+                });
+            let feed_len = feed.text_len as usize;
+            let short_feed_not_extended =
+                feed_len < 300 && !is_truncated(feed_len, current.text_len as usize);
+            if !wall && !short_feed_not_extended {
+                continue;
+            }
+            let Some(document) = self.load_version(feed, Some(&row.item.title))? else {
+                continue;
+            };
+            let ingested = Ingested {
+                version: feed.clone(),
+                excerpt: document.excerpt(240),
+                lang: detect_lang(&document),
+                document,
+            };
+            self.switch_version(&item_id, &ingested)?;
+            self.after_ingest(&item_id, &ingested);
+            restored += 1;
+        }
+        self.store.meta_set(DONE, &now_ms().to_string())?;
+        Ok(restored)
     }
 
     fn feed_text_len(&self, row: &ItemRow) -> Result<usize> {
@@ -258,7 +326,7 @@ impl Inner {
             })
             .await
             .map_err(|e| EngineError::Network(e.to_string()))?;
-        reject_bot_wall(&page.html)?;
+        reject_wall(&page.html)?;
         self.create_saved(&page.final_url, &page.html, ContentOrigin::Extracted, None)
     }
 
@@ -303,7 +371,7 @@ impl Inner {
                             .is_some_and(|d| truncation_hint(&d.document))
                 }
             };
-            if wanted && row.item.url.is_some() {
+            if wanted && row.item.url.as_deref().is_some_and(|u| !is_media_url(u)) {
                 candidates.push(id);
             }
             if candidates.len() >= AUTO_FETCH_CAP {
@@ -321,7 +389,7 @@ impl Inner {
                 .for_each_concurrent(AUTO_FETCH_CONCURRENCY, |id| {
                     let inner = inner.clone();
                     async move {
-                        if let Err(e) = inner.fetch_full_text(&id).await {
+                        if let Err(e) = inner.fetch_full_text(&id, true).await {
                             inner
                                 .platform
                                 .log(LogLevel::Info, &format!("auto full text skipped: {e}"));
@@ -335,15 +403,32 @@ impl Inner {
     }
 }
 
-/// A bot-protection page instead of the article: point the user at the
-/// browser capture, which saves what their browser already shows.
-fn reject_bot_wall(html: &str) -> Result<()> {
+/// A bot-protection page or a sign-in prompt instead of the article: point
+/// the user at a session that can see it.
+fn reject_wall(html: &str) -> Result<()> {
     if eddy_fetch::is_bot_wall(html) {
         return Err(EngineError::Invalid(
             "这个网站要求浏览器验证，暂时无法自动抓取。可以在 Chrome 里打开它，用 Eddy 扩展保存这一页。".into(),
         ));
     }
+    if eddy_fetch::is_login_wall(html) {
+        return Err(EngineError::Invalid(
+            "这个页面要登录才能看到。在 Eddy 里打开原网页登录一次，之后就能抓取。".into(),
+        ));
+    }
     Ok(())
+}
+
+/// Links straight to an image or video file: the feed already shows it.
+fn is_media_url(url: &str) -> bool {
+    const EXTENSIONS: &[&str] = &[
+        "jpg", "jpeg", "png", "gif", "gifv", "webp", "avif", "heic", "mp4", "webm", "mov", "m4v",
+    ];
+    url::Url::parse(url).is_ok_and(|u| {
+        u.path()
+            .rsplit_once('.')
+            .is_some_and(|(_, ext)| EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+    })
 }
 
 #[derive(Deserialize)]
@@ -359,7 +444,7 @@ impl Engine {
     /// Fetches the original page and makes its extracted article the current
     /// content of the item.
     pub async fn fetch_full_text(&self, item_id: &str) -> Result<LoadedDocument> {
-        self.inner.fetch_full_text(item_id).await
+        self.inner.fetch_full_text(item_id, false).await
     }
 
     /// Saves a web page for later reading.

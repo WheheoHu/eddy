@@ -134,7 +134,7 @@ impl Fetcher {
             };
             match result {
                 Ok(page) => {
-                    let wall = is_bot_wall(&page.html);
+                    let wall = is_bot_wall(&page.html) || is_login_wall(&page.html);
                     if page.strategy != "webview"
                         && (wall || needs_js(&page.html))
                         && self.webview.is_some()
@@ -307,8 +307,19 @@ pub fn is_bot_wall(html: &str) -> bool {
         "captcha-delivery.com",
         "Please enable JS and disable any ad blocker",
         "DDoS protection by",
+        "<title>Reddit - Prove your humanity</title>",
     ];
     html.len() < 400_000 && MARKERS.iter().any(|m| html.contains(m))
+}
+
+/// Pages that hide the content from anonymous visitors behind a sign-in
+/// prompt (Reddit's mature-content gate). A WebView carrying the session
+/// the user signed in with from Eddy's in-app browser gets the real page.
+pub fn is_login_wall(html: &str) -> bool {
+    // Reddit names the gate after its experiment arm
+    // (`blocking_xpromo_nsfw_blocking`, `bypassable_xpromo_nsfw_bypassable`).
+    const MARKERS: &[&str] = &["_xpromo_nsfw_"];
+    MARKERS.iter().any(|m| html.contains(m))
 }
 
 /// Pages whose content only exists after JavaScript runs: client-side

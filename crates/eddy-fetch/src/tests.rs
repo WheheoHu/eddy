@@ -199,6 +199,36 @@ async fn client_rendered_pages_go_through_the_webview() {
     assert!(!needs_js(&long_page()));
 }
 
+#[tokio::test]
+async fn sign_in_prompts_go_through_the_webview_and_are_never_accepted() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/r/x/comments/1"))
+        .respond_with(ResponseTemplate::new(200).insert_header("content-type", "text/html").set_body_string(
+            "<html><body><p>Sign up for the most real communities. Continue with phone. Continue with email.</p>\
+             <ac-track san=\"xpromo|click|blocking_xpromo_nsfw_blocking\"></ac-track></body></html>",
+        ))
+        .mount(&server)
+        .await;
+    let url = format!("{}/r/x/comments/1", server.uri());
+    let with_view =
+        Fetcher::new(RulePack::default(), Some(std::sync::Arc::new(FakeWebView))).unwrap();
+    assert_eq!(
+        with_view.fetch(&url, |_| true).await.unwrap().strategy,
+        "webview"
+    );
+    let without = Fetcher::new(RulePack::default(), None).unwrap();
+    let page = without.fetch(&url, |_| true).await.unwrap();
+    assert!(is_login_wall(&page.html));
+    assert!(is_login_wall(
+        "<configured-xpromo-modal data-xpromo-view-san=\"xpromo|view|bypassable_xpromo_nsfw_bypassable\">"
+    ));
+    assert!(!is_login_wall(&long_page()));
+    assert!(is_bot_wall(
+        "<html><head><title>Reddit - Prove your humanity</title></head></html>"
+    ));
+}
+
 #[test]
 fn decodes_legacy_charsets() {
     let (bytes, _, _) = encoding_rs::GBK.encode("中文内容");

@@ -1,6 +1,7 @@
 import EddyKit
 import SwiftUI
 import UniformTypeIdentifiers
+import WebKit
 
 /// The settings tabs; the command palette opens one by name.
 enum SettingsTab: String, CaseIterable, Identifiable {
@@ -77,6 +78,7 @@ private struct AccountsSettings: View {
                     Text("Use the API password from FreshRSS settings. It is stored in your keychain.").foregroundStyle(.secondary)
                 }
             }
+            WebSignInSection()
             Section {
                 if model.status?.mode == .server {
                     Button("Disconnect from Server", role: .destructive) {
@@ -143,6 +145,103 @@ private struct AccountsSettings: View {
             }
         }
     }
+}
+
+// MARK: - Website sign-ins
+
+/// A site whose pages show more to a signed-in visitor.
+private struct SignInSite: Identifiable {
+    let name: String
+    let loginURL: URL
+    let domain: String
+    let sessionCookie: String
+    var id: String { name }
+
+    static let all = [
+        SignInSite(name: "Reddit", loginURL: URL(string: "https://www.reddit.com/login/")!, domain: "reddit.com", sessionCookie: "reddit_session"),
+    ]
+}
+
+/// Sign-ins live in WebKit's default website data store, which the in-app
+/// browser and the background page renderer share.
+private struct WebSignInSection: View {
+    @State private var signedIn: Set<String> = []
+    @State private var signingIn: SignInSite?
+
+    var body: some View {
+        Section {
+            ForEach(SignInSite.all) { site in
+                HStack {
+                    Text(site.name)
+                    Spacer()
+                    if signedIn.contains(site.id) {
+                        Text("Signed in").foregroundStyle(.secondary)
+                        Button("Sign Out", role: .destructive) { signOut(site) }
+                    } else {
+                        Button("Sign In…") { signingIn = site }
+                    }
+                }
+            }
+        } header: {
+            Text("Website Sign-ins")
+        } footer: {
+            Text("Eddy fetches pages that need an account with this session, for example Reddit posts marked 18+. The password goes to the site only; Eddy keeps just its cookies. For 18+ posts, turn on “Show mature content” in your Reddit preferences.")
+                .foregroundStyle(.secondary)
+        }
+        .task { await refresh() }
+        .sheet(item: $signingIn, onDismiss: { Task { await refresh() } }) { site in
+            SignInSheet(site: site)
+        }
+    }
+
+    private func refresh() async {
+        let cookies = await WKWebsiteDataStore.default().httpCookieStore.allCookies()
+        signedIn = Set(SignInSite.all.filter { site in
+            cookies.contains { $0.name == site.sessionCookie && $0.domain.hasSuffix(site.domain) }
+        }.map(\.id))
+    }
+
+    private func signOut(_ site: SignInSite) {
+        Task {
+            let store = WKWebsiteDataStore.default()
+            let records = await store.dataRecords(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes())
+            await store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), for: records.filter { $0.displayName.hasSuffix(site.domain) })
+            await refresh()
+        }
+    }
+}
+
+private struct SignInSheet: View {
+    let site: SignInSite
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            SignInWebView(url: site.loginURL)
+            Divider()
+            HStack {
+                Text("Sign in to \(site.name), then click Done.").foregroundStyle(.secondary)
+                Spacer()
+                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+            }
+            .padding(12)
+        }
+        .frame(width: 520, height: 680)
+    }
+}
+
+private struct SignInWebView: NSViewRepresentable {
+    let url: URL
+
+    func makeNSView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .default()
+        let view = WKWebView(frame: .zero, configuration: config)
+        view.load(URLRequest(url: url))
+        return view
+    }
+
+    func updateNSView(_ view: WKWebView, context: Context) {}
 }
 
 // MARK: - AI
