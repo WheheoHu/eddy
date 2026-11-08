@@ -263,6 +263,23 @@ impl EddyEngine {
             .collect())
     }
 
+    /// How many items `items` would list without its limit and offset.
+    pub fn item_count(&self, query: ItemQueryView) -> R<u32> {
+        Ok(self.engine.item_count(&query.into())?)
+    }
+
+    /// How many unread subscription articles in a list arrived by `until`
+    /// (ms): what `mark_all_read` with the same arguments marks.
+    pub fn unread_feed_count(&self, filter: ItemFilterView, until: i64) -> R<u32> {
+        Ok(self.engine.unread_feed_count(&filter.into(), until)?)
+    }
+
+    /// Marks read the unread subscription articles in a list that arrived
+    /// by `until` (ms); returns how many.
+    pub async fn mark_all_read(&self, filter: ItemFilterView, until: i64) -> R<u32> {
+        Ok(self.engine.mark_all_read(&filter.into(), until)?)
+    }
+
     pub fn item(&self, id: String) -> R<Option<ItemView>> {
         Ok(self.engine.item(&id)?.map(Into::into))
     }

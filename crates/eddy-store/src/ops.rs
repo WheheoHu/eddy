@@ -265,9 +265,11 @@ fn effect(tx: &Transaction, op: &Op) -> Result<()> {
                    updated_at=excluded.updated_at, device=excluded.device",
                 params![id, serde_json::to_string(&locator)?, locator.progression, op.hlc.wall_ms as i64, op.hlc.node],
             )?;
+            // Never started: no progress and never read.
+            let last_read = (!locator.is_not_started()).then_some(op.hlc.wall_ms as i64);
             tx.execute(
                 "UPDATE items SET progress=?, last_read_at=? WHERE id=?",
-                params![locator.progression, op.hlc.wall_ms as i64, id],
+                params![locator.progression, last_read, id],
             )?;
         }
         (Entity::Annotation, fields::CREATE) => {

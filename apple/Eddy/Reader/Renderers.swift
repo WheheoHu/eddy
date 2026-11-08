@@ -35,21 +35,79 @@ enum RendererRegistry {
 }
 
 /// The original page, for content the reflowed reader cannot express.
+/// A sideways swipe goes back to the reader, so WebKit's own back and
+/// forward swipes are off.
 struct WebPageView: NSViewRepresentable {
     let url: URL
+    var gestures = EdgeGestures()
+    var onEscape: (() -> Void)?
+    /// Keyboard focus belongs in the page.
+    var focused = false
+    var onFocus: (() -> Void)?
+    /// Pages that style themselves for dark mode follow it; nil inherits
+    /// the app's appearance.
+    var appearance: NSAppearance?
 
-    func makeNSView(context: Context) -> WKWebView {
+    func makeNSView(context: Context) -> GestureContainer {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
-        let view = WKWebView(frame: .zero, configuration: config)
-        view.allowsBackForwardNavigationGestures = true
+        let view = ReaderWebView(frame: .zero, configuration: config)
+        view.allowsBackForwardNavigationGestures = false
+        let container = GestureContainer(content: view)
+        view.tracker = container.tracker
         view.load(URLRequest(url: url))
-        return view
+        return container
     }
 
-    func updateNSView(_ view: WKWebView, context: Context) {
+    func updateNSView(_ container: GestureContainer, context: Context) {
+        container.tracker.gestures = gestures
+        guard let view = container.content as? ReaderWebView else { return }
+        view.onEscape = onEscape
+        view.onFocus = onFocus
+        view.wantsFocus = focused
+        if view.appearance?.name != appearance?.name { view.appearance = appearance }
         if view.url?.absoluteString != url.absoluteString, !view.isLoading {
             view.load(URLRequest(url: url))
+        }
+    }
+
+    static func dismantleNSView(_ container: GestureContainer, coordinator: ()) {
+        container.tracker.cancel()
+    }
+}
+
+final class ReaderWebView: WKWebView {
+    weak var tracker: EdgeGestureTracker?
+    var onEscape: (() -> Void)?
+    var onFocus: (() -> Void)?
+    var wantsFocus = false {
+        didSet { if wantsFocus, !oldValue { claimFocus(self) } }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if wantsFocus { claimFocus(self) }
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let became = super.becomeFirstResponder()
+        if became { onFocus?() }
+        return became
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        if tracker?.handle(event, in: nil) == true { return }
+        super.scrollWheel(with: event)
+    }
+
+    /// Esc cancels a swipe, else leaves the page for the column before it.
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53, tracker?.active == true {
+            tracker?.cancel()
+        } else if event.keyCode == 53, let onEscape {
+            onEscape()
+        } else {
+            super.keyDown(with: event)
         }
     }
 }

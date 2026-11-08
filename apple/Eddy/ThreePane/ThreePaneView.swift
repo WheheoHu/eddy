@@ -19,6 +19,16 @@ struct ThreePaneView: View {
     @State private var results: [ItemView]?
     @State private var scrollTarget: ScrollTarget?
     @State private var pageTarget: PageTarget?
+    /// Back and forward through the articles of the middle column.
+    @State private var history = ReadingHistory()
+    /// Where the reader slides in from when moving to a neighbor.
+    @State private var arrival: Edge = .bottom
+    /// A previous chapter, opened at its end.
+    @State private var landAtEnd: String?
+    @FocusState private var focus: PaneFocus?
+    /// Keyboard focus is in the reader, which keeps it from one item to the
+    /// next; a list taking focus clears it.
+    @State private var readerFocused = false
 
     enum Smart: String, CaseIterable {
         case all = "All Articles", unread = "Unread", starred = "Starred", continueReading = "Continue Reading"
@@ -66,7 +76,28 @@ struct ThreePaneView: View {
         .onChange(of: model.revision) {
             if let entryID, model.entry(entryID) == nil { self.entryID = nil }
         }
-        .onChange(of: model.currentItemID) { pageTarget = nil }
+        .onChange(of: model.currentItemID) { _, new in
+            pageTarget = nil
+            history.opened(new)
+            if new != landAtEnd { landAtEnd = nil }
+        }
+        .onChange(of: selection) { history.reset(model.currentItemID) }
+        .onChange(of: query) { history.reset(model.currentItemID) }
+        .onChange(of: focus) { _, new in if new != nil { readerFocused = false } }
+        .onChange(of: articleList, initial: true) { _, list in model.currentList = list }
+        .onDisappear { model.currentList = nil }
+        .onChange(of: model.navigation) { _, request in
+            guard case let .threePane(destination) = request?.value else { return }
+            model.navigation = nil
+            query = ""
+            choose(destination)
+            focus = .list
+        }
+        .onChange(of: model.revealedItem) { _, request in
+            guard let id = request?.value else { return }
+            model.revealedItem = nil
+            reveal(id)
+        }
         .task(id: query) {
             guard !query.isEmpty else { results = nil; return }
             try? await Task.sleep(for: .milliseconds(250))
@@ -81,7 +112,7 @@ struct ThreePaneView: View {
             Section("Library") {
                 ForEach(Smart.allCases, id: \.self) { smart in
                     Label(smart.rawValue, systemImage: smart.icon)
-                        .badge(smart == .unread ? model.unreadTotal : 0)
+                        .badge(badge(smart))
                         .tag(Selection.smart(smart))
                 }
                 Label("Saved", systemImage: "bookmark").badge(model.collection.count).tag(Selection.saved)
@@ -119,7 +150,35 @@ struct ThreePaneView: View {
             }
         }
         .listStyle(.sidebar)
+        .pane($focus, .sidebar, onReturn: { focus = .list })
+        .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in folderKey(press.key) }
         .safeAreaInset(edge: .bottom) { StatusFooter() }
+    }
+
+    /// Left folds the selected folder, or goes up to it from a subscription
+    /// inside it; Right unfolds it.
+    private func folderKey(_ key: KeyEquivalent) -> KeyPress.Result {
+        switch selection {
+        case let .folder(name):
+            let open = !collapsedFolders.contains(name)
+            guard key == .leftArrow ? open : !open else { return .ignored }
+            withAnimation(.easeInOut(duration: 0.15)) { expanded(name).wrappedValue = !open }
+            return .handled
+        case let .feed(id):
+            guard key == .leftArrow, let folder = model.feeds.first(where: { $0.id == id })?.category else { return .ignored }
+            choose(.folder(folder))
+            return .handled
+        default:
+            return .ignored
+        }
+    }
+
+    private func badge(_ smart: Smart) -> Int {
+        switch smart {
+        case .unread: model.unreadTotal
+        case .continueReading: model.continueReadingCount
+        default: 0
+        }
     }
 
     private func feedRows(_ feeds: [SourceView]) -> some View {
@@ -155,6 +214,21 @@ struct ThreePaneView: View {
         if let entry = model.entry(containing: model.currentItemID) { show(entryID: entry.id) }
     }
 
+    /// Opens an item from anywhere: a collection item in its entry, an
+    /// article in its subscription.
+    private func reveal(_ id: String) {
+        guard let item = model.item(id) else { return }
+        query = ""
+        if let entry = model.entry(containing: item) {
+            show(entryID: entry.id)
+        } else if let sourceID = item.sourceId {
+            selection = .feed(sourceID)
+            entryID = nil
+        }
+        open(id)
+        readerFocused = true
+    }
+
     private func show(entryID id: String) {
         guard let entry = model.entry(id) else { return }
         selection = .kind(entry.kind)
@@ -166,7 +240,10 @@ struct ThreePaneView: View {
     @ViewBuilder
     private var middle: some View {
         if results == nil, let kinds = selection?.kinds {
-            CollectionList(kinds: kinds, sort: collectionSort, selection: Binding(get: { entryID }, set: openEntry))
+            CollectionList(
+                kinds: kinds, sort: collectionSort, selection: Binding(get: { entryID }, set: openEntry),
+                focus: $focus, onReturn: read, onEscape: { focus = .sidebar }
+            )
                 .toolbar {
                     ToolbarItem {
                         Menu {
@@ -191,19 +268,26 @@ struct ThreePaneView: View {
         let rows = results ?? rowsForSelection
         return List(rows, selection: $model.currentItemID) { item in
             ArticleRow(item: item).tag(item.id)
-                .contextMenu {
-                    Button(item.starred ? "Unstar" : "Star") { model.setStarred(item, !item.starred) }
-                    Button(item.read ? "Mark as Unread" : "Mark as Read") { model.setRead(item, !item.read) }
-                    if let url = item.url.flatMap(URL.init(string:)) {
-                        Button("Open in Browser") { NSWorkspace.shared.open(url) }
-                        Button("Copy Link") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(url.absoluteString, forType: .string)
-                        }
+        }
+        .contextMenu(forSelectionType: String.self) { ids in
+            if let id = ids.first, let item = rows.first(where: { $0.id == id }) {
+                Button(item.starred ? "Unstar" : "Star") { model.setStarred(item, !item.starred) }
+                if item.hasBeenRead {
+                    Button("Mark as Unread") { model.markUnread([item.id]) }
+                } else {
+                    Button("Mark as Read") { model.setRead(item, true) }
+                }
+                if let url = item.url.flatMap(URL.init(string:)) {
+                    Button("Open in Browser") { NSWorkspace.shared.open(url) }
+                    Button("Copy Link") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(url.absoluteString, forType: .string)
                     }
                 }
-        }
+            }
+        } primaryAction: { _ in read() }
         .listStyle(.inset)
+        .pane($focus, .list, onReturn: read, onEscape: { focus = .sidebar })
         .overlay {
             if rows.isEmpty {
                 ContentUnavailableView(results != nil ? "No Results" : "Nothing Here", systemImage: results != nil ? "magnifyingglass" : "tray")
@@ -212,6 +296,14 @@ struct ThreePaneView: View {
         .toolbar {
             ToolbarItem {
                 Toggle(isOn: $unreadOnly) { Label("Unread Only", systemImage: "line.3.horizontal.decrease.circle") }.help("Show unread only")
+            }
+            if let articleList {
+                ToolbarItem {
+                    Button { model.requestMarkAllRead(articleList) } label: {
+                        Label("Mark All as Read", systemImage: "checkmark.circle")
+                    }
+                    .help("Mark every unread article here as read")
+                }
             }
             refreshItem
         }
@@ -223,6 +315,29 @@ struct ThreePaneView: View {
             Button { Task { await model.refresh() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                 .help("Refresh (⌘R)")
                 .disabled(model.busy)
+        }
+    }
+
+    /// The middle column as a list of subscription articles, for "Mark All
+    /// as Read"; nil for the collection and for search results.
+    private var articleList: ArticleList? {
+        guard results == nil, let selection else { return nil }
+        switch selection {
+        case let .smart(smart):
+            let filter: ItemFilterView = switch smart {
+            case .all, .unread: .all
+            case .starred: .starred
+            case .continueReading: .continueReading
+            }
+            return ArticleList(filter: filter, title: String(localized: String.LocalizationValue(smart.rawValue)))
+        case let .folder(name):
+            return ArticleList(filter: .category(name: name), title: name)
+        case let .feed(id):
+            return ArticleList(filter: .source(id: id), title: model.feeds.first { $0.id == id }?.title ?? "")
+        case let .tag(id):
+            return ArticleList(filter: .tag(id: id), title: model.tags.first { $0.id == id }?.name ?? "")
+        case .saved, .kind:
+            return nil
         }
     }
 
@@ -254,6 +369,19 @@ struct ThreePaneView: View {
         model.currentItemID = itemID
     }
 
+    /// Return in a list: keyboard focus goes to the text.
+    private func read() {
+        guard model.currentItemID != nil else { return }
+        readerFocused = true
+    }
+
+    /// Esc in the reader: back to the contents panel when it is open, else
+    /// to the middle column.
+    private func leaveReader(contentsShown: Bool) {
+        readerFocused = false
+        focus = contentsShown ? .contents : .list
+    }
+
     /// j/k move through the list, s stars, m toggles read.
     private func keyboard(_ rows: [ItemView]) -> some View {
         Group {
@@ -262,6 +390,7 @@ struct ThreePaneView: View {
             Button("Star") { if let item = current(rows) { model.setStarred(item, !item.starred) } }.keyboardShortcut("s", modifiers: [])
             Button("Read") { if let item = current(rows) { model.setRead(item, !item.read) } }.keyboardShortcut("m", modifiers: [])
         }
+        .disabled(model.paletteVisible)
         .opacity(0)
         .frame(width: 0, height: 0)
         .accessibilityHidden(true)
@@ -285,14 +414,24 @@ struct ThreePaneView: View {
             let entry = model.entry(containing: item)
             HStack(spacing: 0) {
                 if let entry, showContents {
-                    EntryContents(entry: entry, currentItemID: id, open: open, jump: jump)
+                    EntryContents(
+                        entry: entry, currentItemID: id, open: open, jump: jump,
+                        focus: $focus, onReturn: read, onEscape: { focus = .list }
+                    )
                         .frame(width: 260)
                         .background(.background.secondary)
                     Divider()
                 }
                 VStack(spacing: 0) {
-                    ReaderPane(itemID: id, scrollTarget: $scrollTarget, pageTarget: pageTarget, openItem: open, showContents: entry == nil ? nil : $showContents)
-                        .id(id)
+                    ReaderPane(
+                        itemID: id, scrollTarget: $scrollTarget, pageTarget: pageTarget, openItem: open,
+                        showContents: entry == nil ? nil : $showContents,
+                        neighbors: neighbors(of: item, in: entry), startAtEnd: landAtEnd == id,
+                        onEscape: { leaveReader(contentsShown: entry != nil && showContents) },
+                        focused: readerFocused, onFocus: { readerFocused = true }
+                    )
+                    .id(id)
+                    .transition(.push(from: arrival))
                     if let seriesID = item.seriesId, let info = model.series.first(where: { $0.id == seriesID }) {
                         Divider()
                         SequenceBar(title: info.title, items: model.chapters(seriesID), current: id) { open($0) }
@@ -310,6 +449,26 @@ struct ThreePaneView: View {
         case let .page(page): pageTarget = PageTarget(page: page)
         }
     }
+
+    /// A chapter's book, or the articles of the middle column; nothing to
+    /// move to from a page or PDF saved on its own.
+    private func neighbors(of item: ItemView, in entry: CollectionEntryView?) -> Neighbors? {
+        if let seriesID = item.seriesId {
+            return .chapters({ model.chapters(seriesID) }, current: item.id, open: travel)
+        }
+        guard entry == nil else { return nil }
+        return .articles({ results ?? rowsForSelection }, current: item.id, history: history, item: { model.item($0) }, open: travel)
+    }
+
+    /// Opens a neighbor, sliding it in from the side it lies on. The edge
+    /// is set first so the outgoing reader leaves the same way.
+    private func travel(to id: String, _ direction: Direction, _ axis: Axis, _ atEnd: Bool) {
+        arrival = .arriving(direction, along: axis)
+        landAtEnd = atEnd ? id : nil
+        DispatchQueue.main.async {
+            withAnimation(.easeInOut(duration: 0.2)) { open(id) }
+        }
+    }
 }
 
 /// Middle column for Saved and the collection kinds; Saved groups its
@@ -319,6 +478,10 @@ struct CollectionList: View {
     let kinds: [CollectionKindView]
     let sort: CollectionSort
     @Binding var selection: String?
+    var focus: FocusState<PaneFocus?>.Binding?
+    /// Return: read the entry selected.
+    var onReturn: (() -> Void)?
+    var onEscape: (() -> Void)?
     /// The order taken when the list appears or its filter or sort changes.
     /// Reading an entry changes its last-read time and progress; re-sorting
     /// on that would move rows away from under the pointer.
@@ -341,12 +504,16 @@ struct CollectionList: View {
         .listStyle(.inset)
         .contextMenu(forSelectionType: String.self) { ids in
             if let id = ids.first, let entry = model.entry(id) {
+                if entry.hasBeenRead {
+                    Button("Mark as Unread") { model.markUnread(entry: entry) }
+                }
                 if entry.kind == .webPage {
                     Button("Convert to Web Series…") { Task { await model.convertToSeries(entry) } }
                 }
                 Button("Delete…", role: .destructive) { model.requestDelete(entry) }
             }
-        }
+        } primaryAction: { _ in onReturn?() }
+        .pane(focus, .list, onReturn: onReturn, onEscape: onEscape)
         .onDeleteCommand(perform: deleteSelected)
         .onKeyPress(keys: [.delete], phases: .down) { press in
             guard press.modifiers.contains(.command) else { return .ignored }

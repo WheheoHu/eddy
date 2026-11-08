@@ -7,7 +7,11 @@ import SwiftUI
 struct ScrollTarget: Equatable {
     var blockID: String
     var offset: Int = 0
+    /// The end of the text instead of a block.
+    var toEnd = false
     var token = UUID()
+
+    static var end: ScrollTarget { ScrollTarget(blockID: "", toEnd: true) }
 }
 
 /// The reflowed article in a TextKit 2 text view: native layout, selection
@@ -19,13 +23,26 @@ struct ArticleTextView: NSViewRepresentable {
     let style: ReaderStyle
     let scrollTarget: ScrollTarget?
     let loadImage: (String) async -> NSImage?
-    let onPosition: (_ blockID: String, _ offset: Int, _ fraction: Double) -> Void
+    /// The block at the top of the view, and whether the end of the text is
+    /// on screen.
+    let onPosition: (_ blockID: String, _ offset: Int, _ atEnd: Bool) -> Void
     /// Links inside an imported book (`epub://`); others open in the browser.
     var onBookLink: (URL) -> Void = { _ in }
+    /// Pulls past the top and bottom of the text, and sideways swipes.
+    var gestures = EdgeGestures()
+    /// Cmd+Left and Cmd+Right.
+    var onStep: ((Direction) -> Void)?
+    var onEscape: (() -> Void)?
+    /// Keyboard focus belongs in the text; it takes it when this turns on,
+    /// or when it appears with it on.
+    var focused = false
+    var onFocus: (() -> Void)?
+    /// The content's own appearance; nil inherits the app's.
+    var appearance: NSAppearance?
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeNSView(context: Context) -> NSScrollView {
+    func makeNSView(context: Context) -> GestureContainer {
         let textView = ReaderTextView(usingTextLayoutManager: true)
         textView.isEditable = false
         textView.isSelectable = true
@@ -44,23 +61,36 @@ struct ArticleTextView: NSViewRepresentable {
         textView.textLayoutManager?.delegate = context.coordinator
         textView.delegate = context.coordinator
 
-        let scroll = NSScrollView()
+        let scroll = ReaderScrollView()
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.drawsBackground = true
         scroll.backgroundColor = .textBackgroundColor
         scroll.documentView = textView
         scroll.contentView.postsBoundsChangedNotifications = true
+        let container = GestureContainer(content: scroll)
+        scroll.tracker = container.tracker
+        textView.tracker = container.tracker
         context.coordinator.attach(scroll: scroll, textView: textView)
-        return scroll
+        return container
     }
 
-    func updateNSView(_ scroll: NSScrollView, context: Context) {
+    func updateNSView(_ container: GestureContainer, context: Context) {
         let c = context.coordinator
         c.onPosition = onPosition
         c.loadImage = loadImage
         c.onBookLink = onBookLink
-        guard let textView = scroll.documentView as? ReaderTextView else { return }
+        container.tracker.gestures = gestures
+        if container.appearance?.name != appearance?.name { container.appearance = appearance }
+        guard let scroll = c.scroll, let textView = scroll.documentView as? ReaderTextView else { return }
+        // With somewhere to go, the article itself follows a pull past the
+        // ends instead of the system's bounce.
+        scroll.verticalScrollElasticity = gestures.pullTarget != nil ? .none : .automatic
+        textView.onStep = onStep
+        textView.onEscape = onEscape
+        textView.onFocus = onFocus
+        textView.wantsFocus = focused
+        textView.lineStep = style.fontSize * style.lineHeight
         if textView.maxWidth != style.maxWidth {
             textView.maxWidth = style.maxWidth
             textView.updateInsets()
@@ -74,6 +104,10 @@ struct ArticleTextView: NSViewRepresentable {
             c.lastTarget = target
             c.scroll(to: target, animated: animated)
         }
+    }
+
+    static func dismantleNSView(_ container: GestureContainer, coordinator: Coordinator) {
+        container.tracker.cancel()
     }
 
     /// Versions share their prefix (document hash) when only the reading
@@ -90,16 +124,18 @@ struct ArticleTextView: NSViewRepresentable {
         var version: String?
         var lastTarget: ScrollTarget?
         var hasShown = false
-        var onPosition: ((String, Int, Double) -> Void)?
+        var onPosition: ((String, Int, Bool) -> Void)?
         var loadImage: ((String) async -> NSImage?)?
         var onBookLink: ((URL) -> Void)?
-        private var lastReported: (String, Int)?
+        private var lastReported: (String, Int, Bool)?
         private var reportTask: Task<Void, Never>?
         private var imageTask: Task<Void, Never>?
-        /// Position set by the app (resume, outline jump) that images loading
-        /// above must not disturb, until the user scrolls on their own.
-        private var anchor: (String, Int)?
+        /// Position set by the app (resume, outline jump, the end of a
+        /// previous chapter) that images loading above must not disturb,
+        /// until the user scrolls on their own.
+        private var anchor: ScrollTarget?
         private var scrollingProgrammatically = false
+        private var settlingEnd = false
 
         func attach(scroll: NSScrollView, textView: ReaderTextView) {
             self.scroll = scroll
@@ -109,19 +145,64 @@ struct ArticleTextView: NSViewRepresentable {
 
         func show(_ article: BuiltArticle, version: String, keepPosition: Bool) {
             guard let textView else { return }
-            let anchor = keepPosition ? currentPosition() : nil
+            let held = keepPosition ? holdPosition() : nil
             self.article = article
             self.version = version
             imageTask?.cancel()
             textView.textStorage?.setAttributedString(article.text)
             textView.updateInsets()
             hasShown = true
-            if let anchor {
-                DispatchQueue.main.async { self.scroll(to: ScrollTarget(blockID: anchor.0, offset: anchor.1), animated: false) }
+            if let held {
+                restore(held)
             } else if lastTarget == nil {
                 scroll?.contentView.scroll(to: .zero)
             }
             loadImages(article.images)
+            report(onlyAtEnd: true)
+        }
+
+        /// The line at the top of the view, and how far into it the view
+        /// starts, to put back after the text is rebuilt (a translation batch
+        /// arriving, a change of reading mode or style).
+        private struct HeldPosition {
+            let spot: BuiltArticle.Spot
+            let offset: Int
+            let delta: CGFloat
+        }
+
+        private func holdPosition() -> HeldPosition? {
+            guard let scroll, let textView, let tlm = textView.textLayoutManager, let article else { return nil }
+            let top = scroll.contentView.bounds.minY
+            let y = max(0, top - textView.textContainerOrigin.y)
+            guard let fragment = tlm.textLayoutFragment(for: CGPoint(x: 0, y: y)) else { return nil }
+            let fragmentStart = tlm.offset(from: tlm.documentRange.location, to: fragment.rangeInElement.location)
+            let within = y - fragment.layoutFragmentFrame.minY
+            let line = fragment.textLineFragments.last { $0.typographicBounds.minY <= within } ?? fragment.textLineFragments.first
+            let lineTop = fragment.layoutFragmentFrame.minY + (line?.typographicBounds.minY ?? 0) + textView.textContainerOrigin.y
+            guard let place = article.spot(at: fragmentStart + (line?.characterRange.location ?? 0)) else { return nil }
+            return HeldPosition(spot: place.spot, offset: place.offset, delta: top - lineTop)
+        }
+
+        /// Puts the held line back where it was, before anything is drawn.
+        private func restore(_ held: HeldPosition) {
+            guard let scroll, let textView, let tlm = textView.textLayoutManager, let article,
+                  let utf16 = article.location(of: held.spot, offset: held.offset),
+                  let location = tlm.location(tlm.documentRange.location, offsetBy: utf16)
+            else { return }
+            tlm.ensureLayout(for: NSTextRange(location: tlm.documentRange.location, end: location) ?? tlm.documentRange)
+            guard let fragment = tlm.textLayoutFragment(for: location) else { return }
+            let fragmentStart = tlm.offset(from: tlm.documentRange.location, to: fragment.rangeInElement.location)
+            var lineTop = fragment.layoutFragmentFrame.minY + textView.textContainerOrigin.y
+            if let line = fragment.textLineFragments.first(where: { line in
+                let start = fragmentStart + line.characterRange.location
+                return utf16 >= start && utf16 < start + max(line.characterRange.length, 1)
+            }) {
+                lineTop += line.typographicBounds.minY
+            }
+            scrollingProgrammatically = true
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, lineTop + held.delta)))
+            scroll.reflectScrolledClipView(scroll.contentView)
+            DispatchQueue.main.async { [weak self] in self?.scrollingProgrammatically = false }
         }
 
         private func loadImages(_ images: [ImageAttachment]) {
@@ -139,7 +220,7 @@ struct ArticleTextView: NSViewRepresentable {
         /// Swaps in a loaded image, keeping the reading position steady.
         private func replaceImage(_ attachment: ImageAttachment, with image: NSImage) {
             guard let textView, let storage = textView.textStorage else { return }
-            let anchor = self.anchor ?? currentPosition()
+            let anchor = self.anchor ?? currentPosition().map { ScrollTarget(blockID: $0.0, offset: $0.1) }
             attachment.loaded(image)
             var found: NSRange?
             storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, range, stop in
@@ -147,7 +228,8 @@ struct ArticleTextView: NSViewRepresentable {
             }
             guard let range = found else { return }
             storage.edited(.editedAttributes, range: range, changeInLength: 0)
-            if let anchor { scroll(to: ScrollTarget(blockID: anchor.0, offset: anchor.1), animated: false, report: false) }
+            if let anchor { scroll(to: anchor, animated: false, report: false) }
+            report(onlyAtEnd: true)
         }
 
         /// Block and offset at the top of the visible area.
@@ -160,39 +242,68 @@ struct ArticleTextView: NSViewRepresentable {
         }
 
         @objc func scrolled() {
-            guard let scroll, let textView else { return }
             if !scrollingProgrammatically { anchor = nil }
-            let visible = scroll.contentView.bounds
-            let total = max(textView.frame.height - visible.height, 1)
-            let fraction = min(max(visible.minY / total, 0), 1)
+            report(onlyAtEnd: false)
+        }
+
+        /// Whether the last line of the text is inside the visible area,
+        /// which includes text shorter than the view.
+        var atEnd: Bool {
+            guard let scroll, let textView else { return false }
+            return scroll.contentView.bounds.maxY >= textView.frame.height - textView.textContainerInset.height - 8
+        }
+
+        /// Reports the position once the view settles. Text that never
+        /// scrolls reports from `show` and image loads, but only when its
+        /// end is on screen: opening an article is not reading it.
+        private func report(onlyAtEnd: Bool) {
             reportTask?.cancel()
             reportTask = Task { [weak self] in
                 try? await Task.sleep(for: .milliseconds(250))
                 guard let self, !Task.isCancelled, let position = self.currentPosition() else { return }
-                if let last = self.lastReported, last.0 == position.0, last.1 == position.1 { return }
-                self.lastReported = position
-                self.onPosition?(position.0, position.1, fraction)
+                let atEnd = self.atEnd
+                if onlyAtEnd, !atEnd { return }
+                if let last = self.lastReported, last.0 == position.0, last.1 == position.1, last.2 == atEnd { return }
+                self.lastReported = (position.0, position.1, atEnd)
+                self.onPosition?(position.0, position.1, atEnd)
             }
         }
 
         func scroll(to target: ScrollTarget, animated: Bool, report: Bool = true) {
-            guard let scroll, let textView, let tlm = textView.textLayoutManager, let article,
-                  let utf16 = article.location(of: target.blockID, offset: target.offset),
-                  let location = tlm.location(tlm.documentRange.location, offsetBy: utf16)
-            else { return }
-            tlm.ensureLayout(for: NSTextRange(location: tlm.documentRange.location, end: location) ?? tlm.documentRange)
-            guard let fragment = tlm.textLayoutFragment(for: location) else { return }
-            var y = fragment.layoutFragmentFrame.minY + textView.textContainerOrigin.y - 12
-            // Within the paragraph, land on the line holding the offset.
-            if let line = fragment.textLineFragments.first(where: { line in
-                let lineStart = tlm.offset(from: tlm.documentRange.location, to: fragment.rangeInElement.location) + line.characterRange.location
-                return utf16 >= lineStart && utf16 < lineStart + max(line.characterRange.length, 1)
-            }) {
-                y += line.typographicBounds.minY
+            guard let scroll, let textView, let tlm = textView.textLayoutManager, let article else { return }
+            var y: CGFloat
+            if target.toEnd {
+                // TextKit 2 estimates the height of text it hasn't laid out,
+                // and the estimate moves; laying out around the last
+                // character puts the end where the view's height says it is.
+                textView.scrollRangeToVisible(NSRange(location: textView.textStorage?.length ?? 0, length: 0))
+                y = textView.frame.height
+                // Before the view is in a window it has no width to lay out in.
+                if !settlingEnd {
+                    settlingEnd = true
+                    DispatchQueue.main.async { [weak self] in
+                        self?.scroll(to: target, animated: false, report: report)
+                        self?.settlingEnd = false
+                    }
+                }
+            } else {
+                guard let utf16 = article.location(of: target.blockID, offset: target.offset),
+                      let location = tlm.location(tlm.documentRange.location, offsetBy: utf16)
+                else { return }
+                tlm.ensureLayout(for: NSTextRange(location: tlm.documentRange.location, end: location) ?? tlm.documentRange)
+                guard let fragment = tlm.textLayoutFragment(for: location) else { return }
+                y = fragment.layoutFragmentFrame.minY + textView.textContainerOrigin.y - 12
+                // Within the paragraph, land on the line holding the offset.
+                if let line = fragment.textLineFragments.first(where: { line in
+                    let lineStart = tlm.offset(from: tlm.documentRange.location, to: fragment.rangeInElement.location) + line.characterRange.location
+                    return utf16 >= lineStart && utf16 < lineStart + max(line.characterRange.length, 1)
+                }) {
+                    y += line.typographicBounds.minY
+                }
             }
             y = max(0, min(y, textView.frame.height - scroll.contentView.bounds.height))
             let point = NSPoint(x: 0, y: y)
-            anchor = (target.blockID, target.offset)
+            anchor = target
             scrollingProgrammatically = true
             if animated {
                 NSAnimationContext.runAnimationGroup { ctx in
@@ -206,7 +317,7 @@ struct ArticleTextView: NSViewRepresentable {
                 scroll.reflectScrolledClipView(scroll.contentView)
                 DispatchQueue.main.async { [weak self] in self?.scrollingProgrammatically = false }
             }
-            if !report { lastReported = (target.blockID, target.offset) }
+            if !report, !target.toEnd { lastReported = (target.blockID, target.offset, lastReported?.2 ?? false) }
         }
 
         // Code backgrounds and quote bars.
@@ -241,9 +352,44 @@ struct ArticleTextView: NSViewRepresentable {
     }
 }
 
-/// Keeps the text column at a readable width, centered.
+/// Hands scrolling to the edge gesture tracker first: a pull past an end or
+/// a sideways swipe doesn't scroll.
+final class ReaderScrollView: NSScrollView {
+    weak var tracker: EdgeGestureTracker?
+
+    override func scrollWheel(with event: NSEvent) {
+        if tracker?.handle(event, in: self) == true { return }
+        super.scrollWheel(with: event)
+    }
+}
+
+/// Keeps the text column at a readable width, centered. Reads with the
+/// keyboard: Up and Down move a line, Left and Right a page, an arrow held
+/// at the edge it points past pulls to the previous or next item, Cmd+Left
+/// and Cmd+Right go there at once.
 final class ReaderTextView: NSTextView {
     var maxWidth: CGFloat = 700
+    /// One line of text.
+    var lineStep: CGFloat = 24
+    weak var tracker: EdgeGestureTracker?
+    var onStep: ((Direction) -> Void)?
+    var onEscape: (() -> Void)?
+    var onFocus: (() -> Void)?
+    /// Takes keyboard focus when this turns on or the view reaches a window.
+    var wantsFocus = false {
+        didSet { if wantsFocus, !oldValue { claimFocus(self) } }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if wantsFocus { claimFocus(self) }
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let became = super.becomeFirstResponder()
+        if became { onFocus?() }
+        return became
+    }
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
@@ -254,5 +400,68 @@ final class ReaderTextView: NSTextView {
         let horizontal = max(28, (bounds.width - maxWidth) / 2)
         let inset = NSSize(width: horizontal, height: 36)
         if textContainerInset != inset { textContainerInset = inset }
+    }
+
+    override func keyDown(with event: NSEvent) {
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        guard let key = event.specialKey, let scroll = enclosingScrollView else {
+            if event.keyCode == 53 { cancelOperation(nil) } else { super.keyDown(with: event) }
+            return
+        }
+        let page = max(scroll.contentView.bounds.height - lineStep, lineStep)
+        if modifiers == .command, key == .leftArrow || key == .rightArrow, let onStep {
+            tracker?.cancel()
+            onStep(key == .leftArrow ? .previous : .next)
+        } else if modifiers.isEmpty, key == .downArrow || key == .rightArrow {
+            if scroll.atBottom {
+                tracker?.hold(.next, key: event.keyCode)
+            } else {
+                scrollBy(key == .downArrow ? lineStep : page, animated: key == .rightArrow)
+            }
+        } else if modifiers.isEmpty, key == .upArrow || key == .leftArrow {
+            if scroll.atTop {
+                tracker?.hold(.previous, key: event.keyCode)
+            } else {
+                scrollBy(key == .upArrow ? -lineStep : -page, animated: key == .leftArrow)
+            }
+        } else {
+            super.keyDown(with: event)
+        }
+    }
+
+    override func keyUp(with event: NSEvent) {
+        tracker?.release(key: event.keyCode)
+        super.keyUp(with: event)
+    }
+
+    /// Esc closes the find bar, then cancels a pull, then goes to the reader
+    /// (which cancels a translation, else leaves the text).
+    override func cancelOperation(_ sender: Any?) {
+        if let scroll = enclosingScrollView, scroll.isFindBarVisible {
+            scroll.isFindBarVisible = false
+        } else if tracker?.active == true {
+            tracker?.cancel()
+        } else if let onEscape {
+            onEscape()
+        }
+    }
+
+    private func scrollBy(_ dy: CGFloat, animated: Bool) {
+        guard let scroll = enclosingScrollView else { return }
+        let clip = scroll.contentView
+        let top = -scroll.contentInsets.top
+        let bottom = max(top, frame.height - clip.bounds.height + scroll.contentInsets.bottom)
+        let point = NSPoint(x: clip.bounds.minX, y: min(max(clip.bounds.minY + dy, top), bottom))
+        if animated {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.18
+                clip.animator().setBoundsOrigin(point)
+            } completionHandler: {
+                MainActor.assumeIsolated { scroll.reflectScrolledClipView(clip) }
+            }
+        } else {
+            clip.scroll(to: point)
+            scroll.reflectScrolledClipView(clip)
+        }
     }
 }

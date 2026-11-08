@@ -213,6 +213,16 @@ fn item_queries_filter_and_order() {
         }),
         ["a", "ch"]
     );
+    // Titles are the IDs; the chapter "ch" is left to its series.
+    let titled = |text: &str| {
+        ids(ItemQuery {
+            filter: ItemFilter::Title(text.into()),
+            ..Default::default()
+        })
+    };
+    assert_eq!(titled("C"), ["c"]);
+    assert!(titled("%").is_empty());
+    assert!(titled("  ").is_empty());
 
     let loc = |p: f64| Locator {
         content_hash: "h".into(),
@@ -253,6 +263,23 @@ fn item_queries_filter_and_order() {
             ..Default::default()
         }),
         ["a"]
+    );
+    assert_eq!(
+        s.count_items(&ItemQuery {
+            filter: ItemFilter::ContinueReading,
+            limit: 0,
+            ..Default::default()
+        })
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        s.count_items(&ItemQuery {
+            filter: ItemFilter::Ids(vec![]),
+            ..Default::default()
+        })
+        .unwrap(),
+        0
     );
     assert_eq!(s.progress("a").unwrap().unwrap().progression, 0.4);
 }

@@ -28,6 +28,16 @@ extension CollectionKindView: @retroactive Identifiable {
         }
     }
 
+    /// `title` as a string, for lists built from data.
+    var pluralName: String {
+        switch self {
+        case .book: String(localized: "Books")
+        case .pdf: String(localized: "PDFs")
+        case .webPage: String(localized: "Web Pages")
+        case .webSeries: String(localized: "Web Series")
+        }
+    }
+
     var name: String {
         switch self {
         case .book: String(localized: "Book")
@@ -58,6 +68,9 @@ extension CollectionEntryView {
     var byline: String? { author ?? host }
 
     var inProgress: Bool { progress > 0.01 && progress < 0.995 }
+
+    /// Started or finished: "Mark as Unread" has something to reset.
+    var hasBeenRead: Bool { progress > 0 || finished > 0 || lastReadAt != nil }
 
     var readingMinutes: Int {
         let perMinute = (lang == "cmn" || lang == "jpn") ? 400.0 : 1200.0

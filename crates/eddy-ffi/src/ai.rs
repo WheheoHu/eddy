@@ -119,6 +119,8 @@ pub struct TranslationView {
     /// Segment ID (block ID, `title`, `<block>#caption`, `<block>#rXcY`) → text.
     pub segments: HashMap<String, String>,
     pub cached: bool,
+    /// False for a translation stopped part-way.
+    pub complete: bool,
 }
 
 impl From<core::TranslationResult> for TranslationView {
@@ -128,6 +130,7 @@ impl From<core::TranslationResult> for TranslationView {
             target_language: t.target_language,
             segments: t.segments,
             cached: t.cached,
+            complete: t.complete,
         }
     }
 }
@@ -221,6 +224,12 @@ impl EddyEngine {
 
     pub fn cached_translation(&self, item_id: String) -> R<Option<TranslationView>> {
         Ok(self.engine.cached_translation(&item_id)?.map(Into::into))
+    }
+
+    /// Stops the item's translation once the batch in flight is done; the
+    /// pending `translate` call then returns what is done.
+    pub fn cancel_translation(&self, item_id: String) {
+        self.engine.cancel_translation(&item_id)
     }
 
     pub async fn summarize(&self, item_id: String, force: bool) -> R<SummaryView> {

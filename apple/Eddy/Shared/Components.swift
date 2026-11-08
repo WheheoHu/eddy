@@ -26,6 +26,9 @@ extension ItemView {
     var sourceName: String { kind == .feed ? (sourceTitle ?? host) : host }
 
     var inProgress: Bool { progress > 0.02 && !finished }
+
+    /// Read, started or finished: "Mark as Unread" has something to reset.
+    var hasBeenRead: Bool { read || finished || progress > 0 || lastReadAt != nil }
 }
 
 struct ProgressRing: View {

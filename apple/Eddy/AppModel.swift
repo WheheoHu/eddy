@@ -1,5 +1,6 @@
 import AppKit
 import EddyKit
+import ImageIO
 import Observation
 import PDFKit
 import SwiftUI
@@ -9,6 +10,51 @@ enum AppMode: String, CaseIterable, Identifiable {
     case library = "Library"
     var id: String { rawValue }
     var icon: String { self == .threePane ? "rectangle.split.3x1" : "books.vertical" }
+}
+
+/// Something picked in the command palette, for the view that can do it.
+/// The token makes picking the same thing twice a change.
+struct PaletteRequest<Value: Equatable>: Equatable {
+    let value: Value
+    var token = UUID()
+}
+
+/// A sidebar entry of the current mode.
+enum Destination: Equatable {
+    case threePane(ThreePaneView.Selection)
+    case library(LibraryFilter)
+    /// A subscription on the library's shelf.
+    case libraryFeed(sourceID: String)
+}
+
+/// What the palette asks of the reader showing `itemID`.
+struct ReaderCommand: Equatable {
+    enum Action: Equatable {
+        case summary
+        case readingMode(ReadingMode)
+        /// Between the reflowed text and the web page.
+        case toggleWeb
+        case fetchFullText
+        case step(Direction)
+    }
+
+    let itemID: String
+    let action: Action
+}
+
+/// A list of subscription articles, as "Mark All as Read" sees it.
+struct ArticleList: Equatable {
+    let filter: ItemFilterView
+    let title: String
+}
+
+/// What "Mark All as Read" would mark: counted, with the moment it was
+/// counted, when the dialog opens. Articles arriving after aren't marked.
+struct MarkAllRequest: Identifiable {
+    let id = UUID()
+    let list: ArticleList
+    let count: Int
+    let until: Int64
 }
 
 /// App-wide state over the engine. Views read lists through it so a single
@@ -24,6 +70,8 @@ final class AppModel {
     /// Everything that is not a subscription article.
     var collection: [CollectionEntryView] = []
     var tags: [TagView] = []
+    /// Articles, pages and chapters started but not finished.
+    var continueReadingCount = 0
     var revision = 0
     var busy = false
     /// Older articles added so far while FreshRSS history loads; 0 otherwise.
@@ -37,8 +85,21 @@ final class AppModel {
     /// A collection entry just imported, for the current mode to bring into view.
     var revealed: String?
 
+    var paletteVisible = false
+    /// Picked in the palette, for the current mode: a sidebar entry, an item
+    /// to open, a command for the reader.
+    var navigation: PaletteRequest<Destination>?
+    var revealedItem: PaletteRequest<String>?
+    var readerCommand: PaletteRequest<ReaderCommand>?
+
     /// A collection entry waiting for the user to confirm its deletion.
     var pendingDeletion: CollectionEntryView?
+
+    /// The article list on screen, for "Mark All as Read"; nil when none is
+    /// (collections, search results, a book).
+    var currentList: ArticleList?
+    /// "Mark All as Read" waiting for the user to confirm.
+    var pendingMarkAll: MarkAllRequest?
 
     var savingURL = false
     var importing = false
@@ -78,7 +139,28 @@ final class AppModel {
         series = (try? engine.seriesList()) ?? []
         collection = (try? engine.collection()) ?? []
         tags = (try? engine.tags()) ?? []
+        let started = ItemQueryView(filter: .continueReading, unreadOnly: false, keep: nil, limit: 0, offset: 0)
+        continueReadingCount = Int((try? engine.itemCount(query: started)) ?? 0)
         revision += 1
+    }
+
+    private var pendingReload: Task<Void, Never>?
+
+    /// Reading changes things in bursts (opening marks read, leaving saves
+    /// the position, the end finishes it); one reload after the switch's
+    /// animation covers them all instead of redrawing every list three times
+    /// while it plays.
+    func reloadSoon() {
+        guard pendingReload == nil else { return }
+        pendingReload = Task {
+            try? await Task.sleep(for: .milliseconds(350))
+            // Not while the fingers are moving the reader.
+            while EdgeGestureTracker.anyActive {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            pendingReload = nil
+            reload()
+        }
     }
 
     /// `keep` stays in an unread-only list after it is read.
@@ -130,6 +212,11 @@ final class AppModel {
         items(.series(id: seriesID), limit: 2000)
     }
 
+    /// Articles and saved pages by title, newest first.
+    func titleMatches(_ text: String, limit: UInt32 = 20) -> [ItemView] {
+        items(.title(text: text), limit: limit)
+    }
+
     func search(_ query: String) async -> [SearchResultView] {
         guard let engine, !query.trimmingCharacters(in: .whitespaces).isEmpty else { return [] }
         return (try? await engine.searchAll(query: query, limit: 80)) ?? []
@@ -154,9 +241,36 @@ final class AppModel {
 
     func image(_ url: String) async -> NSImage? {
         if let cached = imageCache.object(forKey: url as NSString) { return cached }
-        guard let engine, let data = try? await engine.image(url: url), let image = NSImage(data: Data(data.bytes)) else { return nil }
+        guard let engine, let data = try? await engine.image(url: url) else { return nil }
+        let bytes = Data(data.bytes)
+        guard let image = await Task.detached(priority: .userInitiated, operation: { Self.decoded(bytes) }).value else { return nil }
         imageCache.setObject(image, forKey: url as NSString)
         return image
+    }
+
+    /// Decodes off the main thread, at no more pixels than the reader shows:
+    /// `NSImage(data:)` would decode a full-size photo on the main thread the
+    /// first time it is drawn, in the middle of scrolling or a transition.
+    /// The size in points stays the image's own, as `NSImage(data:)` gives.
+    /// Animated GIFs and formats ImageIO can't read (SVG) go the old way.
+    private nonisolated static func decoded(_ data: Data) -> NSImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              CGImageSourceGetCount(source) == 1,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? CGFloat,
+              let height = properties[kCGImagePropertyPixelHeight] as? CGFloat
+        else { return NSImage(data: data) }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: 2400,
+        ]
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return NSImage(data: data) }
+        let orientation = properties[kCGImagePropertyOrientation] as? UInt32 ?? 1
+        // Orientations 5 to 8 swap width and height.
+        let size = orientation >= 5 ? CGSize(width: height, height: width) : CGSize(width: width, height: height)
+        return NSImage(cgImage: cgImage, size: size)
     }
 
     // MARK: Actions
@@ -164,15 +278,51 @@ final class AppModel {
     func setStarred(_ item: ItemView, _ on: Bool) {
         Task {
             try? await engine?.setStarred(itemId: item.id, starred: on)
-            reload()
+            reloadSoon()
         }
     }
 
     func setRead(_ item: ItemView, _ on: Bool) {
         Task {
             try? await engine?.setRead(itemId: item.id, read: on)
-            reload()
+            reloadSoon()
         }
+    }
+
+    /// Counts what a list would mark and asks; nothing to mark says so.
+    func requestMarkAllRead(_ list: ArticleList) {
+        let until = Int64(Date().timeIntervalSince1970 * 1000)
+        let count = Int((try? engine?.unreadFeedCount(filter: list.filter, until: until)) ?? 0)
+        guard count > 0 else {
+            message = String(localized: "Everything in “\(list.title)” is read.")
+            return
+        }
+        pendingMarkAll = MarkAllRequest(list: list, count: count, until: until)
+    }
+
+    func markAllRead(_ request: MarkAllRequest) async {
+        do {
+            _ = try await engine?.markAllRead(filter: request.list.filter, until: request.until)
+        } catch {
+            message = error.localizedDescription
+        }
+        reload()
+    }
+
+    /// Back to unread and never started, on every device (and FreshRSS).
+    func markUnread(_ itemIDs: [String]) {
+        guard !itemIDs.isEmpty else { return }
+        do {
+            try engine?.markUnread(itemIds: itemIDs)
+        } catch {
+            message = error.localizedDescription
+        }
+        reload()
+    }
+
+    /// A book or series resets all its chapters; a page or PDF itself.
+    func markUnread(entry: CollectionEntryView) {
+        markUnread(entry.seriesId.map { chapters($0).map(\.id) } ?? [entry.id])
     }
 
     func markOpened(_ id: String) {
@@ -180,18 +330,22 @@ final class AppModel {
         setRead(item, true)
     }
 
-    func recordProgress(_ itemID: String, blockID: String, offset: Int) {
-        _ = try? engine?.recordProgress(itemId: itemID, blockId: blockID, offset: UInt32(max(0, offset)), force: false)
+    /// `atEnd`: the end of the text is on screen, which finishes the item.
+    /// Lists refresh when that happens so it leaves Continue Reading at once.
+    func recordProgress(_ itemID: String, blockID: String, offset: Int, atEnd: Bool) {
+        let finishing = atEnd && item(itemID)?.finished == false
+        _ = try? engine?.recordProgress(itemId: itemID, blockId: blockID, offset: UInt32(max(0, offset)), atEnd: atEnd, force: false)
+        if finishing { reloadSoon() }
     }
 
-    func flushProgress(_ itemID: String, blockID: String, offset: Int) {
-        _ = try? engine?.recordProgress(itemId: itemID, blockId: blockID, offset: UInt32(max(0, offset)), force: true)
-        reload()
+    func flushProgress(_ itemID: String, blockID: String, offset: Int, atEnd: Bool) {
+        _ = try? engine?.recordProgress(itemId: itemID, blockId: blockID, offset: UInt32(max(0, offset)), atEnd: atEnd, force: true)
+        reloadSoon()
     }
 
     func recordPage(_ itemID: String, page: Int, of count: Int, force: Bool = false) {
         _ = try? engine?.recordPageProgress(itemId: itemID, page: UInt32(max(0, page)), pageCount: UInt32(max(0, count)), force: force)
-        if force { reload() }
+        if force { reloadSoon() }
     }
 
     func resume(_ itemID: String) -> ResumePointView? {
@@ -292,7 +446,7 @@ final class AppModel {
             let listener = HistoryProgress { [weak self] added in
                 guard let self, loadingHistory else { return }
                 historyAdded = added
-                reload()
+                reloadSoon()
             }
             _ = try? await engine.backfillHistory(listener: listener)
             loadingHistory = false
@@ -376,14 +530,22 @@ final class AppModel {
         return (try? engine.aiSettings().provider) != nil
     }
 
-    func translate(_ id: String, onBatch: @escaping @MainActor ([String: String]) -> Void) async throws -> [String: String] {
-        guard let engine else { return [:] }
+    /// Returns what is translated, and whether that is all of it: a
+    /// cancelled translation returns once the batch in flight is done.
+    func translate(_ id: String, onBatch: @escaping @MainActor ([String: String]) -> Void) async throws -> (segments: [String: String], complete: Bool) {
+        guard let engine else { return ([:], false) }
         let result = try await engine.translate(itemId: id, force: false, listener: BatchListener(onBatch))
-        return result.segments
+        return (result.segments, result.complete)
     }
 
-    func cachedTranslation(_ id: String) -> [String: String] {
-        (try? engine?.cachedTranslation(itemId: id))??.segments ?? [:]
+    func cancelTranslation(_ id: String) {
+        engine?.cancelTranslation(itemId: id)
+    }
+
+    /// The stored translation, or the part of one that was stopped.
+    func cachedTranslation(_ id: String) -> (segments: [String: String], complete: Bool) {
+        guard let cached = (try? engine?.cachedTranslation(itemId: id)) ?? nil else { return ([:], false) }
+        return (cached.segments, cached.complete)
     }
 
     // MARK: Lifecycle

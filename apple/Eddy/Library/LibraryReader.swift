@@ -13,6 +13,15 @@ struct LibraryReader: View {
     @State private var currentID: String?
     @State private var scrollTarget: ScrollTarget?
     @State private var pageTarget: PageTarget?
+    /// Back and forward through a subscription's articles; one per book.
+    @State private var history = ReadingHistory()
+    /// Where the reader slides in from when moving to a neighbor.
+    @State private var arrival: Edge = .bottom
+    /// A previous chapter, opened at its end.
+    @State private var landAtEnd: String?
+    @FocusState private var focus: PaneFocus?
+    /// Keyboard focus is in the text; opening a book is going to read it.
+    @State private var readerFocused = true
 
     /// The entry as it is now, with current progress.
     private var entry: CollectionEntryView? {
@@ -36,32 +45,72 @@ struct LibraryReader: View {
             ColumnToggle(visible: $showContents)
             ToolbarItem(placement: .navigation) {
                 Button(action: close) { Label("Home", systemImage: "house") }
-                    .help("Back to the library (Esc)")
-                    .keyboardShortcut(.cancelAction)
+                    .help("Back to the library")
             }
             ModeToolbar(mode: $mode, model: model)
         }
         .navigationTitle(book.title)
-        .onAppear(perform: chooseStart)
+        .onAppear {
+            chooseStart()
+            model.currentList = articleList
+        }
+        .onDisappear { model.currentList = nil }
+        .onChange(of: currentID) { _, new in
+            history.opened(new)
+            if new != landAtEnd { landAtEnd = nil }
+        }
+        .onChange(of: focus) { _, new in if new != nil { readerFocused = false } }
+        // An item of this book picked elsewhere (the command palette).
+        .onChange(of: model.currentItemID) { _, new in
+            guard let new, new != currentID, entries.contains(where: { $0.id == new }) else { return }
+            select(new)
+            readerFocused = true
+        }
     }
 
     // MARK: Contents column
 
+    /// Return reads from here; Esc goes back to the shelf.
     @ViewBuilder
     private var contents: some View {
         if let entry {
-            EntryContents(entry: entry, currentItemID: currentID, open: select, jump: jump)
+            EntryContents(
+                entry: entry, currentItemID: currentID, open: select, jump: jump,
+                focus: $focus, onReturn: { readerFocused = true }, onEscape: close
+            )
         } else {
-            FeedContents(title: book.title, items: entries, currentID: currentID, select: select)
+            FeedContents(
+                title: book.title, items: entries, currentID: currentID, select: select,
+                focus: $focus, onReturn: { readerFocused = true }, onEscape: close,
+                onMarkAllRead: articleList.map { list in { model.requestMarkAllRead(list) } }
+            )
         }
+    }
+
+    /// A subscription's articles, for "Mark All as Read".
+    private var articleList: ArticleList? {
+        guard case let .feed(sourceID) = book.kind else { return nil }
+        return ArticleList(filter: .source(id: sourceID), title: book.title)
+    }
+
+    /// Esc in the text: to the contents column when it shows, else back to
+    /// the shelf.
+    private func leaveReader() {
+        readerFocused = false
+        if showContents { focus = .contents } else { close() }
     }
 
     @ViewBuilder
     private var reader: some View {
         if let id = currentID {
             VStack(spacing: 0) {
-                ReaderPane(itemID: id, scrollTarget: $scrollTarget, pageTarget: pageTarget, openItem: select)
+                ReaderPane(
+                    itemID: id, scrollTarget: $scrollTarget, pageTarget: pageTarget, openItem: select,
+                    neighbors: neighbors(of: id), startAtEnd: landAtEnd == id,
+                    onEscape: leaveReader, focused: readerFocused, onFocus: { readerFocused = true }
+                )
                     .id(id)
+                    .transition(.push(from: arrival))
                 if entries.count > 1 {
                     Divider()
                     SequenceBar(title: book.title, items: entries, current: id) { select($0) }
@@ -103,22 +152,56 @@ struct LibraryReader: View {
         case let .page(page): pageTarget = PageTarget(page: page)
         }
     }
+
+    /// A series' chapters or a subscription's articles; nothing to move to
+    /// in a page or PDF saved on its own.
+    private func neighbors(of id: String) -> Neighbors? {
+        switch book.kind {
+        case .feed:
+            .articles({ entries }, current: id, history: history, item: { model.item($0) }, open: travel)
+        case let .entry(entry):
+            entry.isSeries ? .chapters({ entries }, current: id, open: travel) : nil
+        }
+    }
+
+    /// Opens a neighbor, sliding it in from the side it lies on. The edge
+    /// is set first so the outgoing reader leaves the same way.
+    private func travel(to id: String, _ direction: Direction, _ axis: Axis, _ atEnd: Bool) {
+        arrival = .arriving(direction, along: axis)
+        landAtEnd = atEnd ? id : nil
+        DispatchQueue.main.async {
+            withAnimation(.easeInOut(duration: 0.2)) { select(id) }
+        }
+    }
 }
 
 /// A subscription's articles, newest first, under a filter field.
 private struct FeedContents: View {
+    @Environment(AppModel.self) private var model
     let title: String
     let items: [ItemView]
     let currentID: String?
     let select: (String) -> Void
+    var focus: FocusState<PaneFocus?>.Binding?
+    var onReturn: (() -> Void)?
+    var onEscape: (() -> Void)?
+    var onMarkAllRead: (() -> Void)?
 
     @State private var query = ""
 
     var body: some View {
         VStack(spacing: 0) {
-            FilterField(text: $query, prompt: "Filter Articles")
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
+            HStack(spacing: 6) {
+                FilterField(text: $query, prompt: "Filter Articles")
+                if let onMarkAllRead {
+                    Button(action: onMarkAllRead) { Image(systemName: "checkmark.circle") }
+                        .buttonStyle(.borderless)
+                        .help("Mark every unread article here as read")
+                        .accessibilityLabel("Mark All as Read")
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
             List(selection: Binding(get: { currentID }, set: { if let id = $0 { select(id) } })) {
                 Section(title) {
                     ForEach(items.filter { $0.title.matches(filter: query) }) { item in
@@ -132,10 +215,18 @@ private struct FeedContents: View {
                         }
                         .padding(.vertical, 2)
                         .tag(item.id)
+                        .contextMenu {
+                            if item.hasBeenRead {
+                                Button("Mark as Unread") { model.markUnread([item.id]) }
+                            } else {
+                                Button("Mark as Read") { model.setRead(item, true) }
+                            }
+                        }
                     }
                 }
             }
             .listStyle(.sidebar)
+            .pane(focus, .contents, onReturn: onReturn, onEscape: onEscape)
         }
     }
 }

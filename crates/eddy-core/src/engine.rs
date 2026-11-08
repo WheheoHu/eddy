@@ -7,7 +7,7 @@ use eddy_model::{
     Account, Entity, FullTextMode, HlcClock, Op, Source, SourceKind, fields, ids, now_ms,
 };
 use eddy_source_greader::{Credentials, GReaderClient, normalize_base};
-use eddy_store::{ItemQuery, ItemRow, Store};
+use eddy_store::{ItemFilter, ItemQuery, ItemRow, Store};
 use parking_lot::RwLock;
 
 use crate::content::{Ingested, LoadedDocument};
@@ -91,6 +91,8 @@ pub(crate) struct Inner {
     pub pdf_reader: RwLock<Option<Arc<dyn crate::PdfReader>>>,
     pub progress_throttle:
         parking_lot::Mutex<std::collections::HashMap<String, (std::time::Instant, f64)>>,
+    /// Items whose translation should stop after the batch in flight.
+    pub translation_cancels: parking_lot::Mutex<std::collections::HashSet<String>>,
     pub search: Option<eddy_search::SearchIndex>,
     pub live: std::sync::atomic::AtomicBool,
     pub backfilling: std::sync::atomic::AtomicBool,
@@ -136,6 +138,7 @@ impl Engine {
             web_renderer: RwLock::new(None),
             pdf_reader: RwLock::new(None),
             progress_throttle: parking_lot::Mutex::new(Default::default()),
+            translation_cancels: parking_lot::Mutex::new(Default::default()),
             search: eddy_search::SearchIndex::open(&data_dir.join("index")).ok(),
             live: std::sync::atomic::AtomicBool::new(false),
             backfilling: std::sync::atomic::AtomicBool::new(false),
@@ -319,6 +322,11 @@ impl Engine {
         Ok(self.inner.store.items(query)?)
     }
 
+    /// How many items `items` would list without its limit and offset.
+    pub fn item_count(&self, query: &ItemQuery) -> Result<u32> {
+        Ok(self.inner.store.count_items(query)?)
+    }
+
     pub fn item(&self, id: &str) -> Result<Option<ItemRow>> {
         Ok(self.inner.store.item(id)?)
     }
@@ -352,6 +360,52 @@ impl Engine {
 
     pub async fn set_read(&self, item_id: &str, read: bool) -> Result<()> {
         self.set_item_flag(item_id, fields::READ, read).await
+    }
+
+    /// How many articles `mark_all_read` with the same arguments would mark.
+    pub fn unread_feed_count(&self, filter: &ItemFilter, until: i64) -> Result<u32> {
+        Ok(self
+            .inner
+            .store
+            .unread_feed_ids(&Self::list(filter), until)?
+            .len() as u32)
+    }
+
+    /// Marks read the unread subscription articles a list holds that arrived
+    /// by `until` (ms): not the ones that come in while the user decides,
+    /// nor saved pages. Reading progress is left alone. Returns how many.
+    pub fn mark_all_read(&self, filter: &ItemFilter, until: i64) -> Result<u32> {
+        let inner = &self.inner;
+        let ids = inner.store.unread_feed_ids(&Self::list(filter), until)?;
+        let mut upstream = false;
+        for id in &ids {
+            let pending = inner
+                .store
+                .item(id)?
+                .is_some_and(|r| r.item.upstream_id.is_some());
+            upstream |= pending;
+            inner.record(
+                Entity::Item,
+                id,
+                fields::READ,
+                serde_json::Value::Bool(true),
+                pending,
+            )?;
+        }
+        if upstream {
+            inner.push_in_background();
+        }
+        Ok(ids.len() as u32)
+    }
+
+    fn list(filter: &ItemFilter) -> ItemQuery {
+        ItemQuery {
+            filter: filter.clone(),
+            unread_only: true,
+            keep: None,
+            limit: u32::MAX,
+            offset: 0,
+        }
     }
 
     pub async fn set_starred(&self, item_id: &str, starred: bool) -> Result<()> {

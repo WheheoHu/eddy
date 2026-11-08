@@ -154,14 +154,16 @@ impl Inner {
 
 impl Engine {
     /// Records the reading position reported by a renderer (top visible
-    /// block and UTF-16 offset in it). Throttled while scrolling unless
-    /// `force` (e.g. when the reader closes). Marks the item finished at the
-    /// end. Returns the full locator.
+    /// block and UTF-16 offset in it). `at_end` says the end of the text is
+    /// on screen, which the top block alone can't show: a short article never
+    /// scrolls. Throttled while scrolling unless `force` (e.g. when the reader
+    /// closes). Marks the item finished at the end. Returns the full locator.
     pub fn record_progress(
         &self,
         item_id: &str,
         block_id: &str,
         offset: u32,
+        at_end: bool,
         force: bool,
     ) -> Result<Option<Locator>> {
         let inner = &self.inner;
@@ -176,8 +178,7 @@ impl Engine {
         else {
             return Ok(None);
         };
-        let at_end = doc.document.blocks.last().is_some_and(|b| b.id == block_id);
-        if at_end {
+        if at_end || doc.document.blocks.last().is_some_and(|b| b.id == block_id) {
             locator.progression = locator.progression.max(FINISHED_AT);
         }
         inner.record_locator(item_id, locator, force)
@@ -225,10 +226,13 @@ impl Inner {
         locator: Locator,
         force: bool,
     ) -> Result<Option<Locator>> {
+        let row = self.store.item(item_id)?.ok_or(EngineError::NotFound)?;
+        let finishes = locator.progression >= FINISHED_AT && !row.item.finished;
         {
             let mut last = self.progress_throttle.lock();
             if let Some((when, progression)) = last.get(item_id)
                 && !force
+                && !finishes
                 && when.elapsed() < PROGRESS_INTERVAL
                 && (progression - locator.progression).abs() < 0.2
             {
@@ -247,8 +251,7 @@ impl Inner {
             &format!("local_progress:{item_id}"),
             &serde_json::to_string(&locator)?,
         )?;
-        let row = self.store.item(item_id)?.ok_or(EngineError::NotFound)?;
-        if locator.progression >= FINISHED_AT && !row.item.finished {
+        if finishes {
             self.record(Entity::Item, item_id, fields::FINISHED, true.into(), false)?;
         }
         Ok(Some(locator))
@@ -266,12 +269,55 @@ impl Engine {
         )
     }
 
+    /// Back to unread and never started: not read (on FreshRSS too), not
+    /// finished, no reading position, out of Continue Reading and recently
+    /// read lists.
+    pub fn mark_unread(&self, item_ids: &[String]) -> Result<()> {
+        let inner = &self.inner;
+        let mut upstream = false;
+        for id in item_ids {
+            let row = inner.store.item(id)?.ok_or(EngineError::NotFound)?;
+            if row.item.read {
+                let pending = row.item.upstream_id.is_some();
+                upstream |= pending;
+                inner.record(Entity::Item, id, fields::READ, false.into(), pending)?;
+            }
+            if row.item.finished {
+                inner.record(Entity::Item, id, fields::FINISHED, false.into(), false)?;
+            }
+            if row.item.progress > 0.0 || row.item.last_read_at.is_some() {
+                let hash = row.item.current_version.clone().unwrap_or_default();
+                let locator = Locator::not_started(&hash);
+                inner.progress_throttle.lock().remove(id);
+                inner.record(
+                    Entity::Progress,
+                    id,
+                    fields::LOCATOR,
+                    serde_json::to_value(&locator)?,
+                    false,
+                )?;
+                inner.store.meta_set(
+                    &format!("local_progress:{id}"),
+                    &serde_json::to_string(&locator)?,
+                )?;
+            }
+        }
+        if upstream {
+            inner.push_in_background();
+        }
+        Ok(())
+    }
+
     /// Where to resume reading, re-anchored to the current content version
     /// (the position may have been taken in the feed excerpt, or on another
     /// device).
     pub fn resume_point(&self, item_id: &str) -> Result<Option<ResumePoint>> {
         let inner = &self.inner;
-        let Some(stored) = inner.store.progress(item_id)? else {
+        let Some(stored) = inner
+            .store
+            .progress(item_id)?
+            .filter(|l| !l.is_not_started())
+        else {
             return Ok(None);
         };
         let Some(doc) = inner.current_document(item_id)? else {

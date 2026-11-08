@@ -26,6 +26,9 @@ pub struct TranslationResult {
     /// Segment ID (block ID, `#caption`, `#rXcY`) → translated text.
     pub segments: HashMap<String, String>,
     pub cached: bool,
+    /// False for a translation stopped part-way; translating again
+    /// finishes it, reusing the batches already done.
+    pub complete: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -112,6 +115,8 @@ impl Inner {
             &settings.glossary,
             PROMPT_VERSION,
         ]);
+        // A fresh run starts uncancelled.
+        self.translation_cancels.lock().remove(item_id);
         if !force
             && let Some(payload) = self.store.ai_artifact(&item_key)?
             && let Ok(segments) = serde_json::from_str::<HashMap<String, String>>(&payload)
@@ -124,8 +129,35 @@ impl Inner {
                 target_language: target,
                 segments,
                 cached: true,
+                complete: true,
             });
         }
+        let partial_key = artifact_key(&[
+            "translation_partial",
+            &doc.version.hash,
+            &identity,
+            &target,
+            &settings.glossary,
+            PROMPT_VERSION,
+        ]);
+        // What is done so far stays on this device until the whole
+        // translation is, and comes back from `cached_translation`.
+        let save_partial = |all: &HashMap<String, String>| -> Result<()> {
+            if all.is_empty() {
+                return Ok(());
+            }
+            self.store.put_ai_artifact(
+                &partial_key,
+                item_id,
+                "translation_partial",
+                &doc.version.hash,
+                Some(&target),
+                Some(provider.model()),
+                &serde_json::to_string(all)?,
+                false,
+            )?;
+            Ok(())
+        };
         let mut segments = translation_segments(&doc.document);
         segments.insert(
             0,
@@ -158,14 +190,20 @@ impl Inner {
                 None => {
                     all_cached = false;
                     self.store.add_ai_usage(&today(), 1)?;
-                    let r = eddy_ai::translate_batch(
+                    let r = match eddy_ai::translate_batch(
                         provider.as_ref(),
                         &batch,
                         &target,
                         &settings.glossary,
                     )
                     .await
-                    .map_err(|e| EngineError::Invalid(e.to_string()))?;
+                    {
+                        Ok(r) => r,
+                        Err(e) => {
+                            save_partial(&all)?;
+                            return Err(EngineError::Invalid(e.to_string()));
+                        }
+                    };
                     self.store.put_ai_artifact(
                         &batch_key,
                         item_id,
@@ -183,6 +221,16 @@ impl Inner {
                 cb(&result);
             }
             all.extend(result);
+            if self.translation_cancels.lock().remove(item_id) {
+                save_partial(&all)?;
+                return Ok(TranslationResult {
+                    content_hash: doc.version.hash.clone(),
+                    target_language: target.clone(),
+                    segments: all,
+                    cached: false,
+                    complete: false,
+                });
+            }
         }
         self.store.put_ai_artifact(
             &item_key,
@@ -199,6 +247,7 @@ impl Inner {
             target_language: target,
             segments: all,
             cached: all_cached,
+            complete: true,
         })
     }
 
@@ -521,28 +570,49 @@ impl Engine {
         Ok(())
     }
 
-    /// Latest stored translation for the item's current content, if any.
+    /// Latest stored translation for the item's current content: the whole
+    /// one, else what a stopped translation into the current target
+    /// language got done.
     pub fn cached_translation(&self, item_id: &str) -> Result<Option<TranslationResult>> {
         let Some(doc) = self.inner.current_document(item_id)? else {
             return Ok(None);
         };
-        let Some((hash, lang, payload)) = self
-            .inner
-            .store
-            .latest_ai_artifact(item_id, "translation")?
-        else {
-            return Ok(None);
-        };
-        if hash != doc.version.hash {
-            return Ok(None);
+        let store = &self.inner.store;
+        if let Some((hash, lang, payload)) = store.latest_ai_artifact(item_id, "translation")?
+            && hash == doc.version.hash
+        {
+            return Ok(Some(TranslationResult {
+                content_hash: hash,
+                target_language: lang.unwrap_or_default(),
+                segments: serde_json::from_str(&payload)?,
+                cached: true,
+                complete: true,
+            }));
         }
-        let segments = serde_json::from_str(&payload)?;
-        Ok(Some(TranslationResult {
-            content_hash: hash,
-            target_language: lang.unwrap_or_default(),
-            segments,
-            cached: true,
-        }))
+        let target = self.inner.ai_settings()?.target_language;
+        if let Some((hash, lang, payload)) =
+            store.latest_ai_artifact(item_id, "translation_partial")?
+            && hash == doc.version.hash
+            && lang.as_deref() == Some(target.as_str())
+        {
+            return Ok(Some(TranslationResult {
+                content_hash: hash,
+                target_language: target,
+                segments: serde_json::from_str(&payload)?,
+                cached: true,
+                complete: false,
+            }));
+        }
+        Ok(None)
+    }
+
+    /// Stops the item's translation once the batch in flight is done; what
+    /// is done is kept.
+    pub fn cancel_translation(&self, item_id: &str) {
+        self.inner
+            .translation_cancels
+            .lock()
+            .insert(item_id.to_string());
     }
 
     pub fn cached_summary(&self, item_id: &str) -> Result<Option<Summary>> {

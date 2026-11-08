@@ -58,9 +58,14 @@ struct EntryContents: View {
     let open: (String) -> Void
     /// Moves within the open page or PDF.
     let jump: (OutlineEntry.Target) -> Void
+    var focus: FocusState<PaneFocus?>.Binding?
+    /// Return: read from here.
+    var onReturn: (() -> Void)?
+    var onEscape: (() -> Void)?
 
     @State private var query = ""
     @State private var outline: [OutlineEntry] = []
+    @State private var outlineSelection: OutlineEntry.ID?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -114,36 +119,44 @@ struct EntryContents: View {
                     }
                     .padding(.vertical, 2)
                     .tag(chapter.id)
+                    .contextMenu {
+                        if chapter.hasBeenRead {
+                            Button("Mark as Unread") { model.markUnread([chapter.id]) }
+                        }
+                    }
                 }
             }
         }
         .listStyle(.sidebar)
+        .pane(focus, .contents, onReturn: onReturn, onEscape: onEscape)
     }
 
+    /// Selecting a heading jumps to it, by click or with the arrow keys.
     private var outlineList: some View {
-        List {
+        List(selection: Binding(get: { outlineSelection }, set: { id in
+            outlineSelection = id
+            if let line = outline.first(where: { $0.id == id }) { jump(line.target) }
+        })) {
             Section { header }
             Section("Contents") {
                 if outline.isEmpty {
                     Label(entry.title, systemImage: entry.kind.icon).lineLimit(2)
                 }
                 ForEach(outline.filter { $0.title.matches(filter: query) }) { line in
-                    Button { jump(line.target) } label: {
-                        HStack {
-                            Text(line.title).lineLimit(2)
-                            Spacer()
-                            if case let .page(page) = line.target {
-                                Text("\(page + 1)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                            }
+                    HStack {
+                        Text(line.title).lineLimit(2)
+                        Spacer()
+                        if case let .page(page) = line.target {
+                            Text("\(page + 1)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                         }
-                        .padding(.leading, CGFloat(max(line.level - 1, 0)) * 12)
-                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .padding(.leading, CGFloat(max(line.level - 1, 0)) * 12)
+                    .tag(line.id)
                 }
             }
         }
         .listStyle(.sidebar)
+        .pane(focus, .contents, onReturn: onReturn, onEscape: onEscape)
     }
 
     private func loadOutline() async {

@@ -2,14 +2,32 @@ import EddyKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// The settings tabs; the command palette opens one by name.
+enum SettingsTab: String, CaseIterable, Identifiable {
+    case accounts = "Accounts", ai = "AI", reading = "Reading", saving = "Saving", storage = "Storage"
+    var id: String { rawValue }
+
+    var icon: String {
+        switch self {
+        case .accounts: "person.crop.circle"
+        case .ai: "sparkles"
+        case .reading: "textformat"
+        case .saving: "square.and.arrow.down"
+        case .storage: "internaldrive"
+        }
+    }
+}
+
 struct SettingsView: View {
+    @AppStorage("settings.tab") private var tab: SettingsTab = .accounts
+
     var body: some View {
-        TabView {
-            AccountsSettings().tabItem { Label("Accounts", systemImage: "person.crop.circle") }
-            AISettings().tabItem { Label("AI", systemImage: "sparkles") }
-            ReadingSettings().tabItem { Label("Reading", systemImage: "textformat") }
-            SavingSettings().tabItem { Label("Saving", systemImage: "square.and.arrow.down") }
-            StorageSettings().tabItem { Label("Storage", systemImage: "internaldrive") }
+        TabView(selection: $tab) {
+            AccountsSettings().tabItem { Label("Accounts", systemImage: SettingsTab.accounts.icon) }.tag(SettingsTab.accounts)
+            AISettings().tabItem { Label("AI", systemImage: SettingsTab.ai.icon) }.tag(SettingsTab.ai)
+            ReadingSettings().tabItem { Label("Reading", systemImage: SettingsTab.reading.icon) }.tag(SettingsTab.reading)
+            SavingSettings().tabItem { Label("Saving", systemImage: SettingsTab.saving.icon) }.tag(SettingsTab.saving)
+            StorageSettings().tabItem { Label("Storage", systemImage: SettingsTab.storage.icon) }.tag(SettingsTab.storage)
         }
         .frame(width: 560)
         .padding(20)
@@ -262,6 +280,7 @@ private struct ReadingSettings: View {
     @AppStorage("reader.serif") private var serif = false
     @AppStorage("reader.width") private var width = 700.0
     @AppStorage("reader.lineHeight") private var lineHeight = 1.45
+    @AppStorage("reader.appearance") private var appearance: ReaderAppearance = .app
 
     var body: some View {
         Form {
@@ -275,6 +294,13 @@ private struct ReadingSettings: View {
                 Slider(value: $width, in: 520...900, step: 20) { Text("Line width") }
                 Slider(value: $lineHeight, in: 1.2...1.9, step: 0.05) { Text("Line spacing") }
                 Toggle("Serif typeface", isOn: $serif)
+            }
+            Section {
+                Picker("Content appearance", selection: $appearance) {
+                    ForEach(ReaderAppearance.allCases) { Text($0.rawValue).tag($0) }
+                }
+            } footer: {
+                Text("Articles, pages and PDFs can stay light or dark whatever the rest of Eddy uses.").foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

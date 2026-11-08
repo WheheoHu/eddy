@@ -13,11 +13,17 @@ struct PDFReaderView: NSViewRepresentable {
     let url: URL
     let target: PageTarget?
     let onPage: (_ page: Int, _ count: Int) -> Void
+    /// Keyboard focus belongs in the PDF.
+    var focused = false
+    var onFocus: (() -> Void)?
+    var onEscape: (() -> Void)?
+    /// The area around the pages; nil inherits the app's appearance.
+    var appearance: NSAppearance?
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeNSView(context: Context) -> PDFView {
-        let view = PDFView()
+    func makeNSView(context: Context) -> ReaderPDFView {
+        let view = ReaderPDFView()
         view.autoScales = true
         view.displayMode = .singlePageContinuous
         view.displaysPageBreaks = true
@@ -26,9 +32,13 @@ struct PDFReaderView: NSViewRepresentable {
         return view
     }
 
-    func updateNSView(_ view: PDFView, context: Context) {
+    func updateNSView(_ view: ReaderPDFView, context: Context) {
         let c = context.coordinator
         c.onPage = onPage
+        view.onFocus = onFocus
+        view.onEscape = onEscape
+        view.wantsFocus = focused
+        if view.appearance?.name != appearance?.name { view.appearance = appearance }
         if c.url != url {
             c.url = url
             c.settling = true
@@ -63,6 +73,39 @@ struct PDFReaderView: NSViewRepresentable {
             // Layout passes while the view is detached or collapsed move the page too.
             guard view.window != nil, view.visibleRect.height > 100 else { return }
             onPage?(document.index(for: page), document.pageCount)
+        }
+    }
+}
+
+/// Left and Right turn pages, Esc leaves the PDF for the column before it.
+final class ReaderPDFView: PDFView {
+    var onFocus: (() -> Void)?
+    var onEscape: (() -> Void)?
+    var wantsFocus = false {
+        didSet { if wantsFocus, !oldValue { claimFocus(self) } }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if wantsFocus { claimFocus(self) }
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let became = super.becomeFirstResponder()
+        if became { onFocus?() }
+        return became
+    }
+
+    override func keyDown(with event: NSEvent) {
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        if event.keyCode == 53, let onEscape {
+            onEscape()
+        } else if modifiers.isEmpty, event.specialKey == .leftArrow {
+            goToPreviousPage(nil)
+        } else if modifiers.isEmpty, event.specialKey == .rightArrow {
+            goToNextPage(nil)
+        } else {
+            super.keyDown(with: event)
         }
     }
 }

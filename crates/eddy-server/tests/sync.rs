@@ -234,7 +234,8 @@ async fn standalone_client_migrates_and_a_second_device_joins() {
     let essay = a.save_url(&format!("{}/essay", site.uri())).await.unwrap();
     let essay_doc = a.document(&essay.item.id).await.unwrap().unwrap().document;
     let mid = essay_doc.blocks[essay_doc.blocks.len() / 2].id.clone();
-    a.record_progress(&essay.item.id, &mid, 4, true).unwrap();
+    a.record_progress(&essay.item.id, &mid, 4, false, true)
+        .unwrap();
     let tag = a.create_tag("Sampling").unwrap();
     a.set_item_tag(&essay.item.id, &tag, true).unwrap();
     let book_file = dir_a.path().join("notes.epub");
@@ -361,7 +362,7 @@ async fn standalone_client_migrates_and_a_second_device_joins() {
     );
 
     // Concurrent progress on two devices: the later write wins everywhere.
-    b.record_progress(&essay.item.id, &essay_doc.blocks[2].id, 0, true)
+    b.record_progress(&essay.item.id, &essay_doc.blocks[2].id, 0, false, true)
         .unwrap();
     b.refresh().await.unwrap();
     a.refresh().await.unwrap();

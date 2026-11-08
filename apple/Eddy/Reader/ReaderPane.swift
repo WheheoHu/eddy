@@ -14,6 +14,18 @@ struct ReaderPane: View {
     /// Shows or hides a contents panel beside the reader; the toggle leads
     /// the reader's toolbar.
     var showContents: Binding<Bool>?
+    /// The chapters or articles around this one; nil when there are none
+    /// to move to (a page or PDF saved on its own).
+    var neighbors: Neighbors?
+    /// Open at the end of the text instead of the resume point: a previous
+    /// chapter, reached by reading backwards.
+    var startAtEnd = false
+    /// Esc in the text: focus goes back a column.
+    var onEscape: (() -> Void)?
+    /// Keyboard focus belongs in the reader; its view takes it.
+    var focused = false
+    /// The reader's view took focus, by a click or by `focused`.
+    var onFocus: (() -> Void)?
 
     @State private var document: DocumentView?
     @State private var pdfURL: URL?
@@ -23,43 +35,80 @@ struct ReaderPane: View {
     @State private var rendererID = RendererRegistry.article.id
     @State private var mode: ReadingMode = .original
     @State private var translations: [String: String] = [:]
+    /// The whole text is translated; otherwise translating resumes.
+    @State private var translationComplete = false
     @State private var translating = false
+    /// A translation was cancelled or failed part-way; it can continue.
+    @State private var translationStopped = false
+    /// Batches wait here so the text is rebuilt at most every 0.6 s.
+    @State private var pendingTranslations: [String: String] = [:]
+    @State private var flushScheduled = false
+    @State private var translationRun: Task<Void, Never>?
+    /// Bumped by each start and cancel; a run finishing late leaves the
+    /// banner to the newer one.
+    @State private var translationGeneration = 0
     @State private var showSummary = false
     @State private var showType = false
     @State private var resumeNote: ResumePointView?
-    @State private var lastPosition: (String, Int)?
+    @State private var lastPosition: (block: String, offset: Int, atEnd: Bool)?
     @State private var cache = ArticleCache()
+    @State private var paneHeight: CGFloat = 600
+    /// Where the next renderer slides in from.
+    @State private var rendererArrival: Edge = .trailing
 
     @AppStorage("reader.fontSize") private var fontSize = 17.0
     @AppStorage("reader.serif") private var serif = false
     @AppStorage("reader.width") private var width = 700.0
     @AppStorage("reader.lineHeight") private var lineHeight = 1.45
+    @AppStorage("reader.appearance") private var appearance: ReaderAppearance = .app
+    @Environment(\.colorScheme) private var appScheme
 
     private var style: ReaderStyle {
         ReaderStyle(fontSize: fontSize, serif: serif, lineHeight: lineHeight, maxWidth: width)
     }
 
+    /// The content's own scheme; the toolbar keeps the app's.
+    private var scheme: ColorScheme { appearance.scheme(in: appScheme) }
+
     private var item: ItemView? { model.item(itemID) }
 
     var body: some View {
-        content
-            .overlay(alignment: .top) { banners }
-            .toolbar { toolbar }
-            .task(id: itemID) { await load() }
-            .onDisappear(perform: flush)
-            .onChange(of: mode) { _, new in
-                guard new != .original else { return }
-                // Translations show in the reflowed text.
-                if rendererID == RendererRegistry.pdf.id {
-                    guard document?.blocks.isEmpty == false else {
-                        model.message = "This PDF has no text to translate."
-                        mode = .original
-                        return
-                    }
-                    rendererID = RendererRegistry.article.id
-                }
-                if translations.isEmpty { Task { await translate() } }
+        VStack(spacing: 0) {
+            if showSummary {
+                SummaryPanel(itemID: itemID, maxHeight: paneHeight * 0.4) { toggleSummary(false) }
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                Divider()
             }
+            content
+                .overlay(alignment: .top) { banners }
+        }
+        .clipped()
+        .environment(\.colorScheme, scheme)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { paneHeight = $0 }
+        .toolbar { toolbar }
+        .task(id: itemID) { await load() }
+        .onDisappear(perform: flush)
+        .onChange(of: model.readerCommand) { _, request in
+            guard let command = request?.value, command.itemID == itemID else { return }
+            model.readerCommand = nil
+            perform(command.action)
+        }
+        .onChange(of: mode) { _, new in
+            guard new != .original else {
+                cancelTranslation()
+                return
+            }
+            // Translations show in the reflowed text.
+            if rendererID == RendererRegistry.pdf.id {
+                guard document?.blocks.isEmpty == false else {
+                    model.message = "This PDF has no text to translate."
+                    mode = .original
+                    return
+                }
+                rendererID = RendererRegistry.article.id
+            }
+            if !translationComplete, !translating { startTranslation() }
+        }
     }
 
     @ViewBuilder
@@ -70,7 +119,7 @@ struct ReaderPane: View {
                     PDFReaderView(url: pdfURL, target: pageTarget ?? resumePage, onPage: { page, count in
                         lastPage = (page, count)
                         model.recordPage(itemID, page: page, of: count)
-                    })
+                    }, focused: focused, onFocus: onFocus, onEscape: escape, appearance: appearance.nsAppearance)
                     .accessibilityLabel(Text("PDF: \(item.title)"))
                 } else if loading {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -78,11 +127,17 @@ struct ReaderPane: View {
                     ContentUnavailableView("PDF Unavailable", systemImage: "doc.richtext", description: Text("The file isn’t on this Mac and couldn’t be downloaded."))
                 }
             } else if rendererID == RendererRegistry.web.id || (document == nil && !loading), let url = item.url.flatMap(URL.init(string:)) {
-                WebPageView(url: url)
+                WebPageView(url: url, gestures: gestures, onEscape: escape, focused: focused, onFocus: onFocus, appearance: appearance.nsAppearance)
+                    .transition(.push(from: rendererArrival))
             } else if let document {
-                let version = "\(document.contentHash)|\(mode.rawValue)|\(translations.count)|\(fontSize)|\(serif)|\(lineHeight)"
+                let version = "\(document.contentHash)|\(mode.rawValue)|\(translations.count)|\(fontSize)|\(serif)|\(lineHeight)|\(scheme)"
                 let article = cache.article(version) {
-                    ArticleBuilder.build(doc: document, item: item, translations: translations, mode: mode, style: style)
+                    // Formulas are images drawn now, in the content's colors.
+                    var built: BuiltArticle!
+                    scheme.drawingAppearance.performAsCurrentDrawingAppearance {
+                        built = ArticleBuilder.build(doc: document, item: item, translations: translations, mode: mode, style: style)
+                    }
+                    return built
                 }
                 ArticleTextView(
                     article: article,
@@ -90,16 +145,23 @@ struct ReaderPane: View {
                     style: style,
                     scrollTarget: scrollTarget,
                     loadImage: { url in await model.image(url) },
-                    onPosition: { block, offset, _ in
-                        lastPosition = (block, offset)
-                        model.recordProgress(itemID, blockID: block, offset: offset)
+                    onPosition: { block, offset, atEnd in
+                        lastPosition = (block, offset, atEnd)
+                        model.recordProgress(itemID, blockID: block, offset: offset, atEnd: atEnd)
                     },
                     onBookLink: { url in
                         guard let target = model.item(forLink: url) else { return }
                         if let openItem { openItem(target) } else { model.currentItemID = target }
-                    }
+                    },
+                    gestures: gestures,
+                    onStep: neighbors.map { neighbors in { neighbors.go($0, .vertical) } },
+                    onEscape: escape,
+                    focused: focused,
+                    onFocus: onFocus,
+                    appearance: appearance.nsAppearance
                 )
                 .id(itemID)
+                .transition(.push(from: rendererArrival))
                 .background(Color(nsColor: .textBackgroundColor))
                 .accessibilityLabel(Text("Article: \(item.title)"))
             } else {
@@ -123,7 +185,15 @@ struct ReaderPane: View {
                 }
             }
             if translating {
-                Banner(icon: "character.bubble", text: "Translating…") { ProgressView().controlSize(.small) }
+                Banner(icon: "character.bubble", text: "Translating…") {
+                    ProgressView().controlSize(.small)
+                    Button("Cancel", action: cancelTranslation).help("Stop translating (Esc); what is translated stays")
+                }
+            } else if translationStopped, mode != .original {
+                Banner(icon: "pause.circle", text: "Translation stopped") {
+                    Button("Continue", action: startTranslation)
+                    Button { translationStopped = false } label: { Image(systemName: "xmark") }
+                }
             }
         }
         .padding(.top, 10)
@@ -154,9 +224,8 @@ struct ReaderPane: View {
                 .pickerStyle(.menu)
                 .frame(width: 120)
                 .help("Show a translation alongside or instead of the original")
-                Button { showSummary.toggle() } label: { Label("Summary", systemImage: "sparkles") }
-                    .help("AI summary")
-                    .popover(isPresented: $showSummary) { SummaryPopover(itemID: itemID) }
+                Button { toggleSummary(!showSummary) } label: { Label("Summary", systemImage: "sparkles") }
+                    .help(showSummary ? "Hide the AI summary" : "AI summary")
                 Button { showType.toggle() } label: { Label("Text Style", systemImage: "textformat.size") }
                     .popover(isPresented: $showType) { typography }
                 if item.kind == .feed {
@@ -182,6 +251,10 @@ struct ReaderPane: View {
             Slider(value: $width, in: 520...900, step: 20) { Text("Line Width") }
             Slider(value: $lineHeight, in: 1.2...1.9, step: 0.05) { Text("Line Spacing") }
             Toggle("Serif", isOn: $serif)
+            Picker("Appearance", selection: $appearance) {
+                ForEach(ReaderAppearance.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
         }
         .padding()
         .frame(width: 300)
@@ -197,20 +270,24 @@ struct ReaderPane: View {
         lastPage = nil
         scrollTarget = nil
         rendererID = RendererRegistry.preferred(for: item).id
-        translations = model.cachedTranslation(itemID)
+        let cached = model.cachedTranslation(itemID)
+        translations = cached.segments
+        translationComplete = cached.complete
         if item?.format == .pdf {
             if let page = model.resume(itemID)?.page { resumePage = PageTarget(page: Int(page)) }
             pdfURL = await model.contentFile(itemID)
         }
         await reloadDocument()
         model.markOpened(itemID)
-        if let resume = model.resume(itemID), let block = resume.blockId {
+        if startAtEnd, rendererID == RendererRegistry.article.id, document?.blocks.isEmpty == false {
+            scrollTarget = .end
+        } else if let resume = model.resume(itemID), let block = resume.blockId {
             resumeNote = resume
             if scrollTarget == nil || scrollTarget?.blockID != block {
                 scrollTarget = ScrollTarget(blockID: block, offset: Int(resume.offset))
             }
         }
-        if mode != .original, translations.isEmpty { await translate() }
+        if mode != .original, !translationComplete { startTranslation() }
     }
 
     private func reloadDocument() async {
@@ -219,23 +296,155 @@ struct ReaderPane: View {
     }
 
     private func flush() {
-        if let (block, offset) = lastPosition { model.flushProgress(itemID, blockID: block, offset: offset) }
+        // Marked unread while open: leaving doesn't put the position back.
+        guard model.item(itemID)?.read != false else { return }
+        if let lastPosition { model.flushProgress(itemID, blockID: lastPosition.block, offset: lastPosition.offset, atEnd: lastPosition.atEnd) }
         if let lastPage { model.recordPage(itemID, page: lastPage.page, of: lastPage.count, force: true) }
     }
 
-    private func translate() async {
+    private func toggleSummary(_ show: Bool) {
+        withAnimation(.easeInOut(duration: 0.2)) { showSummary = show }
+    }
+
+    private func perform(_ action: ReaderCommand.Action) {
+        switch action {
+        case .summary:
+            toggleSummary(true)
+        case let .readingMode(new):
+            mode = new
+        case .toggleWeb:
+            if rendererID == RendererRegistry.web.id, hasText {
+                slide(to: RendererRegistry.article.id)
+            } else if rendererID != RendererRegistry.web.id, hasPage {
+                slide(to: RendererRegistry.web.id)
+            }
+        case .fetchFullText:
+            Task { if await model.fetchFullText(itemID) { await reloadDocument() } }
+        case let .step(direction):
+            neighbors?.go(direction, .vertical)
+        }
+    }
+
+    private var hasPage: Bool {
+        guard let item else { return false }
+        return RendererRegistry.web.supports(RenderContext(item: item, document: document))
+    }
+
+    private var hasText: Bool { document?.blocks.isEmpty == false }
+
+    /// The web page lies to the right of the reader: it slides in from the
+    /// right, and the reader comes back from the left. The edge is set first
+    /// so the outgoing view leaves the same way.
+    private func slide(to renderer: String) {
+        rendererArrival = renderer == RendererRegistry.web.id ? .trailing : .leading
+        DispatchQueue.main.async {
+            withAnimation(.easeInOut(duration: 0.25)) { rendererID = renderer }
+        }
+    }
+
+    /// Gestures past the reader's edges: pulls to the chapters or articles
+    /// around this one; fingers moving left to the web page and right back
+    /// from it. An item without a page (a book's chapter) turns chapters with
+    /// a swipe instead, left for the next one. PDFs don't swipe.
+    private var gestures: EdgeGestures {
+        EdgeGestures(
+            pullTarget: neighbors.map { neighbors in { neighbors.target($0) } },
+            swipeTarget: { fingers in
+                if rendererID == RendererRegistry.web.id {
+                    return fingers == .right && hasText
+                        ? .item(String(localized: "Reader"), release: String(localized: "Release for the reader")) : .none
+                }
+                guard rendererID == RendererRegistry.article.id else { return .none }
+                if hasPage {
+                    return fingers == .left
+                        ? .item(String(localized: "Web Page"), release: String(localized: "Release for the web page")) : .none
+                }
+                return neighbors?.target(fingers == .left ? .next : .previous) ?? .none
+            },
+            commit: { kind in
+                switch kind {
+                case let .pull(direction):
+                    neighbors?.go(direction, .vertical)
+                case let .swipe(fingers):
+                    if rendererID == RendererRegistry.web.id {
+                        slide(to: RendererRegistry.article.id)
+                    } else if hasPage {
+                        slide(to: RendererRegistry.web.id)
+                    } else {
+                        neighbors?.go(fingers == .left ? .next : .previous, .horizontal)
+                    }
+                }
+            }
+        )
+    }
+
+    /// Translates what isn't yet; batches done before are reused. A run
+    /// still finishing its last batch after a cancel goes first.
+    private func startTranslation() {
         guard model.aiConfigured else {
             model.message = "Add an AI provider in Settings to translate."
             mode = .original
             return
         }
+        translationGeneration += 1
+        let generation = translationGeneration
+        let previous = translationRun
         translating = true
-        defer { translating = false }
-        do {
-            translations = try await model.translate(itemID) { batch in translations.merge(batch) { $1 } }
-        } catch {
-            model.message = error.localizedDescription
+        translationStopped = false
+        translationRun = Task {
+            await previous?.value
+            do {
+                let result = try await model.translate(itemID) { queueTranslations($0) }
+                flushTranslations()
+                translations.merge(result.segments) { $1 }
+                guard generation == translationGeneration else { return }
+                translationComplete = result.complete
+                translationStopped = !result.complete
+            } catch {
+                flushTranslations()
+                guard generation == translationGeneration else { return }
+                model.message = error.localizedDescription
+                translationStopped = true
+            }
+            translating = false
         }
+    }
+
+    /// Stops at once on screen; the batch in flight still arrives and shows.
+    private func cancelTranslation() {
+        guard translating else { return }
+        model.cancelTranslation(itemID)
+        translationGeneration += 1
+        translating = false
+        translationStopped = true
+    }
+
+    /// Esc in the reader cancels a translation first.
+    private var escape: () -> Void {
+        { if translating { cancelTranslation() } else { onEscape?() } }
+    }
+
+    /// The first batch shows at once; later ones together, every 0.6 s, so
+    /// the text isn't rebuilt for each.
+    private func queueTranslations(_ batch: [String: String]) {
+        pendingTranslations.merge(batch) { $1 }
+        if translations.isEmpty {
+            flushTranslations()
+            return
+        }
+        guard !flushScheduled else { return }
+        flushScheduled = true
+        Task {
+            try? await Task.sleep(for: .milliseconds(600))
+            flushTranslations()
+        }
+    }
+
+    private func flushTranslations() {
+        flushScheduled = false
+        guard !pendingTranslations.isEmpty else { return }
+        translations.merge(pendingTranslations) { $1 }
+        pendingTranslations = [:]
     }
 }
 
@@ -253,16 +462,48 @@ final class ArticleCache {
     }
 }
 
-struct SummaryPopover: View {
+/// The AI summary across the top of the reader, above the text it pushes
+/// down. Summarizes as soon as it opens when nothing is cached.
+struct SummaryPanel: View {
     @Environment(AppModel.self) private var model
     let itemID: String
+    /// Longer summaries scroll within this height.
+    let maxHeight: CGFloat
+    let close: () -> Void
     @State private var summary: SummaryView?
     @State private var loading = false
     @State private var errorText: String?
+    @State private var detailsHeight: CGFloat = 20
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label("Summary", systemImage: "sparkles").font(.headline)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("Summary", systemImage: "sparkles").font(.headline)
+                Spacer()
+                Button(action: close) { Image(systemName: "xmark") }
+                    .buttonStyle(.borderless)
+                    .help("Hide the summary")
+                    .accessibilityLabel("Hide Summary")
+            }
+            ScrollView {
+                details.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { detailsHeight = $0 }
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(height: min(detailsHeight, max(maxHeight, 80)))
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background.secondary)
+        .task(id: itemID) {
+            summary = (try? model.engine?.cachedSummary(itemId: itemID)) ?? nil
+            if summary == nil, model.aiConfigured { await load() }
+        }
+    }
+
+    @ViewBuilder
+    private var details: some View {
+        VStack(alignment: .leading, spacing: 8) {
             if let summary {
                 Text(summary.tldr).font(.body.weight(.medium))
                 ForEach(summary.points, id: \.self) { point in
@@ -272,22 +513,29 @@ struct SummaryPopover: View {
                     }
                 }
             } else if loading {
-                ProgressView().frame(maxWidth: .infinity)
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Summarizing…").foregroundStyle(.secondary)
+                }
             } else if let errorText {
-                Text(errorText).foregroundStyle(.secondary)
+                HStack {
+                    Text(errorText).foregroundStyle(.secondary)
+                    Button("Try Again") { Task { await load() } }
+                }
             } else if !model.aiConfigured {
                 Text("Add an AI provider in Settings to summarize articles.").foregroundStyle(.secondary)
             } else {
                 Button("Summarize") { Task { await load() } }
             }
         }
-        .padding(16)
-        .frame(width: 360, alignment: .leading)
-        .task(id: itemID) { summary = (try? model.engine?.cachedSummary(itemId: itemID)) ?? nil }
+        .textSelection(.enabled)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func load() async {
         loading = true
+        errorText = nil
         defer { loading = false }
         do {
             summary = try await model.engine?.summarize(itemId: itemID, force: false)

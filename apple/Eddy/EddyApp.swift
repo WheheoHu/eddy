@@ -28,6 +28,9 @@ struct EddyApp: App {
                 }
                 Divider()
             }
+            CommandMenu("Go") {
+                Button("Go To or Search…") { model.paletteVisible.toggle() }.keyboardShortcut("k", modifiers: .command)
+            }
         }
         Settings {
             SettingsView().environment(model)
@@ -55,6 +58,9 @@ struct RootView: View {
             }
         }
         .overlay(alignment: .bottom) { MessageBanner() }
+        .overlay {
+            if model.paletteVisible { CommandPalette() }
+        }
         .confirmationDialog(
             Text("Delete “\(model.pendingDeletion?.title ?? "")”?"),
             isPresented: Binding(get: { model.pendingDeletion != nil }, set: { if !$0 { model.pendingDeletion = nil } }),
@@ -64,6 +70,16 @@ struct RootView: View {
             Button("Cancel", role: .cancel) {}
         } message: { _ in
             Text("It will be removed from Eddy on all your devices, along with its reading progress. This can’t be undone.")
+        }
+        .confirmationDialog(
+            Text("Mark \(model.pendingMarkAll?.count ?? 0) articles in “\(model.pendingMarkAll?.list.title ?? "")” as read?"),
+            isPresented: Binding(get: { model.pendingMarkAll != nil }, set: { if !$0 { model.pendingMarkAll = nil } }),
+            presenting: model.pendingMarkAll
+        ) { request in
+            Button("Mark as Read") { Task { await model.markAllRead(request) } }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("Articles that arrive from now on stay unread.")
         }
         .fileImporter(isPresented: $model.importing, allowedContentTypes: Self.importTypes, allowsMultipleSelection: true) { result in
             if case let .success(urls) = result { Task { await model.importFiles(urls) } }

@@ -19,6 +19,9 @@ pub enum ItemFilter {
     Series(String),
     Tag(String),
     Ids(Vec<String>),
+    /// Articles and saved pages whose title contains the text, ignoring
+    /// ASCII case; chapters are found through their series.
+    Title(String),
 }
 
 #[derive(Clone, Debug)]
@@ -263,51 +266,14 @@ impl Store {
     }
 
     pub fn items(&self, q: &ItemQuery) -> Result<Vec<ItemRow>> {
-        let mut clauses = vec!["i.deleted=0".to_string()];
-        let mut values: Vec<Value> = Vec::new();
-        let mut order = "i.published_at DESC, i.id";
-        match &q.filter {
-            ItemFilter::All => clauses.push("i.kind!='chapter'".into()),
-            ItemFilter::Starred => clauses.push("i.starred=1".into()),
-            ItemFilter::Saved => clauses.push("i.kind='saved'".into()),
-            ItemFilter::ContinueReading => {
-                clauses.push("i.progress>=0.05 AND i.progress<0.95 AND i.finished=0".into());
-                order = "i.last_read_at DESC, i.id";
-            }
-            ItemFilter::Source(id) => {
-                clauses.push("i.source_id=?".into());
-                values.push(Value::Text(id.clone()));
-            }
-            ItemFilter::Category(name) => {
-                clauses.push("s.category=?".into());
-                values.push(Value::Text(name.clone()));
-            }
-            ItemFilter::Series(id) => {
-                clauses.push("i.series_id=?".into());
-                values.push(Value::Text(id.clone()));
-                order = "i.chapter_index ASC, i.id";
-            }
-            ItemFilter::Tag(tag) => {
-                clauses.push("EXISTS(SELECT 1 FROM item_tags t WHERE t.item_id=i.id AND t.tag_id=? AND t.state IN ('confirmed','auto'))".into());
-                values.push(Value::Text(tag.clone()));
-            }
-            ItemFilter::Ids(ids) => {
-                if ids.is_empty() {
-                    return Ok(Vec::new());
-                }
-                clauses.push(format!("i.id IN ({})", vec!["?"; ids.len()].join(",")));
-                values.extend(ids.iter().map(|i| Value::Text(i.clone())));
-            }
-        }
-        if q.unread_only {
-            match &q.keep {
-                Some(id) => {
-                    clauses.push("(i.read=0 OR i.id=?)".into());
-                    values.push(Value::Text(id.clone()));
-                }
-                None => clauses.push("i.read=0".into()),
-            }
-        }
+        let Some(Conditions {
+            clauses,
+            values,
+            order,
+        }) = conditions(q)
+        else {
+            return Ok(Vec::new());
+        };
         let sql = format!(
             "SELECT {ITEM_COLUMNS} FROM {ITEM_JOINS} WHERE {} ORDER BY {order} LIMIT {} OFFSET {}",
             clauses.join(" AND "),
@@ -325,6 +291,120 @@ impl Store {
         Ok(rows)
     }
 
+    /// How many items `items` would list without its limit and offset.
+    pub fn count_items(&self, q: &ItemQuery) -> Result<u32> {
+        let Some(Conditions {
+            clauses, values, ..
+        }) = conditions(q)
+        else {
+            return Ok(0);
+        };
+        let sql = format!(
+            "SELECT COUNT(*) FROM {ITEM_JOINS} WHERE {}",
+            clauses.join(" AND ")
+        );
+        self.with(|c| Ok(c.query_row(&sql, params_from_iter(values), |r| r.get(0))?))
+    }
+
+    /// Unread subscription articles a query lists that arrived by `until`
+    /// (ms), whatever its limit: what "mark all as read" marks.
+    pub fn unread_feed_ids(&self, q: &ItemQuery, until: i64) -> Result<Vec<String>> {
+        let Some(Conditions {
+            mut clauses,
+            mut values,
+            ..
+        }) = conditions(q)
+        else {
+            return Ok(Vec::new());
+        };
+        clauses.push("i.kind='feed' AND i.read=0 AND i.added_at<=?".into());
+        values.push(Value::Integer(until));
+        let sql = format!(
+            "SELECT i.id FROM {ITEM_JOINS} WHERE {}",
+            clauses.join(" AND ")
+        );
+        self.with(|c| {
+            let mut stmt = c.prepare(&sql)?;
+            let rows = stmt.query_map(params_from_iter(values), |r| r.get(0))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<String>>>()?)
+        })
+    }
+}
+
+struct Conditions {
+    clauses: Vec<String>,
+    values: Vec<Value>,
+    order: &'static str,
+}
+
+/// The WHERE clauses, their values and the order of a query; `None` when it
+/// can match nothing.
+fn conditions(q: &ItemQuery) -> Option<Conditions> {
+    let mut clauses = vec!["i.deleted=0".to_string()];
+    let mut values: Vec<Value> = Vec::new();
+    let mut order = "i.published_at DESC, i.id";
+    match &q.filter {
+        ItemFilter::All => clauses.push("i.kind!='chapter'".into()),
+        ItemFilter::Starred => clauses.push("i.starred=1".into()),
+        ItemFilter::Saved => clauses.push("i.kind='saved'".into()),
+        ItemFilter::ContinueReading => {
+            clauses.push("i.progress>=0.05 AND i.progress<0.95 AND i.finished=0".into());
+            order = "i.last_read_at DESC, i.id";
+        }
+        ItemFilter::Source(id) => {
+            clauses.push("i.source_id=?".into());
+            values.push(Value::Text(id.clone()));
+        }
+        ItemFilter::Category(name) => {
+            clauses.push("s.category=?".into());
+            values.push(Value::Text(name.clone()));
+        }
+        ItemFilter::Series(id) => {
+            clauses.push("i.series_id=?".into());
+            values.push(Value::Text(id.clone()));
+            order = "i.chapter_index ASC, i.id";
+        }
+        ItemFilter::Tag(tag) => {
+            clauses.push("EXISTS(SELECT 1 FROM item_tags t WHERE t.item_id=i.id AND t.tag_id=? AND t.state IN ('confirmed','auto'))".into());
+            values.push(Value::Text(tag.clone()));
+        }
+        ItemFilter::Ids(ids) => {
+            if ids.is_empty() {
+                return None;
+            }
+            clauses.push(format!("i.id IN ({})", vec!["?"; ids.len()].join(",")));
+            values.extend(ids.iter().map(|i| Value::Text(i.clone())));
+        }
+        ItemFilter::Title(text) => {
+            let text = text.trim();
+            if text.is_empty() {
+                return None;
+            }
+            let escaped = text
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            clauses.push("i.kind!='chapter' AND i.title LIKE ? ESCAPE '\\'".into());
+            values.push(Value::Text(format!("%{escaped}%")));
+        }
+    }
+    if q.unread_only {
+        match &q.keep {
+            Some(id) => {
+                clauses.push("(i.read=0 OR i.id=?)".into());
+                values.push(Value::Text(id.clone()));
+            }
+            None => clauses.push("i.read=0".into()),
+        }
+    }
+    Some(Conditions {
+        clauses,
+        values,
+        order,
+    })
+}
+
+impl Store {
     /// Items of an upstream account: (id, upstream_id, read, starred).
     pub fn upstream_items(&self, account_id: &str) -> Result<Vec<(String, String, bool, bool)>> {
         self.with(|c| {
