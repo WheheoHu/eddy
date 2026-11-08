@@ -173,24 +173,65 @@ fn segs() -> Vec<Segment> {
 }
 
 #[test]
-fn translation_ids_are_exact_and_bad_replies_fail_closed() {
+fn translation_markers_are_exact_and_bad_replies_fail_closed() {
     let ok = validate_translations(
-        r#"```json
-{"translations":[{"id":"s1","text":"世界"},{"id":"s0","text":"你好"}]}
-```"#,
+        "```\n<<<s0>>>\n你好 \"引号\" \\ 反斜杠\n还有第二行\n\n  <<<s1>>>  \n世界\n```",
         &segs(),
     )
     .unwrap();
-    assert_eq!(ok["s0"], "你好");
+    assert_eq!(ok["s0"], "你好 \"引号\" \\ 反斜杠\n还有第二行");
     assert_eq!(ok["s1"], "世界");
     for bad in [
-        r#"{"translations":[{"id":"s0","text":"你好"}]}"#,
-        r#"{"translations":[{"id":"s0","text":"a"},{"id":"s0","text":"b"}]}"#,
-        r#"{"translations":[{"id":"s0","text":""},{"id":"s1","text":"b"}]}"#,
-        r#"{"translations":[{"id":"x","text":"a"},{"id":"s1","text":"b"}]}"#,
+        "<<<s0>>>\n你好",
+        "<<<s0>>>\na\n<<<s0>>>\nb",
+        "<<<s0>>>\n\n<<<s1>>>\nb",
+        "<<<x>>>\na\n<<<s1>>>\nb",
+        "<<<s1>>>\n世界\n<<<s0>>>\n你好",
+        "Here you go:\n<<<s0>>>\na\n<<<s1>>>\nb",
+        r#"{"translations":[{"id":"s0","text":"a"},{"id":"s1","text":"b"}]}"#,
     ] {
         assert!(validate_translations(bad, &segs()).is_err(), "{bad}");
     }
+}
+
+#[tokio::test]
+async fn malformed_batch_replies_are_retried_then_split() {
+    use std::sync::Mutex;
+    struct Flaky {
+        calls: Mutex<Vec<usize>>,
+    }
+    #[async_trait::async_trait]
+    impl Provider for Flaky {
+        fn cache_identity(&self) -> String {
+            "flaky".into()
+        }
+        fn model(&self) -> &str {
+            "m"
+        }
+        async fn complete(&self, messages: &[ChatMessage]) -> Result<String, AiError> {
+            let input = &messages[1].content;
+            let ids: Vec<&str> = input
+                .lines()
+                .filter_map(|l| l.strip_prefix("<<<").and_then(|r| r.strip_suffix(">>>")))
+                .collect();
+            self.calls.lock().unwrap().push(ids.len());
+            // Whole batches come back mangled; single segments are fine.
+            if ids.len() > 1 {
+                return Ok("Sure! Here is the translation.".into());
+            }
+            Ok(format!("<<<{}>>>\n译文 {}", ids[0], ids[0]))
+        }
+    }
+    let provider = Flaky {
+        calls: Mutex::new(Vec::new()),
+    };
+    let out = translate_batch(&provider, &segs(), "简体中文", "")
+        .await
+        .unwrap();
+    assert_eq!(out["s0"], "译文 s0");
+    assert_eq!(out["s1"], "译文 s1");
+    // Two tries at the pair, then one each.
+    assert_eq!(*provider.calls.lock().unwrap(), [2, 2, 1, 1]);
 }
 
 #[test]
@@ -213,8 +254,12 @@ fn batches_respect_segment_and_size_limits() {
 }
 
 fn reply(content: serde_json::Value) -> ResponseTemplate {
+    reply_text(&content.to_string())
+}
+
+fn reply_text(content: &str) -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_json(
-        serde_json::json!({"choices": [{"message": {"content": content.to_string()}}]}),
+        serde_json::json!({"choices": [{"message": {"content": content}}]}),
     )
 }
 
@@ -225,7 +270,7 @@ async fn openai_compatible_provider_runs_all_tasks() {
         .and(path("/v1/chat/completions"))
         .and(header("authorization", "Bearer key-123"))
         .and(body_string_contains("Translate each input segment into 简体中文"))
-        .respond_with(reply(serde_json::json!({"translations": [{"id": "s0", "text": "你好"}, {"id": "s1", "text": "世界"}]})))
+        .respond_with(reply_text("<<<s0>>>\n你好\n<<<s1>>>\n世界"))
         .mount(&server)
         .await;
     Mock::given(method("POST"))

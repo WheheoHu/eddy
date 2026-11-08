@@ -34,6 +34,8 @@ struct ReaderPane: View {
     @State private var loading = true
     @State private var rendererID = RendererRegistry.article.id
     @State private var mode: ReadingMode = .original
+    /// What "Translate" (⌥A) turns on: the way it was last shown.
+    @AppStorage("reader.translationMode") private var lastTranslationMode: ReadingMode = .bilingual
     @State private var translations: [String: String] = [:]
     /// The whole text is translated; otherwise translating resumes.
     @State private var translationComplete = false
@@ -47,6 +49,8 @@ struct ReaderPane: View {
     /// Bumped by each start and cancel; a run finishing late leaves the
     /// banner to the newer one.
     @State private var translationGeneration = 0
+    /// Translates the web page in place; the reflowed text has its own.
+    @State private var webTranslator: WebTranslator?
     @State private var showSummary = false
     @State private var showType = false
     @State private var resumeNote: ResumePointView?
@@ -74,7 +78,12 @@ struct ReaderPane: View {
     private var item: ItemView? { model.item(itemID) }
     private var inGallery: Bool { item.map(model.inGallery) ?? false }
     private var showingMedia: Bool { rendererID == RendererRegistry.media.id }
-
+    /// The web page is on screen: chosen, or standing in for text there
+    /// isn't any of.
+    private var showingWeb: Bool {
+        guard !showingMedia, rendererID != RendererRegistry.pdf.id, item?.url != nil else { return false }
+        return rendererID == RendererRegistry.web.id || (document == nil && !loading)
+    }
     var body: some View {
         VStack(spacing: 0) {
             if showSummary {
@@ -97,6 +106,11 @@ struct ReaderPane: View {
             perform(command.action)
         }
         .onChange(of: mode) { _, new in
+            if new != .original { lastTranslationMode = new }
+            if showingWeb {
+                showWebTranslation(new)
+                return
+            }
             guard new != .original else {
                 cancelTranslation()
                 return
@@ -111,6 +125,18 @@ struct ReaderPane: View {
                 rendererID = RendererRegistry.article.id
             }
             if !translationComplete, !translating { startTranslation() }
+        }
+        // The translation follows the view: the page's when the page shows,
+        // the text's when the text does.
+        .onChange(of: rendererID) { old, new in
+            guard mode != .original else { return }
+            if new == RendererRegistry.web.id {
+                cancelTranslation()
+                showWebTranslation(mode)
+            } else if old == RendererRegistry.web.id {
+                webTranslator?.cancel()
+                if new == RendererRegistry.article.id, !translationComplete, !translating { startTranslation() }
+            }
         }
     }
 
@@ -133,7 +159,7 @@ struct ReaderPane: View {
                     ContentUnavailableView("PDF Unavailable", systemImage: "doc.richtext", description: Text("The file isn’t on this Mac and couldn’t be downloaded."))
                 }
             } else if rendererID == RendererRegistry.web.id || (document == nil && !loading), let url = item.url.flatMap(URL.init(string:)) {
-                WebPageView(url: url, gestures: gestures, onEscape: escape, focused: focused, onFocus: onFocus, appearance: appearance.nsAppearance)
+                WebPageView(url: url, gestures: gestures, onEscape: escape, focused: focused, onFocus: onFocus, appearance: appearance.nsAppearance, translator: webTranslator)
                     .transition(.push(from: rendererArrival))
             } else if let document {
                 let version = "\(document.contentHash)|\(mode.rawValue)|\(translations.count)|\(fontSize)|\(serif)|\(lineHeight)|\(scheme)"
@@ -199,7 +225,19 @@ struct ReaderPane: View {
                     Button { resumeNote = nil } label: { Image(systemName: "xmark") }
                 }
             }
-            if translating {
+            if showingWeb, let webTranslator {
+                if webTranslator.translating {
+                    Banner(icon: "character.bubble", text: "Translating the page…") {
+                        ProgressView().controlSize(.small)
+                        Button("Cancel") { webTranslator.cancel() }.help("Stop translating (Esc); what is translated stays")
+                    }
+                } else if webTranslator.stopped, mode != .original {
+                    Banner(icon: "pause.circle", text: "Translation stopped") {
+                        Button("Continue") { webTranslator.show(mode) }
+                        Button { mode = .original } label: { Image(systemName: "xmark") }
+                    }
+                }
+            } else if translating {
                 Banner(icon: "character.bubble", text: "Translating…") {
                     ProgressView().controlSize(.small)
                     Button("Cancel", action: cancelTranslation).help("Stop translating (Esc); what is translated stays")
@@ -295,6 +333,8 @@ struct ReaderPane: View {
         lastPage = nil
         scrollTarget = nil
         rendererID = RendererRegistry.preferred(for: item, inGallery: inGallery).id
+        webTranslator?.cancel()
+        webTranslator = WebTranslator(model: model, itemID: itemID)
         let cached = model.cachedTranslation(itemID)
         translations = cached.segments
         translationComplete = cached.complete
@@ -321,6 +361,7 @@ struct ReaderPane: View {
     }
 
     private func flush() {
+        webTranslator?.cancel()
         // Marked unread while open: leaving doesn't put the position back.
         guard model.item(itemID)?.read != false else { return }
         if let lastPosition { model.flushProgress(itemID, blockID: lastPosition.block, offset: lastPosition.offset, atEnd: lastPosition.atEnd) }
@@ -337,6 +378,9 @@ struct ReaderPane: View {
             toggleSummary(true)
         case let .readingMode(new):
             mode = new
+        case .toggleTranslation:
+            guard !showingMedia else { return }
+            mode = mode == .original ? lastTranslationMode : .original
         case .toggleWeb:
             if rendererID == RendererRegistry.web.id, hasText {
                 slide(to: RendererRegistry.article.id)
@@ -453,7 +497,25 @@ struct ReaderPane: View {
 
     /// Esc in the reader cancels a translation first.
     private var escape: () -> Void {
-        { if translating { cancelTranslation() } else { onEscape?() } }
+        {
+            if translating {
+                cancelTranslation()
+            } else if showingWeb, webTranslator?.translating == true {
+                webTranslator?.cancel()
+            } else {
+                onEscape?()
+            }
+        }
+    }
+
+    /// Translates the web page as `mode` asks, once AI is set up.
+    private func showWebTranslation(_ mode: ReadingMode) {
+        if mode != .original, !model.aiConfigured {
+            model.message = "Add an AI provider in Settings to translate."
+            self.mode = .original
+            return
+        }
+        webTranslator?.show(mode)
     }
 
     /// The first batch shows at once; later ones together, every 0.6 s, so

@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 async-trait = { workspace = true }
 eddy-doc = { workspace = true }
+futures = { workspace = true }
 regex = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }

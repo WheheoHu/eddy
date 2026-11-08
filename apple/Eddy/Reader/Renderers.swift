@@ -55,15 +55,19 @@ struct WebPageView: NSViewRepresentable {
     /// Pages that style themselves for dark mode follow it; nil inherits
     /// the app's appearance.
     var appearance: NSAppearance?
+    /// Translates the page in place when a translation is asked for.
+    var translator: WebTranslator?
 
     func makeNSView(context: Context) -> GestureContainer {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
+        config.userContentController.addUserScript(WebTranslator.script)
         let view = ReaderWebView(frame: .zero, configuration: config)
         view.allowsBackForwardNavigationGestures = false
+        view.navigationDelegate = view
         let container = GestureContainer(content: view)
         view.tracker = container.tracker
-        view.load(URLRequest(url: url))
+        view.show(url)
         return container
     }
 
@@ -72,11 +76,15 @@ struct WebPageView: NSViewRepresentable {
         guard let view = container.content as? ReaderWebView else { return }
         view.onEscape = onEscape
         view.onFocus = onFocus
+        if let translator {
+            translator.webView = view
+            view.onLoad = { [weak translator] in translator?.pageLoaded() }
+        }
         view.wantsFocus = focused
         if view.appearance?.name != appearance?.name { view.appearance = appearance }
-        if view.url?.absoluteString != url.absoluteString, !view.isLoading {
-            view.load(URLRequest(url: url))
-        }
+        // Only another item's page is loaded: a page that redirected or
+        // rewrote its own address stays, however often the view updates.
+        if view.shown != url { view.show(url) }
     }
 
     static func dismantleNSView(_ container: GestureContainer, coordinator: ()) {
@@ -84,12 +92,26 @@ struct WebPageView: NSViewRepresentable {
     }
 }
 
-final class ReaderWebView: WKWebView {
+final class ReaderWebView: WKWebView, WKNavigationDelegate {
     weak var tracker: EdgeGestureTracker?
     var onEscape: (() -> Void)?
     var onFocus: (() -> Void)?
+    /// A page finished loading.
+    var onLoad: (() -> Void)?
+    /// The address asked for, which the page may have moved on from.
+    private(set) var shown: URL?
+
+    func show(_ url: URL) {
+        shown = url
+        load(URLRequest(url: url))
+    }
+
     var wantsFocus = false {
         didSet { if wantsFocus, !oldValue { claimFocus(self) } }
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        onLoad?()
     }
 
     override func viewDidMoveToWindow() {

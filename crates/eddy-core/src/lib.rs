@@ -23,6 +23,7 @@ pub use ai::{
 };
 pub use collection::{CollectionEntry, CollectionKind};
 pub use content::LoadedDocument;
+pub use eddy_doc::Segment;
 pub use eddy_ai::{
     AiSettings, AutoAction, AutoRule, MAX_CONCURRENCY, ProviderSettings, RuleScope, Summary,
 };

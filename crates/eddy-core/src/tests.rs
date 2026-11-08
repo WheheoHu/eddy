@@ -952,25 +952,42 @@ async fn mock_llm() -> MockServer {
         ))
         .mount(&server)
         .await;
-    // Translation: echo every segment ID back with a prefix.
+    // Translation: echo every segment back with a prefix.
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .and(body_string_contains("Translate each input segment"))
         .respond_with(|req: &wiremock::Request| {
-            let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
-            let user: serde_json::Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
-            let translations: Vec<_> = user["segments"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|s| json!({"id": s["id"], "text": format!("译：{}", s["text"].as_str().unwrap())}))
-                .collect();
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"choices": [{"message": {"content": json!({"translations": translations}).to_string()}}]}))
+            ResponseTemplate::new(200).set_body_json(
+                json!({"choices": [{"message": {"content": echo_translation(&requested_segments(req))}}]}),
+            )
         })
         .mount(&server)
         .await;
     server
+}
+
+/// The segments a translation request carries, `(id, text)`, read from
+/// its marker lines.
+fn requested_segments(req: &wiremock::Request) -> Vec<(String, String)> {
+    let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+    let user = body["messages"][1]["content"].as_str().unwrap();
+    let mut out: Vec<(String, String)> = Vec::new();
+    for line in user.lines() {
+        if let Some(id) = line.strip_prefix("<<<").and_then(|r| r.strip_suffix(">>>")) {
+            out.push((id.to_string(), String::new()));
+        } else if let Some(last) = out.last_mut() {
+            last.1.push_str(line);
+        }
+    }
+    out
+}
+
+/// A model reply translating each segment as "译：" plus the source.
+fn echo_translation(segments: &[(String, String)]) -> String {
+    segments
+        .iter()
+        .map(|(id, text)| format!("<<<{id}>>>\n译：{text}\n"))
+        .collect()
 }
 
 fn configure_ai(engine: &Engine, llm: &MockServer, rules: Vec<AutoRule>) {
@@ -1046,27 +1063,15 @@ struct SlowTranslator {
 
 impl wiremock::Respond for SlowTranslator {
     fn respond(&self, req: &wiremock::Request) -> ResponseTemplate {
-        let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
-        let user: serde_json::Value =
-            serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
-        let segments = user["segments"].as_array().unwrap();
+        let segments = requested_segments(req);
         let mut arrivals = self.arrivals.lock();
-        arrivals.push(
-            segments
-                .iter()
-                .map(|s| s["id"].as_str().unwrap().to_string())
-                .collect(),
-        );
+        arrivals.push(segments.iter().map(|(id, _)| id.clone()).collect());
         let open = arrivals.len() - self.delivered.load(std::sync::atomic::Ordering::SeqCst);
         self.peak
             .fetch_max(open, std::sync::atomic::Ordering::SeqCst);
-        let translations: Vec<_> = segments
-            .iter()
-            .map(|s| json!({"id": s["id"], "text": format!("译：{}", s["text"].as_str().unwrap())}))
-            .collect();
         ResponseTemplate::new(200)
             .set_delay(std::time::Duration::from_millis(self.delay_ms))
-            .set_body_json(json!({"choices": [{"message": {"content": json!({"translations": translations}).to_string()}}]}))
+            .set_body_json(json!({"choices": [{"message": {"content": echo_translation(&segments)}}]}))
     }
 }
 

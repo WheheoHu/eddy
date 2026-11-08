@@ -385,6 +385,63 @@ impl Inner {
         })
     }
 
+    /// Translates `segments` with the configured provider, as many
+    /// requests at once as it allows, counting each against the day's
+    /// usage. Stops when cancelled under `key`, returning what is done;
+    /// a failed batch stops it with the error.
+    pub(crate) async fn translate_text(
+        &self,
+        key: &str,
+        segments: Vec<Segment>,
+        on_batch: Option<BatchCallback>,
+    ) -> Result<HashMap<String, String>> {
+        let settings = self.ai_settings()?;
+        let provider = self.provider(&settings)?;
+        let target = settings.target_language.clone();
+        self.translation_cancels.lock().remove(key);
+        let batches = batches(&segments);
+        let limit = settings
+            .provider
+            .as_ref()
+            .map_or(1, ProviderSettings::concurrency);
+        let mut pending: Vec<usize> = (0..batches.len()).collect();
+        let mut in_flight = FuturesUnordered::new();
+        let mut all = HashMap::new();
+        let mut stopped = false;
+        let mut failure = None;
+        loop {
+            while !stopped && failure.is_none() && in_flight.len() < limit && !pending.is_empty() {
+                let i = pending.remove(0);
+                self.store.add_ai_usage(&today(), 1)?;
+                let (provider, batch, target, glossary) =
+                    (provider.as_ref(), &batches[i], &target, &settings.glossary);
+                in_flight.push(async move {
+                    eddy_ai::translate_batch(provider, batch, target, glossary).await
+                });
+            }
+            let Some(result) = in_flight.next().await else {
+                break;
+            };
+            match result {
+                Ok(r) => {
+                    if let Some(cb) = &on_batch {
+                        cb(&r);
+                    }
+                    all.extend(r);
+                }
+                Err(e) => {
+                    failure.get_or_insert(e);
+                }
+            }
+            stopped |= self.translation_cancels.lock().remove(key);
+        }
+        drop(in_flight);
+        if let Some(e) = failure {
+            return Err(EngineError::Invalid(e.to_string()));
+        }
+        Ok(all)
+    }
+
     pub(crate) async fn summarize(&self, item_id: &str, force: bool) -> Result<SummaryResult> {
         let settings = self.ai_settings()?;
         let provider = self.provider(&settings)?;
@@ -622,6 +679,20 @@ impl Engine {
         on_batch: Option<BatchCallback>,
     ) -> Result<TranslationResult> {
         self.inner.translate(item_id, force, on_batch).await
+    }
+
+    /// Translates text that isn't a stored document: the paragraphs of a
+    /// web page shown as the site made it. Nothing is kept or synced; the
+    /// page's text is the page's, and changes with it. Batches arrive in
+    /// `on_batch` as they finish, in document order. `key` names the run
+    /// for `cancel_translation`.
+    pub async fn translate_text(
+        &self,
+        key: &str,
+        segments: Vec<Segment>,
+        on_batch: Option<BatchCallback>,
+    ) -> Result<HashMap<String, String>> {
+        self.inner.translate_text(key, segments, on_batch).await
     }
 
     pub async fn summarize(&self, item_id: &str, force: bool) -> Result<SummaryResult> {

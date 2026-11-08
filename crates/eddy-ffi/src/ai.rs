@@ -198,6 +198,13 @@ pub trait TranslationListener: Send + Sync {
     fn on_batch(&self, segments: HashMap<String, String>);
 }
 
+/// A piece of text to translate, named by the caller.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct SegmentView {
+    pub id: String,
+    pub text: String,
+}
+
 type R<T> = Result<T, EddyError>;
 
 #[uniffi::export(async_runtime = "tokio")]
@@ -238,6 +245,29 @@ impl EddyEngine {
             .translate(&item_id, force, callback)
             .await?
             .into())
+    }
+
+    /// Translates text that isn't stored content (a web page's paragraphs);
+    /// nothing is kept or synced. `key` names the run for
+    /// `cancel_translation`, which returns what is done so far.
+    pub async fn translate_text(
+        &self,
+        key: String,
+        segments: Vec<SegmentView>,
+        listener: Option<Arc<dyn TranslationListener>>,
+    ) -> R<HashMap<String, String>> {
+        let callback = listener.map(|l| {
+            Arc::new(move |s: &HashMap<String, String>| l.on_batch(s.clone()))
+                as core::BatchCallback
+        });
+        let segments = segments
+            .into_iter()
+            .map(|s| core::Segment {
+                id: s.id,
+                text: s.text,
+            })
+            .collect();
+        Ok(self.engine.translate_text(&key, segments, callback).await?)
     }
 
     pub fn cached_translation(&self, item_id: String) -> R<Option<TranslationView>> {
