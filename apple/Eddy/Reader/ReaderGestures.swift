@@ -81,6 +81,9 @@ final class EdgeGestureTracker {
 
     var active: Bool { gesture != nil }
 
+    /// A gesture is following the fingers somewhere; heavy work waits.
+    private(set) static var anyActive = false
+
     // MARK: Wheel and trackpad
 
     /// Whether the event belongs to an edge gesture, and must not scroll.
@@ -216,6 +219,7 @@ final class EdgeGestureTracker {
         distance = 0
         feltThreshold = false
         ownsGesture = true
+        Self.anyActive = true
         gesture = EdgeGesture(kind: kind, progress: 0, target: target)
     }
 
@@ -234,6 +238,7 @@ final class EdgeGestureTracker {
     private func finish(commit: Bool) {
         let acted = commit && gesture?.armed == true ? gesture?.kind : nil
         stopTimers()
+        Self.anyActive = false
         gesture = nil
         distance = 0
         onChange?(nil, acted != nil)
@@ -283,6 +288,14 @@ final class GestureContainer: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     override var isFlipped: Bool { true }
+
+    /// Once the content has moved, the gap it leaves (and the capsule in it)
+    /// can be under the pointer; scrolling there still belongs to the
+    /// gesture, or the gesture never hears the fingers lift.
+    override func scrollWheel(with event: NSEvent) {
+        if tracker.handle(event, in: content as? NSScrollView) { return }
+        content.scrollWheel(with: event)
+    }
 
     /// Sliding in with a transition can leave a strip of the text undrawn;
     /// redraw once the view has come to rest.

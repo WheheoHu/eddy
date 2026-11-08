@@ -1,5 +1,6 @@
 import AppKit
 import EddyKit
+import ImageIO
 import Observation
 import PDFKit
 import SwiftUI
@@ -143,6 +144,25 @@ final class AppModel {
         revision += 1
     }
 
+    private var pendingReload: Task<Void, Never>?
+
+    /// Reading changes things in bursts (opening marks read, leaving saves
+    /// the position, the end finishes it); one reload after the switch's
+    /// animation covers them all instead of redrawing every list three times
+    /// while it plays.
+    func reloadSoon() {
+        guard pendingReload == nil else { return }
+        pendingReload = Task {
+            try? await Task.sleep(for: .milliseconds(350))
+            // Not while the fingers are moving the reader.
+            while EdgeGestureTracker.anyActive {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            pendingReload = nil
+            reload()
+        }
+    }
+
     /// `keep` stays in an unread-only list after it is read.
     func items(_ filter: ItemFilterView, unreadOnly: Bool = false, keep: String? = nil, limit: UInt32 = 500) -> [ItemView] {
         _ = revision
@@ -221,9 +241,36 @@ final class AppModel {
 
     func image(_ url: String) async -> NSImage? {
         if let cached = imageCache.object(forKey: url as NSString) { return cached }
-        guard let engine, let data = try? await engine.image(url: url), let image = NSImage(data: Data(data.bytes)) else { return nil }
+        guard let engine, let data = try? await engine.image(url: url) else { return nil }
+        let bytes = Data(data.bytes)
+        guard let image = await Task.detached(priority: .userInitiated, operation: { Self.decoded(bytes) }).value else { return nil }
         imageCache.setObject(image, forKey: url as NSString)
         return image
+    }
+
+    /// Decodes off the main thread, at no more pixels than the reader shows:
+    /// `NSImage(data:)` would decode a full-size photo on the main thread the
+    /// first time it is drawn, in the middle of scrolling or a transition.
+    /// The size in points stays the image's own, as `NSImage(data:)` gives.
+    /// Animated GIFs and formats ImageIO can't read (SVG) go the old way.
+    private nonisolated static func decoded(_ data: Data) -> NSImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              CGImageSourceGetCount(source) == 1,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? CGFloat,
+              let height = properties[kCGImagePropertyPixelHeight] as? CGFloat
+        else { return NSImage(data: data) }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: 2400,
+        ]
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return NSImage(data: data) }
+        let orientation = properties[kCGImagePropertyOrientation] as? UInt32 ?? 1
+        // Orientations 5 to 8 swap width and height.
+        let size = orientation >= 5 ? CGSize(width: height, height: width) : CGSize(width: width, height: height)
+        return NSImage(cgImage: cgImage, size: size)
     }
 
     // MARK: Actions
@@ -231,14 +278,14 @@ final class AppModel {
     func setStarred(_ item: ItemView, _ on: Bool) {
         Task {
             try? await engine?.setStarred(itemId: item.id, starred: on)
-            reload()
+            reloadSoon()
         }
     }
 
     func setRead(_ item: ItemView, _ on: Bool) {
         Task {
             try? await engine?.setRead(itemId: item.id, read: on)
-            reload()
+            reloadSoon()
         }
     }
 
@@ -288,17 +335,17 @@ final class AppModel {
     func recordProgress(_ itemID: String, blockID: String, offset: Int, atEnd: Bool) {
         let finishing = atEnd && item(itemID)?.finished == false
         _ = try? engine?.recordProgress(itemId: itemID, blockId: blockID, offset: UInt32(max(0, offset)), atEnd: atEnd, force: false)
-        if finishing { reload() }
+        if finishing { reloadSoon() }
     }
 
     func flushProgress(_ itemID: String, blockID: String, offset: Int, atEnd: Bool) {
         _ = try? engine?.recordProgress(itemId: itemID, blockId: blockID, offset: UInt32(max(0, offset)), atEnd: atEnd, force: true)
-        reload()
+        reloadSoon()
     }
 
     func recordPage(_ itemID: String, page: Int, of count: Int, force: Bool = false) {
         _ = try? engine?.recordPageProgress(itemId: itemID, page: UInt32(max(0, page)), pageCount: UInt32(max(0, count)), force: force)
-        if force { reload() }
+        if force { reloadSoon() }
     }
 
     func resume(_ itemID: String) -> ResumePointView? {
@@ -399,7 +446,7 @@ final class AppModel {
             let listener = HistoryProgress { [weak self] added in
                 guard let self, loadingHistory else { return }
                 historyAdded = added
-                reload()
+                reloadSoon()
             }
             _ = try? await engine.backfillHistory(listener: listener)
             loadingHistory = false
