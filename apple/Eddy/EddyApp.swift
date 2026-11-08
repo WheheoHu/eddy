@@ -61,6 +61,10 @@ struct EddyApp: App {
             CommandMenu("Go") {
                 Button("Go To or Search…") { model.paletteVisible.toggle() }.keyboardShortcut("k", modifiers: .command)
             }
+            CommandMenu("Reader") {
+                Button("Translate") { model.toggleTranslation() }
+                    .keyboardShortcut("a", modifiers: .option)
+            }
         }
         Settings {
             SettingsView().environment(model)
@@ -71,6 +75,7 @@ struct EddyApp: App {
 struct RootView: View {
     @Environment(AppModel.self) private var model
     let mode: AppMode
+    @State private var keyMonitor: Any?
 
     static let importTypes: [UTType] = [.epub, .pdf]
 
@@ -102,7 +107,22 @@ struct RootView: View {
             if model.paletteVisible { CommandPalette() }
         }
         // The window is made after launching finishes; bring it forward too.
-        .onAppear { AppDelegate.comeForward() }
+        .onAppear {
+            AppDelegate.comeForward()
+            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                // ⌥A translates, wherever focus is: a list would otherwise
+                // type-select on the "å" and the web page would keep it.
+                let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.capsLock, .numericPad, .function])
+                guard flags == .option, event.charactersIgnoringModifiers?.lowercased() == "a",
+                      (NSApp.keyWindow?.firstResponder as? NSTextView)?.isEditable != true else { return event }
+                model.toggleTranslation()
+                return nil
+            }
+        }
+        .onDisappear {
+            if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+            keyMonitor = nil
+        }
         .confirmationDialog(
             Text("Delete “\(model.pendingDeletion?.title ?? "")”?"),
             isPresented: Binding(get: { model.pendingDeletion != nil }, set: { if !$0 { model.pendingDeletion = nil } }),

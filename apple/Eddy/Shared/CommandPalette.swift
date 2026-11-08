@@ -201,6 +201,7 @@ struct CommandPalette: View {
         }
         var items: [PaletteItem] = [
             PaletteItem(id: "summary", group: .reader, title: String(localized: "Summarize"), icon: "sparkles") { command(.summary) },
+            PaletteItem(id: "translate", group: .reader, title: String(localized: "Translate (⌥A)"), icon: "translate") { command(.toggleTranslation) },
             PaletteItem(id: "bilingual", group: .reader, title: String(localized: "Translate: Bilingual"), icon: "character.bubble") { command(.readingMode(.bilingual)) },
             PaletteItem(id: "translation", group: .reader, title: String(localized: "Translate: Translation Only"), icon: "character.bubble.fill") { command(.readingMode(.translation)) },
             PaletteItem(id: "original", group: .reader, title: String(localized: "Show Original"), icon: "text.alignleft") { command(.readingMode(.original)) },

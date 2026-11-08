@@ -40,6 +40,8 @@ struct ReaderCommand: Equatable {
     enum Action: Equatable {
         case summary
         case readingMode(ReadingMode)
+        /// Translation on (the way it was last shown) or back to the original.
+        case toggleTranslation
         /// Between the reflowed text and the web page.
         case toggleWeb
         case fetchFullText
@@ -103,6 +105,13 @@ final class AppModel {
     var revealed: String?
 
     var paletteVisible = false
+
+    /// Translation on or off for the item being read (⌥A).
+    func toggleTranslation() {
+        guard let id = currentItemID else { return }
+        readerCommand = PaletteRequest(value: ReaderCommand(itemID: id, action: .toggleTranslation))
+    }
+
     /// Picked in the palette, for the current mode: a sidebar entry, an item
     /// to open, a command for the reader.
     var navigation: PaletteRequest<Destination>?
@@ -653,6 +662,13 @@ final class AppModel {
 
     func cancelTranslation(_ id: String) {
         engine?.cancelTranslation(itemId: id)
+    }
+
+    /// Translates text that isn't stored content (a web page's paragraphs);
+    /// nothing is kept. `key` is for `cancelTranslation`.
+    func translateText(_ key: String, _ segments: [SegmentView], onBatch: @escaping @MainActor ([String: String]) -> Void) async throws -> [String: String] {
+        guard let engine else { return [:] }
+        return try await engine.translateText(key: key, segments: segments, listener: BatchListener(onBatch))
     }
 
     /// The block being read; a running translation continues from there.
