@@ -556,6 +556,13 @@ final class AppModel {
         reload()
     }
 
+    /// Gives the subscription its own full-text mode (a rule at the top),
+    /// or `nil` to leave it to the other rules.
+    func setFullText(source: SourceView, _ mode: FullTextModeView?) {
+        do { try engine?.setSourceFullTextRule(sourceId: source.id, mode: mode) } catch { message = error.localizedDescription }
+        reload()
+    }
+
     func setGallery(source: SourceView, _ shown: Bool) {
         do { try engine?.setSourceGallery(sourceId: source.id, shown: shown) } catch { message = error.localizedDescription }
         reload()

@@ -449,6 +449,94 @@ async fn full_text_replaces_a_truncated_feed_version() {
 }
 
 #[tokio::test]
+async fn full_text_rules_pick_the_mode_with_the_top_rule_winning() {
+    use eddy_model::{FullTextMode as M, FullTextRule, FullTextScope as S};
+    let pages = mock_pages().await;
+    let server = mock_freshrss_linking(&pages.uri()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    // Before anything arrives: nothing in the "Tech" folder is fetched.
+    engine
+        .set_full_text_rules(vec![
+            FullTextRule {
+                scope: S::Category { name: "Tech".into() },
+                mode: M::Never,
+            },
+            FullTextRule {
+                scope: S::All,
+                mode: M::Always,
+            },
+        ])
+        .unwrap();
+    engine
+        .configure_freshrss(&server.uri(), "me", "secret")
+        .await
+        .unwrap();
+    engine.refresh().await.unwrap();
+    let source = engine
+        .sources()
+        .unwrap()
+        .into_iter()
+        .find(|s| s.source.title == "Graphics Blog")
+        .unwrap()
+        .source;
+    let ids: Vec<String> = engine
+        .items(&ItemQuery::default())
+        .unwrap()
+        .into_iter()
+        .map(|r| r.item.id)
+        .collect();
+    assert_eq!(engine.effective_full_text(&source.id).unwrap(), M::Never);
+    assert!(engine.inner.auto_full_text(&ids).is_empty());
+
+    // Choosing a mode for the subscription puts its rule on top.
+    engine
+        .set_source_full_text_rule(&source.id, Some(M::Auto))
+        .unwrap();
+    engine
+        .set_source_full_text_rule(&source.id, Some(M::Always))
+        .unwrap();
+    let rules = engine.full_text_rules().unwrap();
+    assert_eq!(rules.len(), 3);
+    assert_eq!(
+        rules[0],
+        FullTextRule {
+            scope: S::Source {
+                id: source.id.clone()
+            },
+            mode: M::Always
+        }
+    );
+    assert_eq!(engine.effective_full_text(&source.id).unwrap(), M::Always);
+    assert_eq!(engine.inner.auto_full_text(&ids).len(), ids.len());
+
+    // Dropping it leaves the folder rule in charge again.
+    engine.set_source_full_text_rule(&source.id, None).unwrap();
+    assert_eq!(engine.full_text_rules().unwrap().len(), 2);
+    assert_eq!(engine.effective_full_text(&source.id).unwrap(), M::Never);
+
+    // Rules are a synced setting: another device applying the ops agrees.
+    engine
+        .set_source_full_text_rule(&source.id, Some(M::Always))
+        .unwrap();
+    let other_dir = tempfile::tempdir().unwrap();
+    let other = open(other_dir.path());
+    other
+        .configure_freshrss(&server.uri(), "me", "secret")
+        .await
+        .unwrap();
+    other.refresh().await.unwrap();
+    assert_eq!(other.effective_full_text(&source.id).unwrap(), M::Auto);
+    for op in engine.inner.store.unuploaded_ops(1000).unwrap() {
+        if op.op.entity == eddy_model::Entity::Setting {
+            other.inner.store.apply_remote(&op.op).unwrap();
+        }
+    }
+    assert_eq!(other.full_text_rules().unwrap(), engine.full_text_rules().unwrap());
+    assert_eq!(other.effective_full_text(&source.id).unwrap(), M::Always);
+}
+
+#[tokio::test]
 async fn walls_and_short_pages_never_replace_feed_content() {
     let pages = MockServer::start().await;
     let html = |body: &str| {

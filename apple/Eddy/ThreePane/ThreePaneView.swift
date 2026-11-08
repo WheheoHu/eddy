@@ -209,6 +209,7 @@ struct ThreePaneView: View {
                     } else {
                         Button(feed.gallery ? "Remove from Gallery" : "Show in Gallery") { model.setGallery(source: feed, !feed.gallery) }
                     }
+                    FullTextMenu(feed: feed)
                 }
         }
     }
@@ -607,6 +608,26 @@ struct StatusFooter: View {
         case .standalone where model.historyAdded > 0: "Loading history · \(model.historyAdded.formatted()) older articles"
         case .standalone: model.status?.account.map { "FreshRSS · \($0.username)" } ?? "FreshRSS"
         default: "On this Mac"
+        }
+    }
+}
+
+/// A subscription's full-text mode, from its context menu. Picking one
+/// adds a rule for it at the top of the full-text rules.
+private struct FullTextMenu: View {
+    @Environment(AppModel.self) private var model
+    let feed: SourceView
+
+    var body: some View {
+        Menu("Full Text") {
+            ForEach(FullTextModeView.allCases, id: \.self) { mode in
+                Toggle(isOn: Binding(get: { feed.sourceRule == mode }, set: { _ in model.setFullText(source: feed, mode) })) {
+                    Text(mode.title)
+                }
+            }
+            Divider()
+            Button("Use Rules") { model.setFullText(source: feed, nil) }.disabled(feed.sourceRule == nil)
+            Text("Now: \(Text(feed.fullText.title))")
         }
     }
 }
