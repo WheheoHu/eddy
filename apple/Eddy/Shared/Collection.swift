@@ -6,7 +6,7 @@ extension CollectionEntryView: @retroactive Identifiable {}
 extension CollectionKindView: @retroactive Identifiable {
     public var id: Self { self }
 
-    static let all: [CollectionKindView] = [.book, .pdf, .webPage, .webSeries]
+    static let all: [CollectionKindView] = [.book, .pdf, .webPage, .webSeries, .media]
 
     /// Stable name for stored preferences.
     var key: String {
@@ -15,6 +15,7 @@ extension CollectionKindView: @retroactive Identifiable {
         case .pdf: "pdf"
         case .webPage: "webPage"
         case .webSeries: "webSeries"
+        case .media: "media"
         }
     }
 
@@ -25,6 +26,7 @@ extension CollectionKindView: @retroactive Identifiable {
         case .pdf: "PDFs"
         case .webPage: "Web Pages"
         case .webSeries: "Web Series"
+        case .media: "Media"
         }
     }
 
@@ -35,6 +37,7 @@ extension CollectionKindView: @retroactive Identifiable {
         case .pdf: String(localized: "PDFs")
         case .webPage: String(localized: "Web Pages")
         case .webSeries: String(localized: "Web Series")
+        case .media: String(localized: "Media")
         }
     }
 
@@ -44,6 +47,7 @@ extension CollectionKindView: @retroactive Identifiable {
         case .pdf: String(localized: "PDF")
         case .webPage: String(localized: "Web Page")
         case .webSeries: String(localized: "Web Series")
+        case .media: String(localized: "Media")
         }
     }
 
@@ -53,6 +57,7 @@ extension CollectionKindView: @retroactive Identifiable {
         case .pdf: "doc.richtext"
         case .webPage: "globe"
         case .webSeries: "list.bullet.rectangle"
+        case .media: "play.rectangle"
         }
     }
 }

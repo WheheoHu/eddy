@@ -8,8 +8,15 @@ import SwiftUI
 enum AppMode: String, CaseIterable, Identifiable {
     case threePane = "Three-Pane"
     case library = "Library"
+    case gallery = "Gallery"
     var id: String { rawValue }
-    var icon: String { self == .threePane ? "rectangle.split.3x1" : "books.vertical" }
+    var icon: String {
+        switch self {
+        case .threePane: "rectangle.split.3x1"
+        case .library: "books.vertical"
+        case .gallery: "photo.on.rectangle.angled"
+        }
+    }
 }
 
 /// Something picked in the command palette, for the view that can do it.
@@ -25,6 +32,7 @@ enum Destination: Equatable {
     case library(LibraryFilter)
     /// A subscription on the library's shelf.
     case libraryFeed(sourceID: String)
+    case gallery(GalleryScopeView)
 }
 
 /// What the palette asks of the reader showing `itemID`.
@@ -70,6 +78,8 @@ final class AppModel {
     /// Everything that is not a subscription article.
     var collection: [CollectionEntryView] = []
     var tags: [TagView] = []
+    /// Folders shown in the Gallery as a whole.
+    var galleryFolders: [String] = []
     /// Articles, pages and chapters started but not finished.
     var continueReadingCount = 0
     var revision = 0
@@ -139,6 +149,7 @@ final class AppModel {
         series = (try? engine.seriesList()) ?? []
         collection = (try? engine.collection()) ?? []
         tags = (try? engine.tags()) ?? []
+        galleryFolders = (try? engine.galleryFolders()) ?? []
         let started = ItemQueryView(filter: .continueReading, unreadOnly: false, keep: nil, limit: 0, offset: 0)
         continueReadingCount = Int((try? engine.itemCount(query: started)) ?? 0)
         revision += 1
@@ -521,6 +532,43 @@ final class AppModel {
             message = n == 1 ? "Imported 1 page from the browser" : "Imported \(n) pages from the browser"
             reload()
         }
+    }
+
+    // MARK: Gallery
+
+    /// Subscriptions in the Gallery, on their own or through their folder.
+    var galleryFeeds: [SourceView] {
+        feeds.filter { $0.gallery || $0.category.map(galleryFolders.contains) == true }
+    }
+
+    func inGallery(folder: String) -> Bool { galleryFolders.contains(folder) }
+
+    func setGallery(folder: String, _ shown: Bool) {
+        do { try engine?.setFolderGallery(name: folder, shown: shown) } catch { message = error.localizedDescription }
+        reload()
+    }
+
+    func setGallery(source: SourceView, _ shown: Bool) {
+        do { try engine?.setSourceGallery(sourceId: source.id, shown: shown) } catch { message = error.localizedDescription }
+        reload()
+    }
+
+    func galleryItems(_ scope: GalleryScopeView, unreadOnly: Bool, offset: Int, limit: Int = 200) -> [GalleryEntryView] {
+        (try? engine?.galleryItems(scope: scope, unreadOnly: unreadOnly, limit: UInt32(limit), offset: UInt32(offset))) ?? []
+    }
+
+    func galleryCount(_ scope: GalleryScopeView) -> Int {
+        _ = revision
+        return Int((try? engine?.galleryCount(scope: scope, unreadOnly: false)) ?? 0)
+    }
+
+    func resolveMedia(_ itemID: String, force: Bool = false) async -> MediaSetView? {
+        try? await engine?.resolveMedia(itemId: itemID, force: force)
+    }
+
+    func prefetchMedia(_ itemIDs: [String]) {
+        guard let engine, !itemIDs.isEmpty else { return }
+        Task { await engine.prefetchMedia(itemIds: itemIDs) }
     }
 
     // MARK: AI

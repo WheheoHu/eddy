@@ -136,6 +136,10 @@ struct ThreePaneView: View {
                             Label(folder, systemImage: "folder")
                                 .badge(model.unread(inFolder: folder))
                                 .tag(Selection.folder(folder))
+                                .contextMenu {
+                                    let shown = model.inGallery(folder: folder)
+                                    Button(shown ? "Remove from Gallery" : "Show in Gallery") { model.setGallery(folder: folder, !shown) }
+                                }
                         }
                     }
                     feedRows(model.feeds(inFolder: nil))
@@ -184,6 +188,13 @@ struct ThreePaneView: View {
     private func feedRows(_ feeds: [SourceView]) -> some View {
         ForEach(feeds) { feed in
             Label(feed.title, systemImage: "dot.radiowaves.up.forward").badge(Int(feed.unread)).tag(Selection.feed(feed.id))
+                .contextMenu {
+                    if let folder = feed.category, model.inGallery(folder: folder) {
+                        Button("Shown in Gallery with “\(folder)”") {}.disabled(true)
+                    } else {
+                        Button(feed.gallery ? "Remove from Gallery" : "Show in Gallery") { model.setGallery(source: feed, !feed.gallery) }
+                    }
+                }
         }
     }
 
