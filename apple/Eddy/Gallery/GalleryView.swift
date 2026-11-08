@@ -320,6 +320,29 @@ struct GalleryTile: View {
     }
 }
 
+/// Marks a subscription or folder in the sidebar as shown in the Gallery;
+/// fainter when a subscription is there through its folder.
+struct GalleryMark: View {
+    var throughFolder: String?
+
+    var body: some View {
+        Image(systemName: "photo.on.rectangle.angled")
+            .font(.caption)
+            .foregroundStyle(throughFolder == nil ? .secondary : .tertiary)
+            .help(throughFolder.map { "Shown in the Gallery with the folder “\($0)”" } ?? "Shown in the Gallery")
+            .accessibilityLabel("In Gallery")
+    }
+}
+
+extension AppModel {
+    /// Why a subscription is in the Gallery: on its own (`""`), through
+    /// its folder (the folder's name), or not at all (`nil`).
+    func galleryReason(_ feed: SourceView) -> String? {
+        if let folder = feed.category, inGallery(folder: folder) { return folder }
+        return feed.gallery ? "" : nil
+    }
+}
+
 /// Small labels over a thumbnail: duration, number of pictures, a site
 /// that needs signing in.
 struct MediaBadges: View {
