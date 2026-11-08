@@ -4,9 +4,14 @@ import SwiftUI
 import WebKit
 
 /// Shows media over the whole window, one item at a time: pictures that
-/// zoom, videos that play (muted and looping until unmuted), YouTube and
-/// Vimeo in their own players. Gallery items step with Left and Right, the
-/// pictures of one item with Up and Down.
+/// zoom, GIFs that move, videos that play (muted and looping until
+/// unmuted), YouTube and Vimeo in their own players.
+///
+/// Scrolling up and down (in the system's direction, so with natural
+/// scrolling the next item comes up from below) and Up and Down step
+/// between items. Scrolling sideways and Left and Right go through the
+/// pictures of an item, which also show as a strip of thumbnails, or seek
+/// in a video.
 struct MediaViewer: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openSettings) private var openSettings
@@ -20,13 +25,19 @@ struct MediaViewer: View {
     @State private var page = 0
     @State private var playing = true
     @State private var resolving = false
+    @State private var seek = SeekRequest()
+    @State private var scroll = ViewerScroll()
     @FocusState private var focused: Bool
+
+    /// Seconds a Left or Right press moves a video.
+    private static let seekStep = 5.0
 
     private var entry: GalleryEntryView { entries[index] }
     private var mediaSet: MediaSetView? { media.set(for: entry) }
     private var items: [MediaItemView] { mediaSet?.items ?? [] }
     private var current: MediaItemView? { items.indices.contains(page) ? items[page] : nil }
     private var starred: Bool { model.item(entry.item.id)?.starred ?? entry.item.starred }
+    private var scrubs: Bool { items.count <= 1 && current?.kind == .video }
 
     var body: some View {
         ZStack {
@@ -34,23 +45,32 @@ struct MediaViewer: View {
             stage
         }
         .overlay(alignment: .top) { topBar }
-        .overlay(alignment: .leading) { if index > 0 { stepButton(-1, "chevron.left") } }
-        .overlay(alignment: .trailing) { if index < entries.count - 1 { stepButton(1, "chevron.right") } }
+        .overlay(alignment: .bottom) { if items.count > 1 { strip } }
+        .overlay(alignment: .trailing) { itemButtons }
+        .overlay(alignment: .leading) { if items.count > 1, page > 0 { pageButton(-1, "chevron.left") } }
+        .overlay(alignment: .trailing) { if items.count > 1, page < items.count - 1 { pageButton(1, "chevron.right").padding(.trailing, 52) } }
+        .background(WindowReader { scroll.window = $0 })
         .environment(\.colorScheme, .dark)
         .focusable()
         .focusEffectDisabled()
         .focused($focused)
-        .onAppear { focused = true }
+        .onAppear {
+            focused = true
+            scroll.start()
+        }
+        .onDisappear { scroll.stop() }
         .onKeyPress(.escape) { close(); return .handled }
-        .onKeyPress(.leftArrow) { step(-1) }
-        .onKeyPress(.rightArrow) { step(1) }
-        .onKeyPress(.upArrow) { turn(-1) }
-        .onKeyPress(.downArrow) { turn(1) }
+        .onKeyPress(.upArrow) { step(-1) }
+        .onKeyPress(.downArrow) { step(1) }
+        .onKeyPress(.leftArrow) { sideways(-1) }
+        .onKeyPress(.rightArrow) { sideways(1) }
         .onKeyPress(.space) { playing.toggle(); return .handled }
         .onKeyPress(characters: CharacterSet(charactersIn: "mMsS")) { press in
             if press.characters.lowercased() == "m" { muted.toggle() } else { toggleStar() }
             return .handled
         }
+        .onChange(of: scrubs, initial: true) { configureScroll() }
+        .onChange(of: entries.map(\.id)) { configureScroll() }
         .task(id: entry.id) {
             page = 0
             playing = true
@@ -65,9 +85,10 @@ struct MediaViewer: View {
     @ViewBuilder
     private var stage: some View {
         if let current {
-            MediaItemPlayer(item: current, muted: $muted, playing: $playing)
+            MediaItemPlayer(item: current, muted: $muted, playing: $playing, seek: seek)
                 .id("\(entry.id)#\(page)")
-                .padding(.vertical, 44)
+                .padding(.top, 44)
+                .padding(.bottom, items.count > 1 ? 96 : 44)
         } else if resolving || mediaSet == nil {
             ProgressView().controlSize(.large)
         } else if mediaSet?.status == .needsSignIn {
@@ -129,8 +150,49 @@ struct MediaViewer: View {
         .background(.black.opacity(0.4))
     }
 
-    private func stepButton(_ by: Int, _ symbol: String) -> some View {
-        Button { _ = step(by) } label: {
+    /// The pictures of the item; the one shown is outlined.
+    private var strip: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(items.indices, id: \.self) { i in
+                        StripThumbnail(item: items[i], selected: i == page)
+                            .id(i)
+                            .onTapGesture { page = i }
+                            .accessibilityAddTraits(.isButton)
+                            .accessibilityLabel(Text("Picture \(i + 1)"))
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .frame(minWidth: 0)
+            }
+            .frame(maxWidth: .infinity)
+            .background(.black.opacity(0.4))
+            .onChange(of: page, initial: true) { _, now in
+                withAnimation(.easeInOut(duration: 0.15)) { proxy.scrollTo(now, anchor: .center) }
+            }
+        }
+    }
+
+    /// Previous and next item, one above the other.
+    private var itemButtons: some View {
+        VStack(spacing: 8) {
+            Button { _ = step(-1) } label: { Image(systemName: "chevron.up").frame(width: 36, height: 36) }
+                .disabled(index == 0)
+                .help("Previous (Up, or scroll up)")
+            Button { _ = step(1) } label: { Image(systemName: "chevron.down").frame(width: 36, height: 36) }
+                .disabled(index >= entries.count - 1)
+                .help("Next (Down, or scroll down)")
+        }
+        .buttonStyle(.plain)
+        .font(.title2)
+        .foregroundStyle(.white.opacity(0.7))
+        .padding(.trailing, 10)
+    }
+
+    private func pageButton(_ by: Int, _ symbol: String) -> some View {
+        Button { turn(by) } label: {
             Image(systemName: symbol).font(.title).foregroundStyle(.white.opacity(0.7)).frame(width: 44, height: 88)
         }
         .buttonStyle(.plain)
@@ -143,10 +205,28 @@ struct MediaViewer: View {
         return .handled
     }
 
-    private func turn(_ by: Int) -> KeyPress.Result {
+    private func turn(_ by: Int) {
         let target = page + by
         if items.indices.contains(target) { page = target }
+    }
+
+    /// Left and Right: through the pictures, else seeking a video, else to
+    /// the next item, so a single picture can still be left.
+    private func sideways(_ by: Int) -> KeyPress.Result {
+        if items.count > 1 {
+            turn(by)
+        } else if current?.kind == .video {
+            seek = seek.by(Double(by) * Self.seekStep)
+        } else {
+            _ = step(by)
+        }
         return .handled
+    }
+
+    private func configureScroll() {
+        scroll.onVertical = { _ = step($0) }
+        scroll.onSideways = { turn($0) }
+        scroll.onScrub = scrubs ? { seek = seek.by($0) } : nil
     }
 
     private func toggleStar() {
@@ -160,20 +240,175 @@ struct MediaViewer: View {
     }
 }
 
+/// A relative seek for the video on screen; each new one gets a new token.
+struct SeekRequest: Equatable {
+    var seconds = 0.0
+    var token = 0
+
+    func by(_ seconds: Double) -> SeekRequest {
+        SeekRequest(seconds: seconds, token: token + 1)
+    }
+}
+
+/// Scrolling over the viewer, turned into steps. One gesture makes one
+/// step however far it goes, and its momentum is swallowed, so a flick
+/// doesn't run through several items. A mouse wheel steps a notch at a
+/// time. Sideways scrolling over a video scrubs it instead.
+@MainActor
+final class ViewerScroll {
+    weak var window: NSWindow?
+    var onVertical: (Int) -> Void = { _ in }
+    var onSideways: (Int) -> Void = { _ in }
+    /// Seconds to seek by; set when sideways scrolling scrubs.
+    var onScrub: ((Double) -> Void)?
+
+    private var monitor: Any?
+    private var travelled = CGSize.zero
+    private var axis: Axis?
+    private var stepped = false
+    private var lastWheelStep = Date.distantPast
+
+    /// Points a trackpad gesture travels before it steps.
+    private static let threshold: CGFloat = 40
+    /// Video seconds per point of sideways travel.
+    private static let scrubRate = 0.1
+
+    func start() {
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            MainActor.assumeIsolated {
+                guard let self else { return event }
+                return self.handle(event)
+            }
+        }
+    }
+
+    func stop() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+    }
+
+    private func handle(_ event: NSEvent) -> NSEvent? {
+        guard let window, event.window === window else { return event }
+        if !event.momentumPhase.isEmpty { return nil }
+        guard event.hasPreciseScrollingDeltas else {
+            wheel(event)
+            return nil
+        }
+        if event.phase.contains(.began) {
+            travelled = .zero
+            axis = nil
+            stepped = false
+        }
+        travelled.width += event.scrollingDeltaX
+        travelled.height += event.scrollingDeltaY
+        if axis == nil, max(abs(travelled.width), abs(travelled.height)) > 4 {
+            axis = abs(travelled.width) > abs(travelled.height) ? .horizontal : .vertical
+        }
+        switch axis {
+        case .vertical:
+            if !stepped, abs(travelled.height) > Self.threshold {
+                stepped = true
+                // Content moving up (a negative delta) brings the next one.
+                onVertical(travelled.height < 0 ? 1 : -1)
+            }
+        case .horizontal:
+            if let onScrub {
+                onScrub(-Double(event.scrollingDeltaX) * Self.scrubRate)
+            } else if !stepped, abs(travelled.width) > Self.threshold {
+                stepped = true
+                onSideways(travelled.width < 0 ? 1 : -1)
+            }
+        case nil:
+            break
+        }
+        return nil
+    }
+
+    private func wheel(_ event: NSEvent) {
+        let (dx, dy) = (event.scrollingDeltaX, event.scrollingDeltaY)
+        if abs(dx) > abs(dy), let onScrub {
+            onScrub(-Double(dx) * 2)
+            return
+        }
+        guard Date().timeIntervalSince(lastWheelStep) > 0.3, max(abs(dx), abs(dy)) > 0 else { return }
+        lastWheelStep = Date()
+        if abs(dy) >= abs(dx) {
+            onVertical(dy < 0 ? 1 : -1)
+        } else {
+            onSideways(dx < 0 ? 1 : -1)
+        }
+    }
+}
+
+/// Hands the window a view is in to `found`.
+private struct WindowReader: NSViewRepresentable {
+    let found: (NSWindow?) -> Void
+
+    func makeNSView(context: Context) -> NSView { Probe(found: found) }
+    func updateNSView(_ view: NSView, context: Context) {}
+
+    private final class Probe: NSView {
+        let found: (NSWindow?) -> Void
+        init(found: @escaping (NSWindow?) -> Void) {
+            self.found = found
+            super.init(frame: .zero)
+        }
+
+        required init?(coder: NSCoder) { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            found(window)
+        }
+    }
+}
+
+/// One picture of an item in the viewer's strip.
+private struct StripThumbnail: View {
+    @Environment(AppModel.self) private var model
+    let item: MediaItemView
+    let selected: Bool
+    @State private var image: NSImage?
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 4)
+            .fill(.white.opacity(0.08))
+            .overlay {
+                if let image { Image(nsImage: image).resizable().scaledToFill() }
+            }
+            .frame(width: 64, height: 64)
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .overlay {
+                RoundedRectangle(cornerRadius: 4).strokeBorder(selected ? Color.white : .clear, lineWidth: 2)
+            }
+            .opacity(selected ? 1 : 0.6)
+            .task(id: item.src) {
+                if let src = item.preview { image = await model.image(src) }
+            }
+    }
+}
+
+extension MediaItemView {
+    /// The picture that stands for it.
+    var preview: String? { kind == .image ? src : poster }
+}
+
 /// One picture, video or embedded player.
 struct MediaItemPlayer: View {
     @Environment(AppModel.self) private var model
     let item: MediaItemView
     @Binding var muted: Bool
     @Binding var playing: Bool
+    var seek = SeekRequest()
 
     var body: some View {
         switch item.kind {
         case .image:
-            ZoomableImage(src: item.src)
+            ZoomableImage(src: item.src, animated: item.isGIF)
         case .video:
             if let url = URL(string: item.src) {
-                VideoPlayerView(url: url, muted: muted, playing: playing)
+                VideoPlayerView(url: url, muted: muted, playing: playing, seek: seek)
             }
         case .embed:
             if let url = URL(string: item.src) {
@@ -186,10 +421,11 @@ struct MediaItemPlayer: View {
 }
 
 /// A picture that fits the window; pinch or double-click to zoom, drag to
-/// look around.
+/// look around. An animated GIF plays.
 struct ZoomableImage: View {
     @Environment(AppModel.self) private var model
     let src: String
+    var animated = false
     @State private var image: NSImage?
     @State private var scale: CGFloat = 1
     @State private var settled: CGFloat = 1
@@ -199,9 +435,7 @@ struct ZoomableImage: View {
     var body: some View {
         Group {
             if let image {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFit()
+                picture(image)
                     .scaleEffect(scale)
                     .offset(offset)
                     .gesture(MagnifyGesture()
@@ -227,7 +461,38 @@ struct ZoomableImage: View {
                 ProgressView().controlSize(.large)
             }
         }
-        .task(id: src) { image = await model.image(src) }
+        .task(id: src) { image = animated ? await model.animatedImage(src) : await model.image(src) }
+    }
+
+    @ViewBuilder
+    private func picture(_ image: NSImage) -> some View {
+        if animated {
+            AnimatedImageView(image: image)
+                .aspectRatio(image.size.width / max(image.size.height, 1), contentMode: .fit)
+        } else {
+            Image(nsImage: image).resizable().scaledToFit()
+        }
+    }
+}
+
+/// Plays an animated image; SwiftUI's `Image` shows only its first frame.
+private struct AnimatedImageView: NSViewRepresentable {
+    let image: NSImage
+
+    func makeNSView(context: Context) -> NSImageView {
+        let view = NSImageView()
+        view.animates = true
+        view.imageScaling = .scaleProportionallyUpOrDown
+        view.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        view.setContentHuggingPriority(.defaultLow, for: .vertical)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        view.image = image
+        return view
+    }
+
+    func updateNSView(_ view: NSImageView, context: Context) {
+        if view.image !== image { view.image = image }
     }
 }
 
@@ -236,9 +501,11 @@ struct VideoPlayerView: NSViewRepresentable {
     let url: URL
     let muted: Bool
     let playing: Bool
+    var seek = SeekRequest()
 
     final class Coordinator {
         var looper: AVPlayerLooper?
+        var seekToken = 0
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -246,6 +513,7 @@ struct VideoPlayerView: NSViewRepresentable {
     func makeNSView(context: Context) -> AVPlayerView {
         let player = AVQueuePlayer()
         context.coordinator.looper = AVPlayerLooper(player: player, templateItem: AVPlayerItem(url: url))
+        context.coordinator.seekToken = seek.token
         player.isMuted = muted
         let view = AVPlayerView()
         view.player = player
@@ -260,6 +528,20 @@ struct VideoPlayerView: NSViewRepresentable {
         player.isMuted = muted
         if playing, player.timeControlStatus == .paused { player.play() }
         if !playing, player.timeControlStatus != .paused { player.pause() }
+        if seek.token != context.coordinator.seekToken {
+            context.coordinator.seekToken = seek.token
+            Self.seek(player, by: seek.seconds)
+        }
+    }
+
+    /// Within the current loop of the clip.
+    private static func seek(_ player: AVPlayer, by seconds: Double) {
+        guard let item = player.currentItem else { return }
+        let duration = item.duration.seconds
+        var target = player.currentTime().seconds + seconds
+        if duration.isFinite, duration > 0 { target = min(max(0, target), duration - 0.05) } else { target = max(0, target) }
+        let tolerance = CMTime(seconds: 0.1, preferredTimescale: 600)
+        player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: tolerance, toleranceAfter: tolerance)
     }
 
     static func dismantleNSView(_ view: AVPlayerView, coordinator: Coordinator) {

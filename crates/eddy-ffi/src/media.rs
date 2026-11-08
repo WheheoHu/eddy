@@ -161,6 +161,12 @@ impl EddyEngine {
         Ok(self.engine.resolve_media(&item_id, force).await?.into())
     }
 
+    /// After a thumbnail fails to load: drops the item's media the sites
+    /// removed (status `NoMedia` when nothing is left).
+    pub async fn verify_media(&self, item_id: String) -> R<Option<MediaSetView>> {
+        Ok(self.engine.verify_media(&item_id).await?.map(Into::into))
+    }
+
     /// Starts resolving these items in the background and returns at once.
     pub async fn prefetch_media(&self, item_ids: Vec<String>) {
         self.engine.prefetch_media(item_ids);
