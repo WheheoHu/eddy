@@ -40,7 +40,7 @@ pub struct GalleryEntry {
     pub thumbnail: Option<String>,
 }
 
-struct Pages(Arc<eddy_fetch::Fetcher>);
+pub(crate) struct Pages(pub(crate) Arc<eddy_fetch::Fetcher>);
 
 #[async_trait::async_trait]
 impl PageSource for Pages {
@@ -55,7 +55,7 @@ impl PageSource for Pages {
     }
 }
 
-fn status_str(status: MediaStatus) -> &'static str {
+pub(crate) fn status_str(status: MediaStatus) -> &'static str {
     match status {
         MediaStatus::Ready => "ready",
         MediaStatus::NoMedia => "no_media",

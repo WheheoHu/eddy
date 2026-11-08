@@ -55,6 +55,9 @@ pub struct Fetcher {
 }
 
 const MAX_PAGE_BYTES: usize = 15 * 1024 * 1024;
+/// HTTP/2 response headers allowed per response. hyper's 16 KB default
+/// rejects sites that send more (YouTube) with a stream protocol error.
+pub const MAX_HEADER_LIST_BYTES: u32 = 256 * 1024;
 const BROWSER_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15";
 
 impl Fetcher {
@@ -66,6 +69,7 @@ impl Fetcher {
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(15))
             .redirect(reqwest::redirect::Policy::limited(10))
+            .http2_max_header_list_size(MAX_HEADER_LIST_BYTES)
             .build()
             .map_err(|e| FetchError::Network(e.to_string()))?;
         Ok(Fetcher {
