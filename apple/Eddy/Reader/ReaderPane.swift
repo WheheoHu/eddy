@@ -32,6 +32,7 @@ struct ReaderPane: View {
     @State private var resumePage: PageTarget?
     @State private var lastPage: (page: Int, count: Int)?
     @State private var loading = true
+    @State private var switchingFullText = false
     @State private var rendererID = RendererRegistry.article.id
     @State private var mode: ReadingMode = .original
     /// What "Translate" (⌥A) turns on: the way it was last shown.
@@ -291,10 +292,11 @@ struct ReaderPane: View {
                     Button { showType.toggle() } label: { Label("Text Style", systemImage: "textformat.size") }
                         .popover(isPresented: $showType) { typography }
                     if item.kind == .feed {
-                        Button { Task { if await model.fetchFullText(itemID) { await reloadDocument() } } } label: {
-                            Label("Fetch Full Text", systemImage: "doc.text.magnifyingglass")
+                        Toggle(isOn: Binding(get: { showingFullText }, set: setFullText)) {
+                            Label("Full Text", systemImage: "doc.text.magnifyingglass")
                         }
-                        .help("Download the full article from the original page")
+                        .disabled(switchingFullText || document == nil)
+                        .help(showingFullText ? "Showing the full article from the original page; turn off for the feed’s version" : "Show the full article from the original page")
                     }
                 }
                 Button { model.setStarred(item, !item.starred) } label: {
@@ -387,8 +389,8 @@ struct ReaderPane: View {
             } else if rendererID != RendererRegistry.web.id, hasPage {
                 slide(to: RendererRegistry.web.id)
             }
-        case .fetchFullText:
-            Task { if await model.fetchFullText(itemID) { await reloadDocument() } }
+        case .toggleFullText:
+            setFullText(!showingFullText)
         case let .step(direction):
             neighbors?.go(direction, .vertical)
         }
@@ -400,6 +402,18 @@ struct ReaderPane: View {
     }
 
     private var hasText: Bool { document?.blocks.isEmpty == false }
+
+    private var showingFullText: Bool { document?.origin == .extracted }
+
+    /// The article stays on the version picked here until switched again.
+    private func setFullText(_ on: Bool) {
+        guard on != showingFullText, !switchingFullText else { return }
+        switchingFullText = true
+        Task {
+            if await model.setFullText(itemID, on) { await reloadDocument() }
+            switchingFullText = false
+        }
+    }
 
     /// The web page lies to the right of the reader: it slides in from the
     /// right, and the reader comes back from the left. The edge is set first

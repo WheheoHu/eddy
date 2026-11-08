@@ -353,6 +353,12 @@ impl EddyEngine {
         Ok(self.engine.fetch_full_text(&item_id).await?.into())
     }
 
+    /// Shows a subscription article's full text or the feed's content; the
+    /// page is fetched only the first time. The choice is remembered.
+    pub async fn set_full_text(&self, item_id: String, on: bool) -> R<DocumentView> {
+        Ok(self.engine.set_full_text(&item_id, on).await?.into())
+    }
+
     pub async fn save_url(&self, url: String) -> R<ItemView> {
         Ok(self.engine.save_url(&url).await?.into())
     }
