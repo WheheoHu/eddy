@@ -161,7 +161,7 @@ struct GalleryView: View {
         }
         .toolbar {
             ColumnToggle(visible: $showSidebar)
-            ModeToolbar(mode: $mode, model: model)
+            AddToolbar(model: model)
             ToolbarItem {
                 Toggle(isOn: $unreadOnly) { Label("Unread Only", systemImage: unreadOnly ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle") }
                     .help("Show only media you haven’t opened")

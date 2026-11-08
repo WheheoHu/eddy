@@ -59,6 +59,7 @@ struct RootView: View {
                 }
             }
         }
+        .background(ModeSwitchInstaller())
         .overlay(alignment: .bottom) { MessageBanner() }
         .overlay {
             if let request = model.mediaRequest {
