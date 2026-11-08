@@ -1025,6 +1025,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "eddy-doc",
+ "futures",
  "regex",
  "reqwest",
  "serde",
