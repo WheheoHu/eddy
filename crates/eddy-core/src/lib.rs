@@ -18,10 +18,14 @@ mod search;
 mod server;
 mod upstream;
 
-pub use ai::{BatchCallback, ItemTagsResult, SummaryResult, TagInfo, TranslationResult};
+pub use ai::{
+    AiTestResult, BatchCallback, ItemTagsResult, SummaryResult, TagInfo, TranslationResult,
+};
 pub use collection::{CollectionEntry, CollectionKind};
 pub use content::LoadedDocument;
-pub use eddy_ai::{AiSettings, AutoAction, AutoRule, ProviderSettings, RuleScope, Summary};
+pub use eddy_ai::{
+    AiSettings, AutoAction, AutoRule, MAX_CONCURRENCY, ProviderSettings, RuleScope, Summary,
+};
 pub use eddy_extract::{ChapterLink, SeriesProposal};
 pub use eddy_fetch::WebRenderer;
 pub use eddy_media::{MediaItem, MediaSet, MediaStatus, MediaType, is_media_url};

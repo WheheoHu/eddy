@@ -614,6 +614,11 @@ final class AppModel {
         engine?.cancelTranslation(itemId: id)
     }
 
+    /// The block being read; a running translation continues from there.
+    func setTranslationFocus(_ id: String, blockID: String) {
+        engine?.setTranslationFocus(itemId: id, blockId: blockID)
+    }
+
     /// The stored translation, or the part of one that was stopped.
     func cachedTranslation(_ id: String) -> (segments: [String: String], complete: Bool) {
         guard let cached = (try? engine?.cachedTranslation(itemId: id)) ?? nil else { return ([:], false) }

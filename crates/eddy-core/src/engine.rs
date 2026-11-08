@@ -93,6 +93,10 @@ pub(crate) struct Inner {
         parking_lot::Mutex<std::collections::HashMap<String, (std::time::Instant, f64)>>,
     /// Items whose translation should stop after the batch in flight.
     pub translation_cancels: parking_lot::Mutex<std::collections::HashSet<String>>,
+    /// Block being read per item; its translation batch goes first.
+    pub translation_focus: parking_lot::Mutex<std::collections::HashMap<String, String>>,
+    /// Caps requests to the model service; sized by the provider settings.
+    pub ai_gate: parking_lot::Mutex<(usize, Arc<tokio::sync::Semaphore>)>,
     pub search: Option<eddy_search::SearchIndex>,
     pub live: std::sync::atomic::AtomicBool,
     pub backfilling: std::sync::atomic::AtomicBool,
@@ -144,6 +148,8 @@ impl Engine {
             pdf_reader: RwLock::new(None),
             progress_throttle: parking_lot::Mutex::new(Default::default()),
             translation_cancels: parking_lot::Mutex::new(Default::default()),
+            translation_focus: parking_lot::Mutex::new(Default::default()),
+            ai_gate: parking_lot::Mutex::new((1, Arc::new(tokio::sync::Semaphore::new(1)))),
             search: eddy_search::SearchIndex::open(&data_dir.join("index")).ok(),
             live: std::sync::atomic::AtomicBool::new(false),
             backfilling: std::sync::atomic::AtomicBool::new(false),

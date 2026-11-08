@@ -801,11 +801,16 @@ async fn mock_llm() -> MockServer {
 }
 
 fn configure_ai(engine: &Engine, llm: &MockServer, rules: Vec<AutoRule>) {
+    configure_ai_with(engine, llm, rules, 1);
+}
+
+fn configure_ai_with(engine: &Engine, llm: &MockServer, rules: Vec<AutoRule>, concurrency: u32) {
     engine
         .set_ai_settings(AiSettings {
             provider: Some(ProviderSettings {
                 base_url: llm.uri(),
                 model: "test-model".into(),
+                max_concurrency: concurrency,
             }),
             rules,
             ..Default::default()
@@ -853,6 +858,238 @@ async fn cancelled_translation_keeps_what_is_done_and_resumes() {
     assert_eq!(llm.received_requests().await.unwrap().len(), total);
     assert!(full.segments.len() > partial.segments.len());
     assert!(engine.cached_translation(&id).unwrap().unwrap().complete);
+}
+
+/// A translating model that answers after `delay`, recording the segment
+/// IDs of each request in arrival order and the most requests it has seen
+/// unanswered at once (requests arrived minus batches handed over).
+#[derive(Clone, Default)]
+struct SlowTranslator {
+    delay_ms: u64,
+    arrivals: Arc<parking_lot::Mutex<Vec<Vec<String>>>>,
+    delivered: Arc<std::sync::atomic::AtomicUsize>,
+    peak: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl wiremock::Respond for SlowTranslator {
+    fn respond(&self, req: &wiremock::Request) -> ResponseTemplate {
+        let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+        let user: serde_json::Value =
+            serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+        let segments = user["segments"].as_array().unwrap();
+        let mut arrivals = self.arrivals.lock();
+        arrivals.push(
+            segments
+                .iter()
+                .map(|s| s["id"].as_str().unwrap().to_string())
+                .collect(),
+        );
+        let open = arrivals.len() - self.delivered.load(std::sync::atomic::Ordering::SeqCst);
+        self.peak
+            .fetch_max(open, std::sync::atomic::Ordering::SeqCst);
+        let translations: Vec<_> = segments
+            .iter()
+            .map(|s| json!({"id": s["id"], "text": format!("译：{}", s["text"].as_str().unwrap())}))
+            .collect();
+        ResponseTemplate::new(200)
+            .set_delay(std::time::Duration::from_millis(self.delay_ms))
+            .set_body_json(json!({"choices": [{"message": {"content": json!({"translations": translations}).to_string()}}]}))
+    }
+}
+
+impl SlowTranslator {
+    async fn serve(delay_ms: u64) -> (MockServer, SlowTranslator) {
+        let server = MockServer::start().await;
+        let model = SlowTranslator {
+            delay_ms,
+            ..Default::default()
+        };
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(model.clone())
+            .mount(&server)
+            .await;
+        (server, model)
+    }
+
+    fn on_batch(&self) -> BatchCallback {
+        let delivered = self.delivered.clone();
+        Arc::new(move |_| {
+            delivered.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })
+    }
+}
+
+async fn essay_paragraphs(engine: &Engine, id: &str) -> Vec<String> {
+    engine
+        .document(id)
+        .await
+        .unwrap()
+        .unwrap()
+        .document
+        .blocks
+        .iter()
+        .filter(|b| matches!(b.kind, BlockKind::Paragraph { .. }))
+        .map(|b| b.id.clone())
+        .collect()
+}
+
+#[tokio::test]
+async fn translation_starts_where_the_reader_is_and_follows_scrolling() {
+    let pages = mock_pages().await;
+    let (llm, model) = SlowTranslator::serve(0).await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    configure_ai(&engine, &llm, vec![]);
+    let id = engine
+        .save_url(&format!("{}/essay", pages.uri()))
+        .await
+        .unwrap()
+        .item
+        .id;
+    let paragraphs = essay_paragraphs(&engine, &id).await;
+    let last = paragraphs.last().unwrap().clone();
+    let first = paragraphs[0].clone();
+
+    // Reading the end: its batch goes first. After it, the reader scrolls
+    // back to the top, which goes next.
+    engine.set_translation_focus(&id, &last);
+    let mover = engine.clone();
+    let (move_id, move_to) = (id.clone(), first.clone());
+    let delivered = model.on_batch();
+    let callback: BatchCallback = Arc::new(move |batch| {
+        delivered(batch);
+        mover.set_translation_focus(&move_id, &move_to);
+    });
+    let t = engine.translate(&id, false, Some(callback)).await.unwrap();
+    assert!(t.complete);
+    let arrivals = model.arrivals.lock().clone();
+    assert!(arrivals.len() >= 3);
+    assert!(arrivals[0].contains(&last));
+    assert!(arrivals[1].contains(&first) && arrivals[1].contains(&"title".to_string()));
+    // Every batch was asked for once.
+    let asked: usize = arrivals.iter().map(Vec::len).sum();
+    assert_eq!(asked, t.segments.len());
+}
+
+#[tokio::test]
+async fn translation_runs_batches_concurrently_within_the_limit() {
+    let pages = mock_pages().await;
+    let (llm, model) = SlowTranslator::serve(150).await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    configure_ai_with(&engine, &llm, vec![], 2);
+    let id = engine
+        .save_url(&format!("{}/essay", pages.uri()))
+        .await
+        .unwrap()
+        .item
+        .id;
+    let t = engine
+        .translate(&id, false, Some(model.on_batch()))
+        .await
+        .unwrap();
+    assert!(t.complete);
+    assert!(model.arrivals.lock().len() >= 3);
+    assert_eq!(model.peak.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+    // Done batches are reused, whatever order they were done in.
+    let again = engine.translate(&id, true, None).await.unwrap();
+    assert_eq!(again.segments, t.segments);
+    let before = model.arrivals.lock().len();
+    engine.translate(&id, false, None).await.unwrap();
+    assert_eq!(model.arrivals.lock().len(), before);
+
+    // Settings never go above the cap.
+    configure_ai_with(&engine, &llm, vec![], 50);
+    assert_eq!(
+        engine
+            .ai_settings()
+            .unwrap()
+            .provider
+            .unwrap()
+            .max_concurrency,
+        crate::MAX_CONCURRENCY
+    );
+}
+
+#[tokio::test]
+async fn cancelling_with_requests_in_flight_keeps_what_they_return() {
+    let pages = mock_pages().await;
+    let (llm, model) = SlowTranslator::serve(150).await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    configure_ai_with(&engine, &llm, vec![], 2);
+    let id = engine
+        .save_url(&format!("{}/essay", pages.uri()))
+        .await
+        .unwrap()
+        .item
+        .id;
+    let stopper = engine.clone();
+    let stop_id = id.clone();
+    let delivered = model.on_batch();
+    let cancel: BatchCallback = Arc::new(move |batch| {
+        delivered(batch);
+        stopper.cancel_translation(&stop_id);
+    });
+    let partial = engine.translate(&id, false, Some(cancel)).await.unwrap();
+    assert!(!partial.complete);
+    // Both requests sent before the cancel came back and were kept.
+    let arrivals = model.arrivals.lock().clone();
+    assert_eq!(arrivals.len(), 2);
+    let asked: usize = arrivals.iter().map(Vec::len).sum();
+    assert_eq!(partial.segments.len(), asked);
+    assert_eq!(
+        engine.cached_translation(&id).unwrap().unwrap().segments,
+        partial.segments
+    );
+}
+
+#[tokio::test]
+async fn provider_test_sends_the_configured_requests_at_once() {
+    let (llm, model) = SlowTranslator::serve(150).await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let provider = ProviderSettings {
+        base_url: llm.uri(),
+        model: "test-model".into(),
+        max_concurrency: 3,
+    };
+    let r = engine
+        .test_ai_provider(provider.clone(), Some("sk-test"), "简体中文")
+        .await
+        .unwrap();
+    assert_eq!((r.total, r.passed, r.error), (3, 3, None));
+    assert_eq!(model.peak.load(std::sync::atomic::Ordering::SeqCst), 3);
+    // Without a key given or saved, it says so.
+    assert!(
+        engine
+            .test_ai_provider(provider, None, "简体中文")
+            .await
+            .is_err()
+    );
+
+    // A rate-limited service fails the test with the reason.
+    let limited = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(429).set_body_string("slow down"))
+        .mount(&limited)
+        .await;
+    let r = engine
+        .test_ai_provider(
+            ProviderSettings {
+                base_url: limited.uri(),
+                model: "m".into(),
+                max_concurrency: 2,
+            },
+            Some("sk-test"),
+            "简体中文",
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.passed, 0);
+    assert!(r.error.unwrap().contains("429"));
 }
 
 #[tokio::test]

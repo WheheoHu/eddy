@@ -11,7 +11,9 @@ pub use provider::{
     ChatMessage, OpenAiCompatible, Provider, completion_text, normalize_base, parse_completion,
 };
 pub use redact::{model_failure, safe_detail};
-pub use settings::{AiSettings, AutoAction, AutoRule, ProviderSettings, RuleScope, lang_code_for};
+pub use settings::{
+    AiSettings, AutoAction, AutoRule, MAX_CONCURRENCY, ProviderSettings, RuleScope, lang_code_for,
+};
 pub use tasks::{
     PROMPT_VERSION, Summary, TagResult, batches, summarize, tag, translate_batch,
     validate_translations,

@@ -1,12 +1,16 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use eddy_ai::{
-    AiSettings, AutoAction, OpenAiCompatible, PROMPT_VERSION, Provider, RuleScope, Summary,
-    batches, lang_code_for, normalize_base,
+    AiError, AiSettings, AutoAction, ChatMessage, OpenAiCompatible, PROMPT_VERSION, Provider,
+    ProviderSettings, RuleScope, Summary, batches, lang_code_for, normalize_base,
 };
-use eddy_doc::translation_segments;
-use eddy_model::{Entity, fields, ids};
+use eddy_doc::{Segment, translation_segments};
+use eddy_model::{Document, Entity, fields, ids};
+use futures::StreamExt;
+use futures::stream::FuturesUnordered;
+use tokio::sync::Semaphore;
 
 use crate::content::LoadedDocument;
 use crate::engine::{Engine, Inner};
@@ -29,6 +33,17 @@ pub struct TranslationResult {
     /// False for a translation stopped part-way; translating again
     /// finishes it, reusing the batches already done.
     pub complete: bool,
+}
+
+/// Outcome of `Engine::test_ai_provider`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AiTestResult {
+    /// Requests sent at once.
+    pub total: u32,
+    pub passed: u32,
+    pub elapsed_ms: u64,
+    /// The first failure, already redacted.
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -65,6 +80,69 @@ fn today() -> String {
     format!("d{days}")
 }
 
+/// Waits for a slot in the shared limit before each request.
+struct Limited {
+    inner: OpenAiCompatible,
+    gate: Arc<Semaphore>,
+}
+
+#[async_trait]
+impl Provider for Limited {
+    fn cache_identity(&self) -> String {
+        self.inner.cache_identity()
+    }
+
+    fn model(&self) -> &str {
+        self.inner.model()
+    }
+
+    async fn complete(&self, messages: &[ChatMessage]) -> std::result::Result<String, AiError> {
+        let _permit = self.gate.acquire().await;
+        self.inner.complete(messages).await
+    }
+}
+
+/// For each segment's batch, by the block the segment belongs to.
+fn batch_of_blocks(batches: &[Vec<Segment>]) -> HashMap<&str, usize> {
+    let mut out = HashMap::new();
+    for (i, batch) in batches.iter().enumerate() {
+        for s in batch {
+            let block = s.id.split('#').next().unwrap_or(&s.id);
+            out.entry(block).or_insert(i);
+        }
+    }
+    out
+}
+
+/// The batch holding `block`, or the next block with text (an image
+/// without a caption has none), else the last one before it.
+fn focus_batch(doc: &Document, of_block: &HashMap<&str, usize>, block: &str) -> Option<usize> {
+    if let Some(&i) = of_block.get(block) {
+        return Some(i);
+    }
+    let pos = doc.blocks.iter().position(|b| b.id == block)?;
+    doc.blocks[pos..]
+        .iter()
+        .find_map(|b| of_block.get(b.id.as_str()).copied())
+        .or_else(|| {
+            doc.blocks[..pos]
+                .iter()
+                .rev()
+                .find_map(|b| of_block.get(b.id.as_str()).copied())
+        })
+}
+
+/// Position in `pending` of the batch to request next: the focus batch,
+/// then outward from it, the one after before the one before.
+fn nearest(pending: &[usize], focus: usize) -> usize {
+    pending
+        .iter()
+        .enumerate()
+        .min_by_key(|&(_, &i)| (i.abs_diff(focus), i < focus))
+        .map(|(pos, _)| pos)
+        .unwrap_or(0)
+}
+
 impl Inner {
     pub(crate) fn ai_settings(&self) -> Result<AiSettings> {
         Ok(self
@@ -83,9 +161,27 @@ impl Inner {
             .platform
             .secret_get(AI_KEY)
             .ok_or_else(|| EngineError::Invalid("还没有填写模型 API Key。".into()))?;
-        let provider = OpenAiCompatible::new(&p.base_url, &p.model, &key)
+        self.limited_provider(p, &key)
+    }
+
+    /// A provider whose requests share the engine-wide limit.
+    fn limited_provider(&self, p: &ProviderSettings, key: &str) -> Result<Arc<dyn Provider>> {
+        let provider = OpenAiCompatible::new(&p.base_url, &p.model, key)
             .map_err(|e| EngineError::Invalid(e.to_string()))?;
-        Ok(Arc::new(provider))
+        Ok(Arc::new(Limited {
+            inner: provider,
+            gate: self.ai_gate(p.concurrency()),
+        }))
+    }
+
+    /// The shared semaphore, replaced when the configured size changes;
+    /// requests already holding the old one finish under it.
+    fn ai_gate(&self, size: usize) -> Arc<Semaphore> {
+        let mut gate = self.ai_gate.lock();
+        if gate.0 != size {
+            *gate = (size, Arc::new(Semaphore::new(size)));
+        }
+        gate.1.clone()
     }
 
     fn ai_document(&self, item_id: &str) -> Result<(LoadedDocument, String)> {
@@ -166,46 +262,75 @@ impl Inner {
                 text: title,
             },
         );
-        let mut all = HashMap::new();
-        let mut all_cached = true;
-        for batch in batches(&segments) {
-            let batch_json = serde_json::to_string(&batch)?;
-            let batch_key = artifact_key(&[
+        // Batches stay in document order so their cache keys don't depend on
+        // where the reader is; only the order they are requested in does.
+        let batches = batches(&segments);
+        let mut keys = Vec::with_capacity(batches.len());
+        for batch in &batches {
+            keys.push(artifact_key(&[
                 "translation_batch",
-                &batch_json,
+                &serde_json::to_string(batch)?,
                 &identity,
                 &target,
                 &settings.glossary,
                 PROMPT_VERSION,
-            ]);
+            ]));
+        }
+        let mut all = HashMap::new();
+        let mut pending = Vec::new();
+        for (i, key) in keys.iter().enumerate() {
             let cached = if force {
                 None
             } else {
                 self.store
-                    .ai_artifact(&batch_key)?
+                    .ai_artifact(key)?
                     .and_then(|p| serde_json::from_str::<HashMap<String, String>>(&p).ok())
             };
-            let result = match cached {
-                Some(r) => r,
-                None => {
-                    all_cached = false;
-                    self.store.add_ai_usage(&today(), 1)?;
-                    let r = match eddy_ai::translate_batch(
-                        provider.as_ref(),
-                        &batch,
-                        &target,
-                        &settings.glossary,
+            match cached {
+                Some(r) => {
+                    if let Some(cb) = &on_batch {
+                        cb(&r);
+                    }
+                    all.extend(r);
+                }
+                None => pending.push(i),
+            }
+        }
+        let all_cached = pending.is_empty();
+        let of_block = batch_of_blocks(&batches);
+        let limit = settings
+            .provider
+            .as_ref()
+            .map_or(1, ProviderSettings::concurrency);
+        let mut in_flight = FuturesUnordered::new();
+        let mut stopped = self.translation_cancels.lock().remove(item_id);
+        let mut failure = None;
+        loop {
+            while !stopped && failure.is_none() && in_flight.len() < limit && !pending.is_empty() {
+                let focus = self
+                    .translation_focus
+                    .lock()
+                    .get(item_id)
+                    .and_then(|b| focus_batch(&doc.document, &of_block, b))
+                    .unwrap_or(0);
+                let i = pending.remove(nearest(&pending, focus));
+                self.store.add_ai_usage(&today(), 1)?;
+                let (provider, batch, target, glossary) =
+                    (provider.as_ref(), &batches[i], &target, &settings.glossary);
+                in_flight.push(async move {
+                    (
+                        i,
+                        eddy_ai::translate_batch(provider, batch, target, glossary).await,
                     )
-                    .await
-                    {
-                        Ok(r) => r,
-                        Err(e) => {
-                            save_partial(&all)?;
-                            return Err(EngineError::Invalid(e.to_string()));
-                        }
-                    };
+                });
+            }
+            let Some((i, result)) = in_flight.next().await else {
+                break;
+            };
+            match result {
+                Ok(r) => {
                     self.store.put_ai_artifact(
-                        &batch_key,
+                        &keys[i],
                         item_id,
                         "translation_batch",
                         &doc.version.hash,
@@ -214,24 +339,33 @@ impl Inner {
                         &serde_json::to_string(&r)?,
                         false,
                     )?;
-                    r
+                    if let Some(cb) = &on_batch {
+                        cb(&r);
+                    }
+                    all.extend(r);
                 }
-            };
-            if let Some(cb) = &on_batch {
-                cb(&result);
+                Err(e) => {
+                    failure.get_or_insert(e);
+                }
             }
-            all.extend(result);
-            if self.translation_cancels.lock().remove(item_id) {
-                save_partial(&all)?;
-                return Ok(TranslationResult {
-                    content_hash: doc.version.hash.clone(),
-                    target_language: target.clone(),
-                    segments: all,
-                    cached: false,
-                    complete: false,
-                });
-            }
+            stopped |= self.translation_cancels.lock().remove(item_id);
         }
+        drop(in_flight);
+        if let Some(e) = failure {
+            save_partial(&all)?;
+            return Err(EngineError::Invalid(e.to_string()));
+        }
+        if !pending.is_empty() {
+            save_partial(&all)?;
+            return Ok(TranslationResult {
+                content_hash: doc.version.hash.clone(),
+                target_language: target.clone(),
+                segments: all,
+                cached: false,
+                complete: false,
+            });
+        }
+        self.translation_focus.lock().remove(item_id);
         self.store.put_ai_artifact(
             &item_key,
             item_id,
@@ -447,6 +581,7 @@ impl Engine {
             if p.model.is_empty() {
                 return Err(EngineError::Invalid("请填写模型 ID。".into()));
             }
+            p.max_concurrency = p.concurrency() as u32;
         }
         self.inner.record(
             Entity::Setting,
@@ -604,6 +739,62 @@ impl Engine {
             }));
         }
         Ok(None)
+    }
+
+    /// The block being read; a running translation of the item requests
+    /// the batches nearest to it next.
+    pub fn set_translation_focus(&self, item_id: &str, block_id: &str) {
+        self.inner
+            .translation_focus
+            .lock()
+            .insert(item_id.to_string(), block_id.to_string());
+    }
+
+    /// Sends the configured number of translation requests at once with
+    /// these (possibly unsaved) provider settings; `key` falls back to the
+    /// saved one. Nothing is cached or counted against the daily budget.
+    pub async fn test_ai_provider(
+        &self,
+        provider: ProviderSettings,
+        key: Option<&str>,
+        target_language: &str,
+    ) -> Result<AiTestResult> {
+        let key = match key.map(str::trim).filter(|k| !k.is_empty()) {
+            Some(k) => k.to_string(),
+            None => self
+                .inner
+                .platform
+                .secret_get(AI_KEY)
+                .ok_or_else(|| EngineError::Invalid("还没有填写模型 API Key。".into()))?,
+        };
+        let service = OpenAiCompatible::new(&provider.base_url, &provider.model, &key)
+            .map_err(|e| EngineError::Invalid(e.to_string()))?;
+        let total = provider.concurrency();
+        let sample = [
+            Segment {
+                id: "p1".into(),
+                text: "The library opens at nine in the morning.".into(),
+            },
+            Segment {
+                id: "p2".into(),
+                text: "Readers can borrow up to five books at a time.".into(),
+            },
+        ];
+        let started = std::time::Instant::now();
+        let results = futures::future::join_all(
+            (0..total).map(|_| eddy_ai::translate_batch(&service, &sample, target_language, "")),
+        )
+        .await;
+        let error = results
+            .iter()
+            .find_map(|r| r.as_ref().err())
+            .map(|e| e.to_string());
+        Ok(AiTestResult {
+            total: total as u32,
+            passed: results.iter().filter(|r| r.is_ok()).count() as u32,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            error,
+        })
     }
 
     /// Stops the item's translation once the batch in flight is done; what

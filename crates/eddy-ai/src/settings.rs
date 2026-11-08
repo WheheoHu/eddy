@@ -34,6 +34,23 @@ impl Default for AiSettings {
 pub struct ProviderSettings {
     pub base_url: String,
     pub model: String,
+    /// Requests sent to the service at once, across all AI work; some
+    /// models and plans allow more than one.
+    #[serde(default = "one")]
+    pub max_concurrency: u32,
+}
+
+/// Upper bound for `ProviderSettings::max_concurrency`.
+pub const MAX_CONCURRENCY: u32 = 8;
+
+fn one() -> u32 {
+    1
+}
+
+impl ProviderSettings {
+    pub fn concurrency(&self) -> usize {
+        self.max_concurrency.clamp(1, MAX_CONCURRENCY) as usize
+    }
 }
 
 /// Runs an AI action automatically on new items that match.
