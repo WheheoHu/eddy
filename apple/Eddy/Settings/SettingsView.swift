@@ -257,6 +257,9 @@ private struct AISettings: View {
     @State private var syncSummaries = true
     @State private var dailyLimit = 100
     @State private var rules: [AutoRuleView] = []
+    @State private var concurrency = 1
+    @State private var testing = false
+    @State private var testNote = ""
     @State private var note = ""
 
     var body: some View {
@@ -265,10 +268,18 @@ private struct AISettings: View {
                 TextField("API base URL", text: $baseURL, prompt: Text("https://api.openai.com/v1"))
                 TextField("Model", text: $modelID, prompt: Text("gpt-4.1-mini"))
                 SecureField(model.engine?.hasAiKey() == true ? "API key (saved in keychain)" : "API key", text: $key)
+                Stepper("Concurrent requests: \(concurrency)", value: $concurrency, in: 1...Int(model.engine?.maxAiConcurrency() ?? 8))
+                HStack {
+                    Button("Test") { Task { await test() } }
+                        .disabled(baseURL.isEmpty || modelID.isEmpty || testing)
+                        .help("Send this many translation requests at once to check the model handles them")
+                    if testing { ProgressView().controlSize(.small) }
+                    Text(testNote).foregroundStyle(.secondary).textSelection(.enabled)
+                }
             } header: {
                 Text("Provider")
             } footer: {
-                Text("Any OpenAI-compatible Chat Completions endpoint. The key stays in this Mac’s keychain and is never synced.").foregroundStyle(.secondary)
+                Text("Any OpenAI-compatible Chat Completions endpoint. The key stays in this Mac’s keychain and is never synced. Concurrent requests apply to all AI work together; raise it only if the service allows it.").foregroundStyle(.secondary)
             }
             Section("Translation") {
                 TextField("Translate into", text: $target)
@@ -300,6 +311,7 @@ private struct AISettings: View {
         guard let s = try? model.engine?.aiSettings() else { return }
         baseURL = s.provider?.baseUrl ?? ""
         modelID = s.provider?.model ?? ""
+        concurrency = Int(s.provider?.maxConcurrency ?? 1)
         target = s.targetLanguage
         glossary = s.glossary
         syncTranslations = s.syncTranslations
@@ -312,7 +324,7 @@ private struct AISettings: View {
         guard let engine = model.engine else { return }
         do {
             try engine.setAiSettings(settings: AiSettingsView(
-                provider: baseURL.isEmpty ? nil : ProviderView(baseUrl: baseURL, model: modelID),
+                provider: baseURL.isEmpty ? nil : providerView,
                 targetLanguage: target,
                 glossary: glossary,
                 syncTranslations: syncTranslations,
@@ -326,6 +338,26 @@ private struct AISettings: View {
             load()
         } catch {
             note = error.localizedDescription
+        }
+    }
+
+    private var providerView: ProviderView {
+        ProviderView(baseUrl: baseURL, model: modelID, maxConcurrency: UInt32(concurrency))
+    }
+
+    /// Tries the settings as entered, before they are saved.
+    private func test() async {
+        guard let engine = model.engine else { return }
+        testing = true
+        testNote = ""
+        defer { testing = false }
+        do {
+            let r = try await engine.testAiProvider(provider: providerView, key: key.isEmpty ? nil : key, targetLanguage: target)
+            let seconds = (Double(r.elapsedMs) / 1000).formatted(.number.precision(.fractionLength(1)))
+            testNote = String(localized: "\(r.passed)/\(r.total) passed in \(seconds) s")
+            if let error = r.error { testNote += " — " + error }
+        } catch {
+            testNote = error.localizedDescription
         }
     }
 }

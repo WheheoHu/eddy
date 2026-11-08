@@ -9,6 +9,26 @@ use crate::{EddyEngine, EddyError};
 pub struct ProviderView {
     pub base_url: String,
     pub model: String,
+    /// Requests sent at once, 1 to `max_ai_concurrency()`.
+    pub max_concurrency: u32,
+}
+
+impl From<ProviderView> for core::ProviderSettings {
+    fn from(p: ProviderView) -> Self {
+        core::ProviderSettings {
+            base_url: p.base_url,
+            model: p.model,
+            max_concurrency: p.max_concurrency,
+        }
+    }
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct AiTestView {
+    pub total: u32,
+    pub passed: u32,
+    pub elapsed_ms: u64,
+    pub error: Option<String>,
 }
 
 #[derive(uniffi::Enum, Clone, Debug)]
@@ -50,6 +70,7 @@ impl From<core::AiSettings> for AiSettingsView {
             provider: s.provider.map(|p| ProviderView {
                 base_url: p.base_url,
                 model: p.model,
+                max_concurrency: p.max_concurrency,
             }),
             target_language: s.target_language,
             glossary: s.glossary,
@@ -81,10 +102,7 @@ impl From<core::AiSettings> for AiSettingsView {
 impl From<AiSettingsView> for core::AiSettings {
     fn from(s: AiSettingsView) -> Self {
         core::AiSettings {
-            provider: s.provider.map(|p| core::ProviderSettings {
-                base_url: p.base_url,
-                model: p.model,
-            }),
+            provider: s.provider.map(Into::into),
             target_language: s.target_language,
             glossary: s.glossary,
             sync_translations: s.sync_translations,
@@ -224,6 +242,36 @@ impl EddyEngine {
 
     pub fn cached_translation(&self, item_id: String) -> R<Option<TranslationView>> {
         Ok(self.engine.cached_translation(&item_id)?.map(Into::into))
+    }
+
+    /// The block being read (its engine block ID); a running translation
+    /// of the item continues from there.
+    pub fn set_translation_focus(&self, item_id: String, block_id: String) {
+        self.engine.set_translation_focus(&item_id, &block_id)
+    }
+
+    pub fn max_ai_concurrency(&self) -> u32 {
+        core::MAX_CONCURRENCY
+    }
+
+    /// Sends `provider.max_concurrency` translation requests at once with
+    /// these settings; an empty `key` uses the saved one.
+    pub async fn test_ai_provider(
+        &self,
+        provider: ProviderView,
+        key: Option<String>,
+        target_language: String,
+    ) -> R<AiTestView> {
+        let r = self
+            .engine
+            .test_ai_provider(provider.into(), key.as_deref(), &target_language)
+            .await?;
+        Ok(AiTestView {
+            total: r.total,
+            passed: r.passed,
+            elapsed_ms: r.elapsed_ms,
+            error: r.error,
+        })
     }
 
     /// Stops the item's translation once the batch in flight is done; the

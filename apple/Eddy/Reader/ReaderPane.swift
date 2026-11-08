@@ -148,6 +148,7 @@ struct ReaderPane: View {
                     onPosition: { block, offset, atEnd in
                         lastPosition = (block, offset, atEnd)
                         model.recordProgress(itemID, blockID: block, offset: offset, atEnd: atEnd)
+                        if translating { model.setTranslationFocus(itemID, blockID: block) }
                     },
                     onBookLink: { url in
                         guard let target = model.item(forLink: url) else { return }
@@ -386,6 +387,12 @@ struct ReaderPane: View {
         )
     }
 
+    /// The block on screen: the last reported position, else where the
+    /// text is about to open.
+    private var readingBlock: String? {
+        [lastPosition?.block, scrollTarget?.blockID].compactMap { $0 }.first { !$0.isEmpty }
+    }
+
     /// Translates what isn't yet; batches done before are reused. A run
     /// still finishing its last batch after a cancel goes first.
     private func startTranslation() {
@@ -401,6 +408,7 @@ struct ReaderPane: View {
         translationStopped = false
         translationRun = Task {
             await previous?.value
+            if let block = readingBlock { model.setTranslationFocus(itemID, blockID: block) }
             do {
                 let result = try await model.translate(itemID) { queueTranslations($0) }
                 flushTranslations()
