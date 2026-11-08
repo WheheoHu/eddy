@@ -95,9 +95,10 @@ final class EdgeGestureTracker {
                 startOver()
             }
             if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
-                let owned = ownsGesture
                 if gesture != nil { finish(commit: event.phase.contains(.ended)) }
-                return owned
+                // The view saw the gesture begin; it sees it end too, or it
+                // stays in the middle of a scroll.
+                return false
             }
         } else {
             if gesture == nil, lastWheel.map({ Date().timeIntervalSince($0) > Self.wheelIdle }) ?? true {
@@ -320,8 +321,18 @@ final class GestureContainer: NSView {
         return p <= 1 ? p * full : full + 60 * (1 - 1 / (1 + (p - 1) * 2))
     }
 
+    /// The gesture as the tracker last saw it, and as last drawn. Scroll
+    /// events can come faster than a frame; each only records the gesture,
+    /// and the display link draws the latest once per frame.
+    private var wanted: EdgeGesture?
+    private var drawn: EdgeGesture?
+    private var link: CADisplayLink?
+    /// The capsule is measured only when its wording changes.
+    private var indicatorSize: (label: String, size: CGSize)?
+
     private func follow(_ gesture: EdgeGesture?, committed: Bool) {
         guard let gesture else {
+            stopFollowing()
             if committed {
                 // The view leaves with the reader's transition; should it stay,
                 // it comes back.
@@ -331,6 +342,33 @@ final class GestureContainer: NSView {
             }
             return
         }
+        if wanted == nil, drawn == nil {
+            // The first frame of a gesture shows at once.
+            draw(gesture)
+        }
+        wanted = gesture
+        if link == nil {
+            let link = displayLink(target: self, selector: #selector(step))
+            link.add(to: .main, forMode: .common)
+            self.link = link
+        }
+    }
+
+    @objc private func step(_ link: CADisplayLink) {
+        guard let wanted, wanted != drawn else { return }
+        draw(wanted)
+    }
+
+    private func stopFollowing() {
+        if let wanted, wanted != drawn { draw(wanted) }
+        link?.invalidate()
+        link = nil
+        wanted = nil
+        drawn = nil
+    }
+
+    private func draw(_ gesture: EdgeGesture) {
+        drawn = gesture
         let travel = Self.travel(gesture.progress)
         offset = switch gesture.kind {
         case .pull(.next): CGPoint(x: 0, y: -travel)
@@ -338,7 +376,7 @@ final class GestureContainer: NSView {
         case .swipe(.left): CGPoint(x: -travel, y: 0)
         case .swipe(.right): CGPoint(x: travel, y: 0)
         }
-        content.frame = bounds.offsetBy(dx: offset.x, dy: offset.y)
+        content.setFrameOrigin(offset)
         indicator.rootView = EdgeIndicator(gesture: gesture)
         indicator.isHidden = false
         placeIndicator()
@@ -358,7 +396,14 @@ final class GestureContainer: NSView {
     /// In the middle of the space the content has left, kept on screen.
     private func placeIndicator() {
         guard !indicator.isHidden, let gesture = indicator.rootView.gesture else { return }
-        let size = indicator.fittingSize
+        let label = EdgeIndicator.label(gesture)
+        let size: CGSize
+        if let cached = indicatorSize, cached.label == label {
+            size = cached.size
+        } else {
+            size = indicator.fittingSize
+            indicatorSize = (label, size)
+        }
         let gapX = abs(offset.x), gapY = abs(offset.y)
         var origin = CGPoint(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2)
         switch gesture.kind {
@@ -396,7 +441,7 @@ struct EdgeIndicator: View {
                 Image(systemName: icon(gesture.kind))
                     .symbolVariant(gesture.armed ? .fill : .none)
                     .foregroundStyle(gesture.armed ? Color.accentColor : .secondary)
-                Text(text(gesture)).lineLimit(1)
+                Text(Self.label(gesture)).lineLimit(1)
             }
             .font(.callout)
             .padding(.horizontal, 14)
@@ -428,7 +473,7 @@ struct EdgeIndicator: View {
         }
     }
 
-    private func text(_ gesture: EdgeGesture) -> String {
+    static func label(_ gesture: EdgeGesture) -> String {
         switch gesture.target {
         case .none: ""
         case let .end(message): message
