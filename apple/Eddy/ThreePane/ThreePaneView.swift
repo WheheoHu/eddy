@@ -226,15 +226,18 @@ struct ThreePaneView: View {
         }
     }
 
+    /// Opening an article marks it read; it leaves an unread-only list once
+    /// another article is opened, not while it is being read.
     private var rowsForSelection: [ItemView] {
-        switch selection {
-        case .smart(.unread): model.items(.all, unreadOnly: true)
-        case .smart(.starred): model.items(.starred, unreadOnly: unreadOnly)
+        let keep = model.currentItemID
+        return switch selection {
+        case .smart(.unread): model.items(.all, unreadOnly: true, keep: keep)
+        case .smart(.starred): model.items(.starred, unreadOnly: unreadOnly, keep: keep)
         case .smart(.continueReading): model.items(.continueReading)
-        case let .folder(name): model.items(.category(name: name), unreadOnly: unreadOnly)
-        case let .feed(id): model.items(.source(id: id), unreadOnly: unreadOnly)
-        case let .tag(id): model.items(.tag(id: id), unreadOnly: unreadOnly)
-        default: model.items(.all, unreadOnly: unreadOnly)
+        case let .folder(name): model.items(.category(name: name), unreadOnly: unreadOnly, keep: keep)
+        case let .feed(id): model.items(.source(id: id), unreadOnly: unreadOnly, keep: keep)
+        case let .tag(id): model.items(.tag(id: id), unreadOnly: unreadOnly, keep: keep)
+        default: model.items(.all, unreadOnly: unreadOnly, keep: keep)
         }
     }
 

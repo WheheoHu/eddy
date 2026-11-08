@@ -231,6 +231,7 @@ impl Inner {
         let saved = self.store.items(&ItemQuery {
             filter: ItemFilter::Saved,
             unread_only: false,
+            keep: None,
             limit: 10_000,
             offset: 0,
         })?;

@@ -438,6 +438,7 @@ impl Engine {
                 let rows = self.inner.store.items(&eddy_store::ItemQuery {
                     filter: eddy_store::ItemFilter::Ids(ids),
                     unread_only: false,
+                    keep: None,
                     limit: limit.max(1),
                     offset: 0,
                 })?;

@@ -64,6 +64,7 @@ impl Inner {
             let rows = self.store.items(&ItemQuery {
                 filter: ItemFilter::All,
                 unread_only: false,
+                keep: None,
                 limit: 500,
                 offset,
             })?;
@@ -99,6 +100,7 @@ impl Inner {
             out.extend(self.store.items(&ItemQuery {
                 filter: ItemFilter::Series(series.id),
                 unread_only: false,
+                keep: None,
                 limit: 10_000,
                 offset: 0,
             })?);
@@ -124,6 +126,7 @@ impl Engine {
         let rows = inner.store.items(&ItemQuery {
             filter: ItemFilter::Ids(ids),
             unread_only: false,
+            keep: None,
             limit: limit.max(1),
             offset: 0,
         })?;
