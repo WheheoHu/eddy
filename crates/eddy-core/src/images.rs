@@ -5,6 +5,8 @@ use crate::engine::Inner;
 use crate::{EngineError, Result};
 
 const MAX_IMAGE_BYTES: usize = 25 * 1024 * 1024;
+/// Animated GIFs run long: Reddit's reach 100 MB.
+const MAX_GIF_BYTES: usize = 120 * 1024 * 1024;
 
 impl Inner {
     /// Image bytes for `url`, cached as a blob so articles render offline.
@@ -34,6 +36,8 @@ impl Inner {
         let response = self
             .http
             .get(parsed)
+            // Room for a large GIF on a slow connection.
+            .timeout(std::time::Duration::from_secs(180))
             .send()
             .await
             .map_err(|e| EngineError::Network(e.to_string()))?;
@@ -53,7 +57,12 @@ impl Inner {
             .bytes()
             .await
             .map_err(|e| EngineError::Network(e.to_string()))?;
-        if bytes.len() > MAX_IMAGE_BYTES {
+        let limit = if mime.contains("gif") {
+            MAX_GIF_BYTES
+        } else {
+            MAX_IMAGE_BYTES
+        };
+        if bytes.len() > limit {
             return Err(EngineError::Invalid("图片太大。".into()));
         }
         self.store.put_blob_keyed(&key, &bytes, &mime, false)?;

@@ -49,6 +49,16 @@ final class GalleryMedia {
         if let set = await model.resolveMedia(itemID, force: force) { sets[itemID] = set }
     }
 
+    @ObservationIgnored private var verified: Set<String> = []
+
+    /// A thumbnail didn't load: asks the engine to check the item's media
+    /// with the sites, once per item, and drop what was removed. An item
+    /// left with nothing drops out of the grid.
+    func verify(_ itemID: String) async {
+        guard verified.insert(itemID).inserted, let set = await model.verifyMedia(itemID) else { return }
+        sets[itemID] = set
+    }
+
     /// Resolves what is about to scroll into view, in the background.
     func prefetch(_ entries: some Sequence<GalleryEntryView>) {
         let ids = entries.filter { $0.media == nil && sets[$0.item.id] == nil && prefetched.insert($0.item.id).inserted }.map(\.item.id)
@@ -130,12 +140,17 @@ struct GalleryView: View {
     @AppStorage("gallery.scope") private var scopeKey = "all"
     @State private var entries: [GalleryEntryView] = []
     @State private var exhausted = false
-    @State private var media: GalleryMedia?
-    /// Index in `visible` of the item open in the viewer.
-    @State private var viewing: Int?
+    /// The item open in the viewer. By ID, not position: items found to
+    /// have no media drop out of the grid while the viewer is open, and a
+    /// position would then name a different item.
+    @State private var viewing: String?
     /// Lists changed while the viewer was open; reload when it closes so
     /// the items being looked at don't move.
     @State private var stale = false
+    /// Read by scrolling past them here: they show as read and stay in an
+    /// unread-only list until it is loaded afresh, so nothing above the
+    /// view drops out and moves the grid.
+    @State private var scrolledPast: Set<String> = []
 
     @State private var gridWidth: CGFloat = 0
 
@@ -144,13 +159,14 @@ struct GalleryView: View {
     private static let rowHeight: CGFloat = 220
     private static let spacing: CGFloat = 6
     private static let gridPadding: CGFloat = 8
+    private static let scrollSpace = "gallery.grid"
 
     private var scope: GalleryScopeView { GalleryScopeView(key: scopeKey) }
+    private var media: GalleryMedia { model.media }
 
     /// Items found to have no media drop out as soon as that is known.
     private var visible: [GalleryEntryView] {
-        guard let media else { return entries }
-        return entries.filter { media.set(for: $0)?.status != .noMedia }
+        entries.filter { media.set(for: $0)?.status != .noMedia }
     }
 
     var body: some View {
@@ -172,16 +188,16 @@ struct GalleryView: View {
         }
         .toolbar(removing: .title)
         .overlay {
-            if let index = viewing, let media, visible.indices.contains(index) {
-                MediaViewer(entries: visible, index: Binding(get: { index }, set: { viewing = $0 }), media: media) {
+            // The viewer gets every loaded item, including ones since found
+            // to have no media, and steps over those itself: the list only
+            // grows while it is open, so the item on screen stays put.
+            if let id = viewing, entries.contains(where: { $0.id == id }) {
+                MediaViewer(entries: entries, current: Binding(get: { id }, set: { viewing = $0 }), media: media) {
                     viewing = nil
                 }
             }
         }
-        .onAppear {
-            if media == nil { media = GalleryMedia(model: model) }
-            load()
-        }
+        .onAppear(perform: { load() })
         .onChange(of: scopeKey) { load(reset: true) }
         .onChange(of: unreadOnly) { load(reset: true) }
         .onChange(of: model.revision) {
@@ -209,14 +225,14 @@ struct GalleryView: View {
             } else {
                 ContentUnavailableView(unreadOnly ? "Nothing Unread" : "Nothing Here", systemImage: "photo.on.rectangle")
             }
-        } else if let media {
+        } else {
             let rows = JustifiedRow.rows(items, width: gridWidth - 2 * Self.gridPadding, targetHeight: Self.rowHeight, spacing: Self.spacing, aspect: media.aspect(for:))
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: Self.spacing) {
                     ForEach(rows) { row in
                         HStack(spacing: Self.spacing) {
                             ForEach(row.cells, id: \.entry.id) { cell in
-                                tile(cell, in: items, media: media)
+                                tile(cell, in: items)
                                     .frame(width: cell.width, height: row.height)
                             }
                         }
@@ -224,16 +240,26 @@ struct GalleryView: View {
                 }
                 .padding(Self.gridPadding)
             }
+            .coordinateSpace(name: Self.scrollSpace)
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { gridWidth = $0 }
         }
     }
 
-    private func tile(_ cell: JustifiedRow.Cell, in items: [GalleryEntryView], media: GalleryMedia) -> some View {
+    private func tile(_ cell: JustifiedRow.Cell, in items: [GalleryEntryView]) -> some View {
         let (entry, index) = (cell.entry, cell.index)
-        return GalleryTile(entry: entry, mediaSet: media.set(for: entry)) { aspect in
-            media.noteAspect(aspect, for: entry.item.id)
+        let media = media
+        return GalleryTile(
+            entry: entry, mediaSet: media.set(for: entry),
+            read: entry.item.read || scrolledPast.contains(entry.id),
+            onAspect: { media.noteAspect($0, for: entry.item.id) },
+            onMissing: { Task { await media.verify(entry.item.id) } }
+        )
+        // Scrolled up past the top of the grid: looked at, so read. There
+        // is no progress to keep for a picture.
+        .onGeometryChange(for: Bool.self) { $0.frame(in: .named(Self.scrollSpace)).maxY < 0 } action: { above in
+            if above { markScrolledPast(entry) }
         }
-        .onTapGesture { open(index) }
+        .onTapGesture { viewing = entry.id }
         .contextMenu { menu(for: entry.item) }
         .accessibilityAddTraits(.isButton)
         .accessibilityLabel(Text(entry.item.title))
@@ -261,15 +287,24 @@ struct GalleryView: View {
         }
     }
 
-    private func open(_ index: Int) {
-        viewing = index
+    private func markScrolledPast(_ entry: GalleryEntryView) {
+        guard !entry.item.read, scrolledPast.insert(entry.id).inserted else { return }
+        model.setRead(entry.item, true)
     }
 
     /// Reloads the list, keeping as many items as are loaded unless `reset`.
     private func load(reset: Bool = false) {
+        if reset { scrolledPast = [] }
         let count = reset ? Self.pageSize : max(Self.pageSize, entries.count)
-        entries = model.galleryItems(scope, unreadOnly: unreadOnly, offset: 0, limit: count)
-        exhausted = entries.count < count
+        var fresh = model.galleryItems(scope, unreadOnly: unreadOnly, offset: 0, limit: count)
+        exhausted = fresh.count < count
+        if unreadOnly, !scrolledPast.isEmpty {
+            let known = Set(fresh.map(\.id))
+            fresh += entries.filter { scrolledPast.contains($0.id) && !known.contains($0.id) }
+            // The engine's order: newest first, then by ID.
+            fresh.sort { $0.item.publishedAt != $1.item.publishedAt ? $0.item.publishedAt > $1.item.publishedAt : $0.id < $1.id }
+        }
+        entries = fresh
     }
 
     private func loadMore() {
@@ -286,8 +321,11 @@ struct GalleryTile: View {
     @Environment(AppModel.self) private var model
     let entry: GalleryEntryView
     let mediaSet: MediaSetView?
+    var read: Bool
     /// The thumbnail's width over height, once loaded.
     var onAspect: (CGFloat) -> Void = { _ in }
+    /// The thumbnail didn't load.
+    var onMissing: () -> Void = {}
     @State private var image: NSImage?
 
     private var thumbnail: String? { mediaSet?.thumbnail ?? entry.thumbnail }
@@ -307,7 +345,7 @@ struct GalleryTile: View {
             .contentShape(RoundedRectangle(cornerRadius: 6))
             .overlay(alignment: .bottomLeading) { MediaBadges(mediaSet: mediaSet).padding(6) }
             .overlay(alignment: .topTrailing) {
-                if !entry.item.read {
+                if !read {
                     Circle().fill(.tint).frame(width: 8, height: 8).padding(7).accessibilityLabel("Unread")
                 }
             }
@@ -315,7 +353,11 @@ struct GalleryTile: View {
             .task(id: thumbnail) {
                 guard let thumbnail else { return }
                 image = await model.image(thumbnail)
-                if let size = image?.size, size.height > 0 { onAspect(size.width / size.height) }
+                if let size = image?.size, size.height > 0 {
+                    onAspect(size.width / size.height)
+                } else if !Task.isCancelled {
+                    onMissing()
+                }
             }
     }
 }
@@ -343,8 +385,15 @@ extension AppModel {
     }
 }
 
+extension MediaItemView {
+    /// An animated GIF: shown as a picture, but it moves.
+    var isGIF: Bool {
+        kind == .image && URL(string: src)?.pathExtension.lowercased() == "gif"
+    }
+}
+
 /// Small labels over a thumbnail: duration, number of pictures, a site
-/// that needs signing in.
+/// that needs signing in, an animated GIF.
 struct MediaBadges: View {
     let mediaSet: MediaSetView?
 
@@ -361,7 +410,7 @@ struct MediaBadges: View {
                         switch first.kind {
                         case .video: badge("play.fill", first.duration.map(Self.clock))
                         case .embed: badge("play.rectangle.fill", first.provider?.capitalized)
-                        case .image: EmptyView()
+                        case .image: if first.isGIF { badge("play.fill", "GIF") }
                         }
                     }
                     if set.items.count > 1 {
@@ -400,10 +449,11 @@ private struct GallerySidebar: View {
         List(selection: Binding<String?>(get: { scopeKey }, set: { if let key = $0 { scopeKey = key } })) {
             Section("Gallery") {
                 Label("All Media", systemImage: "photo.on.rectangle.angled")
-                    .badge(model.galleryCount(.all))
                     .tag(GalleryScopeView.all.key)
                 if model.collection.contains(where: { $0.kind == .media }) {
-                    Label("Saved Media", systemImage: "play.rectangle").tag(GalleryScopeView.saved.key)
+                    Label("Saved Media", systemImage: "play.rectangle")
+                        .badge(model.galleryUnread(.saved))
+                        .tag(GalleryScopeView.saved.key)
                 }
             }
             if !model.galleryFolders.isEmpty {
@@ -422,6 +472,7 @@ private struct GallerySidebar: View {
                 Section("Subscriptions") {
                     ForEach(feeds) { feed in
                         Label(feed.title, systemImage: "dot.radiowaves.up.forward")
+                            .badge(model.galleryUnread(.source(id: feed.id)))
                             .tag(GalleryScopeView.source(id: feed.id).key)
                             .contextMenu {
                                 if feed.gallery {

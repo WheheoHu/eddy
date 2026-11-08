@@ -267,14 +267,27 @@ final class AppModel {
         return image
     }
 
+    /// An image with all its frames, for the media viewer to animate;
+    /// `image(_:)` gives the first frame of a GIF, at a bounded size.
+    func animatedImage(_ url: String) async -> NSImage? {
+        let key = "animated:\(url)" as NSString
+        if let cached = imageCache.object(forKey: key) { return cached }
+        guard let engine, let data = try? await engine.image(url: url) else { return nil }
+        let bytes = Data(data.bytes)
+        guard let image = await Task.detached(priority: .userInitiated, operation: { NSImage(data: bytes) }).value else { return nil }
+        imageCache.setObject(image, forKey: key)
+        return image
+    }
+
     /// Decodes off the main thread, at no more pixels than the reader shows:
     /// `NSImage(data:)` would decode a full-size photo on the main thread the
     /// first time it is drawn, in the middle of scrolling or a transition.
     /// The size in points stays the image's own, as `NSImage(data:)` gives.
-    /// Animated GIFs and formats ImageIO can't read (SVG) go the old way.
+    /// An animated GIF gives its first frame (`animatedImage` has them all);
+    /// formats ImageIO can't read (SVG) go the old way.
     private nonisolated static func decoded(_ data: Data) -> NSImage? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              CGImageSourceGetCount(source) == 1,
+              CGImageSourceGetCount(source) >= 1,
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let width = properties[kCGImagePropertyPixelWidth] as? CGFloat,
               let height = properties[kCGImagePropertyPixelHeight] as? CGFloat
@@ -544,12 +557,27 @@ final class AppModel {
 
     // MARK: Gallery
 
+    /// Media resolved so far, shared by the Gallery, its viewer and the
+    /// reader's media pane, so an item resolved in one shows at once in
+    /// the others.
+    @ObservationIgnored lazy var media = GalleryMedia(model: self)
+
     /// Subscriptions in the Gallery, on their own or through their folder.
     var galleryFeeds: [SourceView] {
         feeds.filter { $0.gallery || $0.category.map(galleryFolders.contains) == true }
     }
 
     func inGallery(folder: String) -> Bool { galleryFolders.contains(folder) }
+
+    /// Whether the item belongs in the Gallery, as the engine decides it:
+    /// an article of a subscription shown there, or a saved media link.
+    func inGallery(_ item: ItemView) -> Bool {
+        switch item.kind {
+        case .saved: item.seriesId == nil && item.url.map(isMediaUrl(url:)) == true
+        case .feed: item.sourceId.map { id in galleryFeeds.contains { $0.id == id } } == true
+        case .chapter: false
+        }
+    }
 
     func setGallery(folder: String, _ shown: Bool) {
         do { try engine?.setFolderGallery(name: folder, shown: shown) } catch { message = error.localizedDescription }
@@ -572,9 +600,10 @@ final class AppModel {
         (try? engine?.galleryItems(scope: scope, unreadOnly: unreadOnly, limit: UInt32(limit), offset: UInt32(offset))) ?? []
     }
 
-    func galleryCount(_ scope: GalleryScopeView) -> Int {
+    /// Unread items in a part of the Gallery.
+    func galleryUnread(_ scope: GalleryScopeView) -> Int {
         _ = revision
-        return Int((try? engine?.galleryCount(scope: scope, unreadOnly: false)) ?? 0)
+        return Int((try? engine?.galleryCount(scope: scope, unreadOnly: true)) ?? 0)
     }
 
     func resolveMedia(_ itemID: String, force: Bool = false) async -> MediaSetView? {
@@ -595,6 +624,11 @@ final class AppModel {
         let video = MediaItemView(kind: kind, src: src, poster: value("poster"), width: nil, height: nil, duration: nil, hasAudio: true, provider: nil)
         let set = MediaSetView(status: .ready, items: [video], thumbnail: value("poster"))
         mediaRequest = MediaRequest(entry: GalleryEntryView(item: item, media: set, thumbnail: value("poster")))
+    }
+
+    /// After a thumbnail fails: drops the media the sites removed.
+    func verifyMedia(_ itemID: String) async -> MediaSetView? {
+        (try? await engine?.verifyMedia(itemId: itemID)) ?? nil
     }
 
     func prefetchMedia(_ itemIDs: [String]) {

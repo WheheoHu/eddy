@@ -714,6 +714,91 @@ async fn the_gallery_holds_marked_sources_folders_and_saved_media() {
 }
 
 #[tokio::test]
+async fn removed_media_is_dropped_and_empty_items_leave_the_gallery() {
+    let server = mock_freshrss().await;
+    let files = MockServer::start().await;
+    for (p, status) in [("/kept.jpg", 200), ("/gone.jpg", 404), ("/thumb.jpg", 410)] {
+        Mock::given(path(p))
+            .respond_with(ResponseTemplate::new(status))
+            .mount(&files)
+            .await;
+    }
+    // Imgur-style: a removed file redirects to a stand-in picture.
+    Mock::given(path("/moved.jpg"))
+        .respond_with(
+            ResponseTemplate::new(302).insert_header("location", format!("{}/removed.png", files.uri())),
+        )
+        .mount(&files)
+        .await;
+    Mock::given(path("/removed.png"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&files)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    engine
+        .configure_freshrss(&server.uri(), "me", "secret")
+        .await
+        .unwrap();
+    engine.refresh().await.unwrap();
+    engine.set_folder_gallery("Tech", true).unwrap();
+    let entries = engine
+        .gallery_items(&GalleryScope::All, false, 10, 0)
+        .unwrap();
+    let (a, b) = (&entries[0].row.item.id, &entries[1].row.item.id);
+    let url = |p: &str| format!("{}{p}", files.uri());
+    let store = |id: &str, set: &MediaSet| {
+        engine
+            .inner
+            .store
+            .put_media_set(id, &serde_json::to_string(set).unwrap(), "ready")
+            .unwrap();
+    };
+    store(
+        a,
+        &MediaSet {
+            status: MediaStatus::Ready,
+            items: vec![
+                eddy_media::MediaItem::image(url("/gone.jpg")),
+                eddy_media::MediaItem::image(url("/kept.jpg")),
+                // No answer at all is not "removed".
+                eddy_media::MediaItem::image("http://127.0.0.1:9/unreachable.jpg"),
+            ],
+            thumbnail: Some(url("/thumb.jpg")),
+        },
+    );
+    store(
+        b,
+        &MediaSet {
+            status: MediaStatus::Ready,
+            items: vec![
+                eddy_media::MediaItem::image(url("/gone.jpg")),
+                eddy_media::MediaItem::image(url("/moved.jpg")),
+            ],
+            thumbnail: Some(url("/gone.jpg")),
+        },
+    );
+    let count = || engine.gallery_count(&GalleryScope::All, false).unwrap();
+    assert_eq!(count(), 3);
+
+    let a_set = engine.verify_media(a).await.unwrap().unwrap();
+    assert_eq!(a_set.status, MediaStatus::Ready);
+    let srcs: Vec<&str> = a_set.items.iter().map(|m| m.src.as_str()).collect();
+    assert_eq!(srcs, [url("/kept.jpg").as_str(), "http://127.0.0.1:9/unreachable.jpg"]);
+    assert_eq!(a_set.thumbnail, Some(url("/kept.jpg")));
+
+    let b_set = engine.verify_media(b).await.unwrap().unwrap();
+    assert_eq!(b_set.status, MediaStatus::NoMedia);
+    assert!(b_set.items.is_empty() && b_set.thumbnail.is_none());
+    assert_eq!(count(), 2);
+    // Kept across reopening, like any resolved set.
+    assert_eq!(
+        engine.resolve_media(b, false).await.unwrap().status,
+        MediaStatus::NoMedia
+    );
+}
+
+#[tokio::test]
 async fn saving_a_media_link_keeps_the_media_instead_of_a_page() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

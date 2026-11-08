@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use eddy_media::{MediaSet, MediaStatus, PageSource};
+use eddy_media::{MediaSet, MediaStatus, MediaType, PageSource};
 use eddy_model::{ContentOrigin, Entity, ItemKind, fields, now_ms};
 use eddy_store::{ItemFilter, ItemQuery, ItemRow};
 
@@ -169,9 +169,70 @@ impl Inner {
         )?;
         Ok(set)
     }
+
+    /// Whether `url` is gone for good: the site says so (404, 410) or sends
+    /// its "removed" picture. Anything else, including no answer, is not.
+    async fn gone(&self, url: &str) -> bool {
+        let head = self.http.head(url).send().await;
+        let response = match head {
+            Ok(r) if r.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED => {
+                self.http.get(url).send().await
+            }
+            other => other,
+        };
+        let Ok(response) = response else {
+            return false;
+        };
+        matches!(response.status().as_u16(), 404 | 410) || is_removed_placeholder(response.url())
+    }
+
+    /// Drops the media of a set that the sites have removed and replaces a
+    /// removed thumbnail; with nothing left the item has no media and
+    /// leaves the Gallery.
+    pub(crate) async fn verify_media(&self, item_id: &str) -> Result<Option<MediaSet>> {
+        let Some((mut set, _)) = self.cached_media(item_id)? else {
+            return Ok(None);
+        };
+        let mut kept = Vec::with_capacity(set.items.len());
+        for item in std::mem::take(&mut set.items) {
+            // Players load their own pages; only files can be checked.
+            if item.kind == MediaType::Embed || !self.gone(&item.src).await {
+                kept.push(item);
+            }
+        }
+        set.items = kept;
+        if set.items.is_empty() {
+            set.status = MediaStatus::NoMedia;
+            set.thumbnail = None;
+        } else if let Some(thumbnail) = set.thumbnail.clone()
+            && self.gone(&thumbnail).await
+        {
+            set.thumbnail = set
+                .items
+                .iter()
+                .find_map(|m| m.preview().map(String::from));
+        }
+        self.store.put_media_set(
+            item_id,
+            &serde_json::to_string(&set)?,
+            status_str(set.status),
+        )?;
+        Ok(Some(set))
+    }
+}
+
+/// Image hosts answer a removed file with a stand-in picture.
+fn is_removed_placeholder(url: &url::Url) -> bool {
+    url.path().ends_with("/removed.png")
 }
 
 impl Engine {
+    /// Called when an item's thumbnail fails to load: checks its media
+    /// with the sites and drops what was removed. Returns the updated set.
+    pub async fn verify_media(&self, item_id: &str) -> Result<Option<MediaSet>> {
+        self.inner.verify_media(item_id).await
+    }
+
     /// Gallery items, newest first.
     pub fn gallery_items(
         &self,

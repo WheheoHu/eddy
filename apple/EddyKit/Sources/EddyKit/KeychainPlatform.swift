@@ -3,9 +3,20 @@ import os
 import Security
 
 /// Platform services backed by the macOS/iOS keychain and unified logging.
+///
+/// Each secret is read from the keychain once per run and kept in memory:
+/// the engine asks for the same secrets on every sync and every check
+/// whether AI is set up, and a development build (signed ad hoc, so a
+/// different app to the keychain each time) would put up the permission
+/// dialog for each of those reads. A denied read counts as "none" for the
+/// rest of the run too. Writes and deletes keep the cache current.
 public final class KeychainPlatform: PlatformServices, @unchecked Sendable {
     private let service: String
     private let logger: Logger
+    /// Guards `cached` and serializes the keychain reads, so two callers
+    /// asking for the same key at once produce one dialog, not two.
+    private let lock = NSLock()
+    private var cached: [String: String?] = [:]
 
     public init(service: String = "dev.eddy.Eddy") {
         self.service = service
@@ -22,6 +33,15 @@ public final class KeychainPlatform: PlatformServices, @unchecked Sendable {
     }
 
     public func secretGet(key: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        if let known = cached[key] { return known }
+        let value = readKeychain(key)
+        cached[key] = .some(value)
+        return value
+    }
+
+    private func readKeychain(_ key: String) -> String? {
         var q = query(key)
         q[kSecReturnData as String] = true
         q[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -32,18 +52,26 @@ public final class KeychainPlatform: PlatformServices, @unchecked Sendable {
     }
 
     public func secretSet(key: String, value: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
         let data = Data(value.utf8)
-        let status = SecItemUpdate(query(key) as CFDictionary, [kSecValueData as String: data] as CFDictionary)
-        if status == errSecSuccess { return true }
-        guard status == errSecItemNotFound else { return false }
-        var add = query(key)
-        add[kSecValueData as String] = data
-        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
+        var status = SecItemUpdate(query(key) as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        if status == errSecItemNotFound {
+            var add = query(key)
+            add[kSecValueData as String] = data
+            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+            status = SecItemAdd(add as CFDictionary, nil)
+        }
+        guard status == errSecSuccess else { return false }
+        cached[key] = .some(value)
+        return true
     }
 
     public func secretDelete(key: String) {
+        lock.lock()
+        defer { lock.unlock() }
         SecItemDelete(query(key) as CFDictionary)
+        cached[key] = .some(nil)
     }
 
     public func log(level: String, message: String) {
