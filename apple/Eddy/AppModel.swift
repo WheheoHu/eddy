@@ -42,7 +42,8 @@ struct ReaderCommand: Equatable {
         case readingMode(ReadingMode)
         /// Between the reflowed text and the web page.
         case toggleWeb
-        case fetchFullText
+        /// Between the full text and the feed's content.
+        case toggleFullText
         case step(Direction)
     }
 
@@ -523,9 +524,11 @@ final class AppModel {
         pendingSeries = SeriesProposalView(title: proposal.title, tocUrl: url, chapters: proposal.chapters)
     }
 
-    func fetchFullText(_ id: String) async -> Bool {
+    /// Shows the article's full text or the feed's content; the page is
+    /// fetched only the first time, and the choice stays with the article.
+    func setFullText(_ id: String, _ on: Bool) async -> Bool {
         do {
-            _ = try await engine?.fetchFullText(itemId: id)
+            _ = try await engine?.setFullText(itemId: id, on: on)
             leadImages[id] = nil
             reload()
             return true

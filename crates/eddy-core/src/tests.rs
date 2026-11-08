@@ -449,6 +449,66 @@ async fn full_text_replaces_a_truncated_feed_version() {
 }
 
 #[tokio::test]
+async fn full_text_switches_off_and_back_without_refetching_and_stays() {
+    use eddy_model::ContentOrigin;
+    let pages = mock_pages().await;
+    let server = mock_freshrss_linking(&pages.uri()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    engine
+        .set_full_text_rules(vec![eddy_model::FullTextRule {
+            scope: eddy_model::FullTextScope::All,
+            mode: eddy_model::FullTextMode::Never,
+        }])
+        .unwrap();
+    engine
+        .configure_freshrss(&server.uri(), "me", "secret")
+        .await
+        .unwrap();
+    engine.refresh().await.unwrap();
+    let id = engine
+        .items(&ItemQuery::default())
+        .unwrap()
+        .into_iter()
+        .find(|r| r.item.title == "New post")
+        .unwrap()
+        .item
+        .id;
+    // Off while it is already the feed's content: nothing changes.
+    let feed = engine.set_full_text(&id, false).await.unwrap();
+    assert_eq!(feed.version.origin, ContentOrigin::Feed);
+    let page_requests = || async { pages.received_requests().await.unwrap().len() };
+    assert_eq!(page_requests().await, 0);
+
+    // On the first time fetches the page.
+    let full = engine.set_full_text(&id, true).await.unwrap();
+    assert_eq!(full.version.origin, ContentOrigin::Extracted);
+    let fetched = page_requests().await;
+    assert!(fetched > 0);
+
+    // Off and on again switch between the kept versions.
+    let back = engine.set_full_text(&id, false).await.unwrap();
+    assert_eq!(back.version.hash, feed.version.hash);
+    assert_eq!(
+        engine.document(&id).await.unwrap().unwrap().version.origin,
+        ContentOrigin::Feed
+    );
+    let again = engine.set_full_text(&id, true).await.unwrap();
+    assert_eq!(again.version.hash, full.version.hash);
+    assert_eq!(page_requests().await, fetched);
+
+    // The choice stays, including across a refresh and reopening.
+    engine.set_full_text(&id, false).await.unwrap();
+    engine.refresh().await.unwrap();
+    drop(engine);
+    let engine = open(dir.path());
+    assert_eq!(
+        engine.document(&id).await.unwrap().unwrap().version.origin,
+        ContentOrigin::Feed
+    );
+}
+
+#[tokio::test]
 async fn full_text_rules_pick_the_mode_with_the_top_rule_winning() {
     use eddy_model::{FullTextMode as M, FullTextRule, FullTextScope as S};
     let pages = mock_pages().await;

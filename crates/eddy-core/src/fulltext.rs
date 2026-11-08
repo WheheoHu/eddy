@@ -195,6 +195,43 @@ impl Inner {
         })
     }
 
+    /// Shows the full text (`on`) or the subscription's own content. A
+    /// version kept from before is switched back to without fetching; the
+    /// page is fetched only the first time. The choice is the item's
+    /// current version, so it stays and syncs.
+    pub(crate) async fn set_full_text(&self, item_id: &str, on: bool) -> Result<LoadedDocument> {
+        let row = self.store.item(item_id)?.ok_or(EngineError::NotFound)?;
+        let want = if on {
+            ContentOrigin::Extracted
+        } else {
+            ContentOrigin::Feed
+        };
+        let versions = self.store.content_versions(item_id)?;
+        let Some(version) = versions.iter().rev().find(|v| v.origin == want) else {
+            if on {
+                return self.fetch_full_text(item_id, false).await;
+            }
+            return Err(EngineError::Invalid("这篇文章没有订阅里的版本。".into()));
+        };
+        let document = self
+            .load_version(version, Some(&row.item.title))?
+            .ok_or_else(|| EngineError::Invalid("这个版本的内容已不在本机。".into()))?;
+        if row.item.current_version.as_deref() != Some(version.hash.as_str()) {
+            let ingested = Ingested {
+                version: version.clone(),
+                excerpt: document.excerpt(240),
+                lang: detect_lang(&document),
+                document: document.clone(),
+            };
+            self.switch_version(item_id, &ingested)?;
+            self.after_ingest(item_id, &ingested);
+        }
+        Ok(LoadedDocument {
+            version: version.clone(),
+            document,
+        })
+    }
+
     /// Puts feed content back where background fetching replaced it with a
     /// wall or a page no longer than the feed. Runs once per data directory.
     pub(crate) fn restore_feed_versions(&self) -> Result<u32> {
@@ -632,6 +669,12 @@ impl Engine {
     /// content of the item.
     pub async fn fetch_full_text(&self, item_id: &str) -> Result<LoadedDocument> {
         self.inner.fetch_full_text(item_id, false).await
+    }
+
+    /// Switches a subscription article between its full text and the feed's
+    /// content, fetching the page only when it never was.
+    pub async fn set_full_text(&self, item_id: &str, on: bool) -> Result<LoadedDocument> {
+        self.inner.set_full_text(item_id, on).await
     }
 
     /// Saves a web page for later reading.

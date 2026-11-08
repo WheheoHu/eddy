@@ -217,7 +217,7 @@ struct CommandPalette: View {
             items.append(PaletteItem(id: "next", group: .reader, title: chapter ? String(localized: "Next Chapter") : String(localized: "Next Article"), icon: "chevron.down") { command(.step(.next)) })
         }
         if item.kind == .feed {
-            items.append(PaletteItem(id: "fulltext", group: .reader, title: String(localized: "Fetch Full Text"), icon: "doc.text.magnifyingglass") { command(.fetchFullText) })
+            items.append(PaletteItem(id: "fulltext", group: .reader, title: String(localized: "Toggle Full Text"), icon: "doc.text.magnifyingglass") { command(.toggleFullText) })
         }
         if model.entry(containing: item) != nil {
             let shown = mode == .threePane ? threePaneContents : libraryContents
