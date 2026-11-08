@@ -84,6 +84,42 @@ impl FullTextMode {
     }
 }
 
+/// Sources a full-text rule applies to.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum FullTextScope {
+    All,
+    Category { name: String },
+    Source { id: String },
+}
+
+/// Sets the full-text mode for the sources in `scope`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FullTextRule {
+    pub scope: FullTextScope,
+    pub mode: FullTextMode,
+}
+
+impl FullTextRule {
+    pub fn matches(&self, source: &Source) -> bool {
+        match &self.scope {
+            FullTextScope::All => true,
+            FullTextScope::Category { name } => source.category.as_deref() == Some(name.as_str()),
+            FullTextScope::Source { id } => source.id == *id,
+        }
+    }
+}
+
+/// The source's mode under an ordered rule list: rules apply from the
+/// bottom up, so the top-most matching rule wins. With none matching it is
+/// the source's own setting.
+pub fn resolve_full_text(source: &Source, rules: &[FullTextRule]) -> FullTextMode {
+    rules
+        .iter()
+        .find(|r| r.matches(source))
+        .map_or(source.full_text, |r| r.mode)
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Source {
     pub id: String,

@@ -403,6 +403,127 @@ private struct RuleRow: View {
     }
 }
 
+// MARK: - Full-text rules
+
+/// Which subscriptions fetch the full article for new items. Changes save
+/// right away and sync.
+private struct FullTextRulesSection: View {
+    @Environment(AppModel.self) private var model
+    @State private var rules: [FullTextRuleView] = []
+    @State private var note = ""
+
+    var body: some View {
+        Section {
+            ForEach(rules.indices, id: \.self) { i in
+                FullTextRuleRow(
+                    rule: Binding(get: { rules[i] }, set: { rules[i] = $0; save() }),
+                    feeds: model.feeds, folders: model.folders,
+                    moveUp: i > 0 ? { move(i, by: -1) } : nil,
+                    moveDown: i < rules.count - 1 ? { move(i, by: 1) } : nil
+                ) {
+                    rules.remove(at: i)
+                    save()
+                }
+            }
+            .onMove { from, to in
+                rules.move(fromOffsets: from, toOffset: to)
+                save()
+            }
+            HStack {
+                Button("Add Rule") {
+                    rules.append(FullTextRuleView(scope: .all, mode: .always))
+                    save()
+                }
+                Text(note).foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Full-Text Rules")
+        } footer: {
+            Text("Whether new articles from a subscription are fetched in full from the original page. Rules higher in the list take priority; Automatic fetches when the feed looks cut short. Choosing a mode from a subscription’s menu adds a rule at the top.")
+                .foregroundStyle(.secondary)
+        }
+        .onAppear { rules = (try? model.engine?.fullTextRules()) ?? [] }
+    }
+
+    private func move(_ i: Int, by offset: Int) {
+        rules.swapAt(i, i + offset)
+        save()
+    }
+
+    private func save() {
+        do {
+            try model.engine?.setFullTextRules(rules: rules)
+            note = ""
+            model.reload()
+        } catch {
+            note = error.localizedDescription
+        }
+    }
+}
+
+private struct FullTextRuleRow: View {
+    @Binding var rule: FullTextRuleView
+    let feeds: [SourceView]
+    let folders: [String]
+    let moveUp: (() -> Void)?
+    let moveDown: (() -> Void)?
+    let remove: () -> Void
+
+    var body: some View {
+        HStack {
+            Picker("", selection: Binding(get: { scopeTag }, set: { rule = FullTextRuleView(scope: scope(from: $0), mode: rule.mode) })) {
+                Text("All subscriptions").tag("all")
+                if !folders.isEmpty {
+                    Divider()
+                    ForEach(folders, id: \.self) { Text("Folder: \($0)").tag("category:\($0)") }
+                }
+                Divider()
+                ForEach(feeds) { Text($0.title).tag("source:\($0.id)") }
+                if case let .source(id) = rule.scope, !feeds.contains(where: { $0.id == id }) {
+                    Text("Removed subscription").tag(scopeTag)
+                }
+            }
+            .labelsHidden()
+            Picker("", selection: Binding(get: { rule.mode }, set: { rule = FullTextRuleView(scope: rule.scope, mode: $0) })) {
+                ForEach(FullTextModeView.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            .labelsHidden()
+            .frame(width: 120)
+            Button { moveUp?() } label: { Image(systemName: "chevron.up") }
+                .buttonStyle(.borderless).disabled(moveUp == nil).help("Higher priority")
+            Button { moveDown?() } label: { Image(systemName: "chevron.down") }
+                .buttonStyle(.borderless).disabled(moveDown == nil).help("Lower priority")
+            Button(role: .destructive, action: remove) { Image(systemName: "minus.circle") }.buttonStyle(.borderless)
+        }
+    }
+
+    private var scopeTag: String {
+        switch rule.scope {
+        case .all: "all"
+        case let .source(id): "source:\(id)"
+        case let .category(name): "category:\(name)"
+        }
+    }
+
+    private func scope(from tag: String) -> FullTextScopeView {
+        if tag.hasPrefix("source:") { return .source(id: String(tag.dropFirst(7))) }
+        if tag.hasPrefix("category:") { return .category(name: String(tag.dropFirst(9))) }
+        return .all
+    }
+}
+
+extension FullTextModeView {
+    static let allCases: [FullTextModeView] = [.auto, .always, .never]
+
+    var title: LocalizedStringKey {
+        switch self {
+        case .auto: "Automatic"
+        case .always: "Always"
+        case .never: "Never"
+        }
+    }
+}
+
 // MARK: - Reading
 
 private struct ReadingSettings: View {
@@ -460,6 +581,7 @@ private struct SavingSettings: View {
                 Text("In chrome://extensions, turn on Developer mode and load the extension folder unpacked. Pages you save from Chrome arrive here even while Eddy is closed.")
                     .foregroundStyle(.secondary)
             }
+            FullTextRulesSection()
             Section {
                 if let packs, !packs.packs.isEmpty || packs.ftrSites > 0 {
                     ForEach(packs.packs, id: \.name) { pack in

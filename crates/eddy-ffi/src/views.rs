@@ -95,24 +95,71 @@ pub struct SourceView {
     pub category: Option<String>,
     pub site_url: Option<String>,
     pub unread: u32,
+    /// The mode its new items get under the full-text rules.
     pub full_text: FullTextModeView,
+    /// The mode of a rule for this source alone, if it has one.
+    pub source_rule: Option<FullTextModeView>,
     pub truncated: bool,
     /// Marked for the Gallery on its own (its folder can also be).
     pub gallery: bool,
 }
 
-impl From<SourceInfo> for SourceView {
-    fn from(s: SourceInfo) -> Self {
+impl SourceView {
+    pub fn new(s: SourceInfo, rules: &[m::FullTextRule]) -> Self {
+        let source_rule = rules
+            .iter()
+            .find(|r| matches!(&r.scope, m::FullTextScope::Source { id } if *id == s.source.id))
+            .map(|r| r.mode.into());
         SourceView {
+            full_text: m::resolve_full_text(&s.source, rules).into(),
+            source_rule,
             id: s.source.id,
             saved: s.source.kind == m::SourceKind::Saved,
             title: s.source.title,
             category: s.source.category,
             site_url: s.source.site_url,
             unread: s.unread,
-            full_text: s.source.full_text.into(),
             truncated: s.source.truncated,
             gallery: s.source.gallery,
+        }
+    }
+}
+
+#[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq)]
+pub enum FullTextScopeView {
+    All,
+    Category { name: String },
+    Source { id: String },
+}
+
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct FullTextRuleView {
+    pub scope: FullTextScopeView,
+    pub mode: FullTextModeView,
+}
+
+impl From<m::FullTextRule> for FullTextRuleView {
+    fn from(r: m::FullTextRule) -> Self {
+        FullTextRuleView {
+            scope: match r.scope {
+                m::FullTextScope::All => FullTextScopeView::All,
+                m::FullTextScope::Category { name } => FullTextScopeView::Category { name },
+                m::FullTextScope::Source { id } => FullTextScopeView::Source { id },
+            },
+            mode: r.mode.into(),
+        }
+    }
+}
+
+impl From<FullTextRuleView> for m::FullTextRule {
+    fn from(r: FullTextRuleView) -> Self {
+        m::FullTextRule {
+            scope: match r.scope {
+                FullTextScopeView::All => m::FullTextScope::All,
+                FullTextScopeView::Category { name } => m::FullTextScope::Category { name },
+                FullTextScopeView::Source { id } => m::FullTextScope::Source { id },
+            },
+            mode: r.mode.into(),
         }
     }
 }

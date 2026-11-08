@@ -491,16 +491,6 @@ impl Engine {
     pub fn cache_usage(&self) -> Result<u64> {
         Ok(self.inner.store.blob_usage()?)
     }
-
-    pub fn set_source_full_text(&self, source_id: &str, mode: FullTextMode) -> Result<()> {
-        self.inner.record(
-            Entity::Source,
-            source_id,
-            fields::FULL_TEXT,
-            mode.as_str().into(),
-            false,
-        )
-    }
 }
 
 impl Inner {

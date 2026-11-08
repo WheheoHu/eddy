@@ -4,7 +4,8 @@ use std::sync::Arc;
 use eddy_doc::{ConvertOptions, SCHEMA_VERSION, html_to_document};
 use eddy_extract::{extract, is_truncated, truncation_hint};
 use eddy_model::{
-    ContentOrigin, ContentVersion, Entity, FullTextMode, Item, ItemKind, fields, ids, now_ms,
+    ContentOrigin, ContentVersion, Entity, FullTextMode, FullTextRule, FullTextScope, Item,
+    ItemKind, fields, ids, now_ms, resolve_full_text,
 };
 use eddy_store::{ItemFilter, ItemQuery, ItemRow};
 use serde::Deserialize;
@@ -19,8 +20,18 @@ pub(crate) const PAGE_MIME: &str = "text/html;profile=page";
 
 const AUTO_FETCH_CAP: usize = 30;
 const AUTO_FETCH_CONCURRENCY: usize = 3;
+/// Setting holding the ordered full-text rules; it syncs.
+const RULES_KEY: &str = "full_text_rules";
 
 impl Inner {
+    pub(crate) fn full_text_rules(&self) -> Result<Vec<FullTextRule>> {
+        Ok(self
+            .store
+            .setting(RULES_KEY)?
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default())
+    }
+
     /// Stores a full page as a content version, extracting the article.
     pub(crate) fn ingest_page(
         &self,
@@ -407,7 +418,8 @@ impl Inner {
     }
 
     /// Returns the IDs scheduled for fetching.
-    fn auto_full_text(self: &Arc<Self>, item_ids: &[String]) -> Vec<String> {
+    pub(crate) fn auto_full_text(self: &Arc<Self>, item_ids: &[String]) -> Vec<String> {
+        let rules = self.full_text_rules().unwrap_or_default();
         let mut candidates = Vec::new();
         for id in item_ids.iter().cloned() {
             let Ok(Some(row)) = self.store.item(&id) else {
@@ -421,7 +433,7 @@ impl Inner {
             else {
                 continue;
             };
-            let wanted = match source.full_text {
+            let wanted = match resolve_full_text(&source, &rules) {
                 FullTextMode::Always => true,
                 FullTextMode::Never => false,
                 FullTextMode::Auto => {
@@ -567,6 +579,55 @@ struct Capture {
 }
 
 impl Engine {
+    /// Full-text rules, top (highest priority) first.
+    pub fn full_text_rules(&self) -> Result<Vec<FullTextRule>> {
+        self.inner.full_text_rules()
+    }
+
+    /// Replaces the rules; they sync like other settings.
+    pub fn set_full_text_rules(&self, rules: Vec<FullTextRule>) -> Result<()> {
+        self.inner.record(
+            Entity::Setting,
+            RULES_KEY,
+            fields::VALUE,
+            serde_json::to_value(rules)?,
+            false,
+        )
+    }
+
+    /// Gives one source its own mode: a rule for it goes to the top, in
+    /// place of any it had. `None` drops its rules, leaving it to the rest.
+    pub fn set_source_full_text_rule(
+        &self,
+        source_id: &str,
+        mode: Option<FullTextMode>,
+    ) -> Result<()> {
+        let mut rules = self.inner.full_text_rules()?;
+        rules.retain(|r| !matches!(&r.scope, FullTextScope::Source { id } if id == source_id));
+        if let Some(mode) = mode {
+            rules.insert(
+                0,
+                FullTextRule {
+                    scope: FullTextScope::Source {
+                        id: source_id.to_string(),
+                    },
+                    mode,
+                },
+            );
+        }
+        self.set_full_text_rules(rules)
+    }
+
+    /// The mode the source's new items get under the current rules.
+    pub fn effective_full_text(&self, source_id: &str) -> Result<FullTextMode> {
+        let source = self
+            .inner
+            .store
+            .source(source_id)?
+            .ok_or(EngineError::NotFound)?;
+        Ok(resolve_full_text(&source, &self.inner.full_text_rules()?))
+    }
+
     /// Fetches the original page and makes its extracted article the current
     /// content of the item.
     pub async fn fetch_full_text(&self, item_id: &str) -> Result<LoadedDocument> {

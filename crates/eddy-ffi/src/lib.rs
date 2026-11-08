@@ -253,7 +253,13 @@ impl EddyEngine {
     }
 
     pub fn sources(&self) -> R<Vec<SourceView>> {
-        Ok(self.engine.sources()?.into_iter().map(Into::into).collect())
+        let rules = self.engine.full_text_rules()?;
+        Ok(self
+            .engine
+            .sources()?
+            .into_iter()
+            .map(|s| SourceView::new(s, &rules))
+            .collect())
     }
 
     pub fn items(&self, query: ItemQueryView) -> R<Vec<ItemView>> {
@@ -315,8 +321,32 @@ impl EddyEngine {
         Ok(self.engine.cache_usage()?)
     }
 
-    pub fn set_source_full_text(&self, source_id: String, mode: FullTextModeView) -> R<()> {
-        Ok(self.engine.set_source_full_text(&source_id, mode.into())?)
+    /// Full-text rules, top (highest priority) first.
+    pub fn full_text_rules(&self) -> R<Vec<FullTextRuleView>> {
+        Ok(self
+            .engine
+            .full_text_rules()?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
+    pub fn set_full_text_rules(&self, rules: Vec<FullTextRuleView>) -> R<()> {
+        Ok(self
+            .engine
+            .set_full_text_rules(rules.into_iter().map(Into::into).collect())?)
+    }
+
+    /// Puts a rule for this source alone at the top, replacing any it had;
+    /// `None` removes it so the other rules apply.
+    pub fn set_source_full_text_rule(
+        &self,
+        source_id: String,
+        mode: Option<FullTextModeView>,
+    ) -> R<()> {
+        Ok(self
+            .engine
+            .set_source_full_text_rule(&source_id, mode.map(Into::into))?)
     }
 
     pub async fn fetch_full_text(&self, item_id: String) -> R<DocumentView> {
