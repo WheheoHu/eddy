@@ -254,12 +254,71 @@ impl Inner {
         title_hint: Option<&str>,
     ) -> Result<ItemRow> {
         let item_id = ids::new_local_id();
-        let now = now_ms();
         let (ingested, title) = self.ingest_page(&item_id, page, url, origin, true)?;
         let title = title
             .or_else(|| title_hint.map(str::to_string))
             .filter(|t| !t.trim().is_empty())
             .unwrap_or_else(|| url.to_string());
+        self.insert_saved(&item_id, url, title, &ingested)
+    }
+
+    /// Saves a link to an image or video: there is no article to extract, so
+    /// the stored document holds the resolved media (a poster for players),
+    /// which the reader shows and the media viewer plays.
+    async fn save_media_url(&self, url: &str) -> Result<ItemRow> {
+        let fetcher = self.fetcher.read().clone();
+        let set = self
+            .media
+            .resolve(url, None, &crate::media::Pages(fetcher.clone()))
+            .await;
+        if set.status == eddy_media::MediaStatus::NoMedia {
+            return Err(EngineError::Invalid(
+                "这个链接里没有找到图片或视频。".into(),
+            ));
+        }
+        let page_title = match fetcher.fetch(url, |_| true).await {
+            Ok(p) if !eddy_fetch::is_bot_wall(&p.html) && !eddy_fetch::is_login_wall(&p.html) => {
+                eddy_extract::page_title_of(&p.html)
+            }
+            _ => None,
+        };
+        let title = page_title
+            .filter(|t| !t.trim().is_empty())
+            .unwrap_or_else(|| media_title(url));
+        let item_id = ids::new_local_id();
+        let ingested = self.ingest_html(
+            &item_id,
+            &media_html(&title, &set),
+            ContentOrigin::Extracted,
+            Some(url),
+            Some(&title),
+            true,
+        )?;
+        self.record(
+            Entity::ContentVersion,
+            &ingested.version.hash,
+            fields::CREATE,
+            serde_json::to_value(&ingested.version)?,
+            false,
+        )?;
+        let row = self.insert_saved(&item_id, url, title, &ingested)?;
+        self.store.put_media_set(
+            &item_id,
+            &serde_json::to_string(&set)?,
+            crate::media::status_str(set.status),
+        )?;
+        Ok(row)
+    }
+
+    fn insert_saved(
+        &self,
+        item_id: &str,
+        url: &str,
+        title: String,
+        ingested: &Ingested,
+    ) -> Result<ItemRow> {
+        let item_id = item_id.to_string();
+        let now = now_ms();
         let item = Item {
             id: item_id.clone(),
             source_id: Some(ids::saved_source_id()),
@@ -290,8 +349,8 @@ impl Inner {
             serde_json::to_value(&item)?,
             false,
         )?;
-        self.switch_version(&item_id, &ingested)?;
-        self.after_ingest(&item_id, &ingested);
+        self.switch_version(&item_id, ingested)?;
+        self.after_ingest(&item_id, ingested);
         self.store.item(&item_id)?.ok_or(EngineError::NotFound)
     }
 
@@ -317,6 +376,9 @@ impl Inner {
         let url = parsed.to_string();
         if let Some(existing) = self.saved_by_url(&url)? {
             return Ok(existing);
+        }
+        if eddy_media::is_media_url(&url) {
+            return self.save_media_url(&url).await;
         }
         let fetcher = self.fetcher.read().clone();
         let rule = fetcher.rule_for(&url).cloned();
@@ -424,6 +486,75 @@ fn reject_wall(html: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// The document of a saved media link: pictures as images, videos with
+/// their poster, players as their poster followed by the embed.
+fn media_html(title: &str, set: &eddy_media::MediaSet) -> String {
+    use eddy_media::MediaType;
+    let esc = |s: &str| {
+        s.replace('&', "&amp;")
+            .replace('"', "&quot;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+    };
+    let mut body = String::new();
+    for m in &set.items {
+        let poster = m.poster.as_deref().or(set.thumbnail.as_deref());
+        match m.kind {
+            MediaType::Image => body.push_str(&format!("<p><img src=\"{}\"></p>", esc(&m.src))),
+            MediaType::Video => body.push_str(&format!(
+                "<video src=\"{}\"{}></video>",
+                esc(&m.src),
+                poster
+                    .map(|p| format!(" poster=\"{}\"", esc(p)))
+                    .unwrap_or_default()
+            )),
+            MediaType::Embed => {
+                if let Some(p) = poster {
+                    body.push_str(&format!("<p><img src=\"{}\"></p>", esc(p)));
+                }
+                body.push_str(&format!(
+                    "<iframe src=\"{}\" title=\"{}\"></iframe>",
+                    esc(&m.src),
+                    esc(title)
+                ));
+            }
+        }
+    }
+    if set.items.is_empty()
+        && let Some(t) = &set.thumbnail
+    {
+        body.push_str(&format!("<p><img src=\"{}\"></p>", esc(t)));
+    }
+    format!(
+        "<html><head><title>{0}</title></head><body>{body}</body></html>",
+        esc(title)
+    )
+}
+
+/// A title from the link when the page offers none: the site and the
+/// last part of the address.
+fn media_title(url: &str) -> String {
+    url::Url::parse(url)
+        .ok()
+        .map(|u| {
+            let host = u
+                .host_str()
+                .unwrap_or("")
+                .trim_start_matches("www.")
+                .to_string();
+            let last = u
+                .path_segments()
+                .and_then(|mut s| s.rfind(|p| !p.is_empty()).map(String::from))
+                .unwrap_or_default();
+            if last.is_empty() {
+                host
+            } else {
+                format!("{host} · {last}")
+            }
+        })
+        .unwrap_or_else(|| url.to_string())
 }
 
 #[derive(Deserialize)]

@@ -50,6 +50,13 @@ struct ReaderCommand: Equatable {
     let action: Action
 }
 
+/// Media to show in the full-window viewer from outside the Gallery (the
+/// reader): an item whose link is media, or one video of an article.
+struct MediaRequest: Identifiable {
+    let id = UUID()
+    let entry: GalleryEntryView
+}
+
 /// A list of subscription articles, as "Mark All as Read" sees it.
 struct ArticleList: Equatable {
     let filter: ItemFilterView
@@ -113,6 +120,7 @@ final class AppModel {
 
     var savingURL = false
     var importing = false
+    var mediaRequest: MediaRequest?
 
     private var leadImages: [String: String?] = [:]
     private var imageCache = NSCache<NSString, NSImage>()
@@ -564,6 +572,22 @@ final class AppModel {
 
     func resolveMedia(_ itemID: String, force: Bool = false) async -> MediaSetView? {
         try? await engine?.resolveMedia(itemId: itemID, force: force)
+    }
+
+    /// Opens the viewer on an item whose link is media.
+    func play(_ item: ItemView) {
+        mediaRequest = MediaRequest(entry: GalleryEntryView(item: item, media: nil, thumbnail: nil))
+    }
+
+    /// Opens the viewer on one video of an article (an `eddy-media:` link).
+    func play(link: URL, in item: ItemView) {
+        let query = URLComponents(url: link, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let value = { (name: String) in query.first { $0.name == name }?.value }
+        guard let src = value("src") else { return }
+        let kind: MediaTypeView = value("kind") == "embed" ? .embed : .video
+        let video = MediaItemView(kind: kind, src: src, poster: value("poster"), width: nil, height: nil, duration: nil, hasAudio: true, provider: nil)
+        let set = MediaSetView(status: .ready, items: [video], thumbnail: value("poster"))
+        mediaRequest = MediaRequest(entry: GalleryEntryView(item: item, media: set, thumbnail: value("poster")))
     }
 
     func prefetchMedia(_ itemIDs: [String]) {

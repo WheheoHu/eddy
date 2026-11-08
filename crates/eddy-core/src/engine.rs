@@ -119,6 +119,7 @@ impl Engine {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(15))
+            .http2_max_header_list_size(eddy_fetch::MAX_HEADER_LIST_BYTES)
             .user_agent(concat!(
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Eddy/",
                 env!("CARGO_PKG_VERSION")

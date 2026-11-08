@@ -626,6 +626,44 @@ async fn the_gallery_holds_marked_sources_folders_and_saved_media() {
 }
 
 #[tokio::test]
+async fn saving_a_media_link_keeps_the_media_instead_of_a_page() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/clip.mp4"))
+        .respond_with(ResponseTemplate::new(200).insert_header("content-type", "video/mp4"))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let url = format!("{}/clip.mp4", server.uri());
+    let row = engine.save_url(&url).await.unwrap();
+    assert_eq!(row.item.title, "127.0.0.1 · clip.mp4");
+    let doc = engine
+        .document(&row.item.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .document;
+    assert!(doc.blocks.iter().any(|b| matches!(
+        &b.kind,
+        BlockKind::Media { media: eddy_model::MediaKind::Video, src, .. } if src == &url
+    )));
+    let entry = engine
+        .collection()
+        .unwrap()
+        .into_iter()
+        .find(|e| e.id == row.item.id)
+        .unwrap();
+    assert_eq!(entry.kind, CollectionKind::Media);
+    let entries = engine
+        .gallery_items(&GalleryScope::Saved, false, 10, 0)
+        .unwrap();
+    assert_eq!(entries[0].media.as_ref().unwrap().items[0].src, url);
+    // Saving it again finds the same item.
+    assert_eq!(engine.save_url(&url).await.unwrap().item.id, row.item.id);
+}
+
+#[tokio::test]
 async fn saving_urls_and_importing_captures() {
     let pages = mock_pages().await;
     let dir = tempfile::tempdir().unwrap();

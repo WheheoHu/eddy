@@ -133,7 +133,14 @@ struct ThreePaneView: View {
                         DisclosureGroup(isExpanded: expanded(folder)) {
                             feedRows(model.feeds(inFolder: folder))
                         } label: {
-                            Label(folder, systemImage: "folder")
+                            Label {
+                                HStack(spacing: 4) {
+                                    Text(folder)
+                                    if model.inGallery(folder: folder) { GalleryMark() }
+                                }
+                            } icon: {
+                                Image(systemName: "folder")
+                            }
                                 .badge(model.unread(inFolder: folder))
                                 .tag(Selection.folder(folder))
                                 .contextMenu {
@@ -187,7 +194,15 @@ struct ThreePaneView: View {
 
     private func feedRows(_ feeds: [SourceView]) -> some View {
         ForEach(feeds) { feed in
-            Label(feed.title, systemImage: "dot.radiowaves.up.forward").badge(Int(feed.unread)).tag(Selection.feed(feed.id))
+            Label {
+                HStack(spacing: 4) {
+                    Text(feed.title)
+                    if let reason = model.galleryReason(feed) { GalleryMark(throughFolder: reason.isEmpty ? nil : reason) }
+                }
+            } icon: {
+                Image(systemName: "dot.radiowaves.up.forward")
+            }
+            .badge(Int(feed.unread)).tag(Selection.feed(feed.id))
                 .contextMenu {
                     if let folder = feed.category, model.inGallery(folder: folder) {
                         Button("Shown in Gallery with “\(folder)”") {}.disabled(true)
