@@ -6,6 +6,9 @@ import WebKit
 struct RenderContext {
     let item: ItemView
     let document: DocumentView?
+    /// The item belongs in the Gallery: its subscription is shown there,
+    /// or it is a saved media link.
+    var inGallery = false
 }
 
 /// A way to present an item. Renderers register here; new content types
@@ -18,19 +21,24 @@ struct RendererEntry: Identifiable {
 }
 
 enum RendererRegistry {
+    /// The item's pictures and videos, played in place: Gallery items and
+    /// posts whose link is media.
+    static let media = RendererEntry(id: "media", title: "Media", icon: "play.rectangle", supports: { $0.inGallery || $0.item.url.map(isMediaUrl(url:)) == true })
     static let pdf = RendererEntry(id: "pdf", title: "PDF", icon: "doc.richtext", supports: { $0.item.format == .pdf })
     static let article = RendererEntry(id: "article", title: "Reader", icon: "doc.plaintext", supports: { $0.document?.blocks.isEmpty == false })
     static let web = RendererEntry(id: "web", title: "Web Page", icon: "safari", supports: { $0.item.url != nil })
 
-    static let all: [RendererEntry] = [pdf, article, web]
+    static let all: [RendererEntry] = [media, pdf, article, web]
 
     static func available(for context: RenderContext) -> [RendererEntry] {
         all.filter { $0.supports(context) }
     }
 
-    /// What an item opens in.
-    static func preferred(for item: ItemView?) -> RendererEntry {
-        item?.format == .pdf ? pdf : article
+    /// What an item opens in: a PDF as itself, a Gallery item as its
+    /// media, everything else as text.
+    static func preferred(for item: ItemView?, inGallery: Bool = false) -> RendererEntry {
+        if item?.format == .pdf { return pdf }
+        return inGallery ? media : article
     }
 }
 

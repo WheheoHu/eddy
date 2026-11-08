@@ -2,8 +2,38 @@ import EddyKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// Brings Eddy to the front when it is launched. Opening the engine can
+/// ask for the keychain before launching finishes, and by the time the
+/// dialog is answered the activation that came with the launch is spent;
+/// without this the window appears behind whatever was in front.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        Self.comeForward()
+        // Once more after the window has had time to appear: activation
+        // granted before there is a window doesn't always stick.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            if !NSApp.isActive { Self.comeForward() }
+        }
+    }
+
+    static func comeForward() {
+        NSApp.activate()
+        if !NSApp.isActive { forceForward() }
+        NSApp.windows.first { $0.canBecomeKey }?.makeKeyAndOrderFront(nil)
+    }
+
+    /// The pre-Sonoma way, which the system still honors for an app the
+    /// user just launched. (A deprecated function may call deprecated API
+    /// without a warning.)
+    @available(macOS, deprecated: 14.0)
+    private static func forceForward() {
+        NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
 @main
 struct EddyApp: App {
+    @NSApplicationDelegateAdaptor private var delegate: AppDelegate
     @State private var model = AppModel()
     @AppStorage("app.mode") private var mode: AppMode = .threePane
 
@@ -41,7 +71,6 @@ struct EddyApp: App {
 struct RootView: View {
     @Environment(AppModel.self) private var model
     let mode: AppMode
-    @State private var viewerMedia: GalleryMedia?
 
     static let importTypes: [UTType] = [.epub, .pdf]
 
@@ -63,7 +92,7 @@ struct RootView: View {
         .overlay(alignment: .bottom) { MessageBanner() }
         .overlay {
             if let request = model.mediaRequest {
-                MediaViewer(entries: [request.entry], index: .constant(0), media: viewerMedia ?? GalleryMedia(model: model)) {
+                MediaViewer(entries: [request.entry], current: .constant(request.entry.id), media: model.media) {
                     model.mediaRequest = nil
                 }
                 .id(request.id)
@@ -72,7 +101,8 @@ struct RootView: View {
         .overlay {
             if model.paletteVisible { CommandPalette() }
         }
-        .onAppear { if viewerMedia == nil { viewerMedia = GalleryMedia(model: model) } }
+        // The window is made after launching finishes; bring it forward too.
+        .onAppear { AppDelegate.comeForward() }
         .confirmationDialog(
             Text("Delete “\(model.pendingDeletion?.title ?? "")”?"),
             isPresented: Binding(get: { model.pendingDeletion != nil }, set: { if !$0 { model.pendingDeletion = nil } }),

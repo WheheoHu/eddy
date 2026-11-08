@@ -557,12 +557,27 @@ final class AppModel {
 
     // MARK: Gallery
 
+    /// Media resolved so far, shared by the Gallery, its viewer and the
+    /// reader's media pane, so an item resolved in one shows at once in
+    /// the others.
+    @ObservationIgnored lazy var media = GalleryMedia(model: self)
+
     /// Subscriptions in the Gallery, on their own or through their folder.
     var galleryFeeds: [SourceView] {
         feeds.filter { $0.gallery || $0.category.map(galleryFolders.contains) == true }
     }
 
     func inGallery(folder: String) -> Bool { galleryFolders.contains(folder) }
+
+    /// Whether the item belongs in the Gallery, as the engine decides it:
+    /// an article of a subscription shown there, or a saved media link.
+    func inGallery(_ item: ItemView) -> Bool {
+        switch item.kind {
+        case .saved: item.seriesId == nil && item.url.map(isMediaUrl(url:)) == true
+        case .feed: item.sourceId.map { id in galleryFeeds.contains { $0.id == id } } == true
+        case .chapter: false
+        }
+    }
 
     func setGallery(folder: String, _ shown: Bool) {
         do { try engine?.setFolderGallery(name: folder, shown: shown) } catch { message = error.localizedDescription }

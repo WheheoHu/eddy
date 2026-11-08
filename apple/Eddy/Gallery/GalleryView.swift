@@ -140,9 +140,10 @@ struct GalleryView: View {
     @AppStorage("gallery.scope") private var scopeKey = "all"
     @State private var entries: [GalleryEntryView] = []
     @State private var exhausted = false
-    @State private var media: GalleryMedia?
-    /// Index in `visible` of the item open in the viewer.
-    @State private var viewing: Int?
+    /// The item open in the viewer. By ID, not position: items found to
+    /// have no media drop out of the grid while the viewer is open, and a
+    /// position would then name a different item.
+    @State private var viewing: String?
     /// Lists changed while the viewer was open; reload when it closes so
     /// the items being looked at don't move.
     @State private var stale = false
@@ -161,11 +162,11 @@ struct GalleryView: View {
     private static let scrollSpace = "gallery.grid"
 
     private var scope: GalleryScopeView { GalleryScopeView(key: scopeKey) }
+    private var media: GalleryMedia { model.media }
 
     /// Items found to have no media drop out as soon as that is known.
     private var visible: [GalleryEntryView] {
-        guard let media else { return entries }
-        return entries.filter { media.set(for: $0)?.status != .noMedia }
+        entries.filter { media.set(for: $0)?.status != .noMedia }
     }
 
     var body: some View {
@@ -187,16 +188,16 @@ struct GalleryView: View {
         }
         .toolbar(removing: .title)
         .overlay {
-            if let index = viewing, let media, visible.indices.contains(index) {
-                MediaViewer(entries: visible, index: Binding(get: { index }, set: { viewing = $0 }), media: media) {
+            // The viewer gets every loaded item, including ones since found
+            // to have no media, and steps over those itself: the list only
+            // grows while it is open, so the item on screen stays put.
+            if let id = viewing, entries.contains(where: { $0.id == id }) {
+                MediaViewer(entries: entries, current: Binding(get: { id }, set: { viewing = $0 }), media: media) {
                     viewing = nil
                 }
             }
         }
-        .onAppear {
-            if media == nil { media = GalleryMedia(model: model) }
-            load()
-        }
+        .onAppear(perform: { load() })
         .onChange(of: scopeKey) { load(reset: true) }
         .onChange(of: unreadOnly) { load(reset: true) }
         .onChange(of: model.revision) {
@@ -224,14 +225,14 @@ struct GalleryView: View {
             } else {
                 ContentUnavailableView(unreadOnly ? "Nothing Unread" : "Nothing Here", systemImage: "photo.on.rectangle")
             }
-        } else if let media {
+        } else {
             let rows = JustifiedRow.rows(items, width: gridWidth - 2 * Self.gridPadding, targetHeight: Self.rowHeight, spacing: Self.spacing, aspect: media.aspect(for:))
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: Self.spacing) {
                     ForEach(rows) { row in
                         HStack(spacing: Self.spacing) {
                             ForEach(row.cells, id: \.entry.id) { cell in
-                                tile(cell, in: items, media: media)
+                                tile(cell, in: items)
                                     .frame(width: cell.width, height: row.height)
                             }
                         }
@@ -244,8 +245,9 @@ struct GalleryView: View {
         }
     }
 
-    private func tile(_ cell: JustifiedRow.Cell, in items: [GalleryEntryView], media: GalleryMedia) -> some View {
+    private func tile(_ cell: JustifiedRow.Cell, in items: [GalleryEntryView]) -> some View {
         let (entry, index) = (cell.entry, cell.index)
+        let media = media
         return GalleryTile(
             entry: entry, mediaSet: media.set(for: entry),
             read: entry.item.read || scrolledPast.contains(entry.id),
@@ -257,7 +259,7 @@ struct GalleryView: View {
         .onGeometryChange(for: Bool.self) { $0.frame(in: .named(Self.scrollSpace)).maxY < 0 } action: { above in
             if above { markScrolledPast(entry) }
         }
-        .onTapGesture { open(index) }
+        .onTapGesture { viewing = entry.id }
         .contextMenu { menu(for: entry.item) }
         .accessibilityAddTraits(.isButton)
         .accessibilityLabel(Text(entry.item.title))
@@ -283,10 +285,6 @@ struct GalleryView: View {
                 NSPasteboard.general.setString(url.absoluteString, forType: .string)
             }
         }
-    }
-
-    private func open(_ index: Int) {
-        viewing = index
     }
 
     private func markScrolledPast(_ entry: GalleryEntryView) {

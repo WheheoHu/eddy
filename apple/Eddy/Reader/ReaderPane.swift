@@ -61,6 +61,7 @@ struct ReaderPane: View {
     @AppStorage("reader.width") private var width = 700.0
     @AppStorage("reader.lineHeight") private var lineHeight = 1.45
     @AppStorage("reader.appearance") private var appearance: ReaderAppearance = .app
+    @AppStorage("viewer.muted") private var muted = true
     @Environment(\.colorScheme) private var appScheme
 
     private var style: ReaderStyle {
@@ -71,6 +72,8 @@ struct ReaderPane: View {
     private var scheme: ColorScheme { appearance.scheme(in: appScheme) }
 
     private var item: ItemView? { model.item(itemID) }
+    private var inGallery: Bool { item.map(model.inGallery) ?? false }
+    private var showingMedia: Bool { rendererID == RendererRegistry.media.id }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -114,7 +117,10 @@ struct ReaderPane: View {
     @ViewBuilder
     private var content: some View {
         if let item {
-            if rendererID == RendererRegistry.pdf.id {
+            if showingMedia {
+                MediaPane(item: item, neighbors: neighbors, onEscape: escape, focused: focused, onFocus: onFocus)
+                    .transition(.push(from: rendererArrival))
+            } else if rendererID == RendererRegistry.pdf.id {
                 if let pdfURL {
                     PDFReaderView(url: pdfURL, target: pageTarget ?? resumePage, onPage: { page, count in
                         lastPage = (page, count)
@@ -177,7 +183,7 @@ struct ReaderPane: View {
     @ViewBuilder
     private var banners: some View {
         VStack(spacing: 8) {
-            if let item, rendererID != RendererRegistry.web.id, item.url.map(isMediaUrl(url:)) == true {
+            if let item, rendererID == RendererRegistry.article.id, item.url.map(isMediaUrl(url:)) == true {
                 Banner(icon: "play.rectangle", text: "This post is a video or pictures.") {
                     Button("Play") { model.play(item) }
                         .keyboardShortcut(.return, modifiers: .command)
@@ -218,7 +224,7 @@ struct ReaderPane: View {
                 .help(showContents.wrappedValue ? "Hide contents" : "Show contents")
             }
             if let item {
-                let context = RenderContext(item: item, document: document)
+                let context = RenderContext(item: item, document: document, inGallery: inGallery)
                 let renderers = RendererRegistry.available(for: context)
                 if renderers.count > 1 {
                     Picker("View", selection: $rendererID) {
@@ -227,21 +233,31 @@ struct ReaderPane: View {
                     .pickerStyle(.segmented)
                     .help("How to view this item")
                 }
-                Picker("Language", selection: $mode) {
-                    ForEach(ReadingMode.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.menu)
-                .frame(width: 120)
-                .help("Show a translation alongside or instead of the original")
-                Button { toggleSummary(!showSummary) } label: { Label("Summary", systemImage: "sparkles") }
-                    .help(showSummary ? "Hide the AI summary" : "AI summary")
-                Button { showType.toggle() } label: { Label("Text Style", systemImage: "textformat.size") }
-                    .popover(isPresented: $showType) { typography }
-                if item.kind == .feed {
-                    Button { Task { if await model.fetchFullText(itemID) { await reloadDocument() } } } label: {
-                        Label("Fetch Full Text", systemImage: "doc.text.magnifyingglass")
+                if showingMedia {
+                    // Nothing to translate, summarize or set type for.
+                    Button { muted.toggle() } label: {
+                        Label(muted ? "Unmute" : "Mute", systemImage: muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
                     }
-                    .help("Download the full article from the original page")
+                    .help(muted ? "Unmute (M)" : "Mute (M)")
+                    Button { model.play(item) } label: { Label("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") }
+                        .help("Show it over the whole window")
+                } else {
+                    Picker("Language", selection: $mode) {
+                        ForEach(ReadingMode.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 120)
+                    .help("Show a translation alongside or instead of the original")
+                    Button { toggleSummary(!showSummary) } label: { Label("Summary", systemImage: "sparkles") }
+                        .help(showSummary ? "Hide the AI summary" : "AI summary")
+                    Button { showType.toggle() } label: { Label("Text Style", systemImage: "textformat.size") }
+                        .popover(isPresented: $showType) { typography }
+                    if item.kind == .feed {
+                        Button { Task { if await model.fetchFullText(itemID) { await reloadDocument() } } } label: {
+                            Label("Fetch Full Text", systemImage: "doc.text.magnifyingglass")
+                        }
+                        .help("Download the full article from the original page")
+                    }
                 }
                 Button { model.setStarred(item, !item.starred) } label: {
                     Label(item.starred ? "Unstar" : "Star", systemImage: item.starred ? "star.fill" : "star")
@@ -278,7 +294,7 @@ struct ReaderPane: View {
         lastPosition = nil
         lastPage = nil
         scrollTarget = nil
-        rendererID = RendererRegistry.preferred(for: item).id
+        rendererID = RendererRegistry.preferred(for: item, inGallery: inGallery).id
         let cached = model.cachedTranslation(itemID)
         translations = cached.segments
         translationComplete = cached.complete
