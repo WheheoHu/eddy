@@ -54,6 +54,7 @@ struct RootView: View {
                 switch mode {
                 case .threePane: ThreePaneView()
                 case .library: LibraryView()
+                case .gallery: GalleryView()
                 }
             }
         }

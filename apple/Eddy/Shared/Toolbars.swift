@@ -52,7 +52,7 @@ struct ModeToolbar: ToolbarContent {
                 ForEach(AppMode.allCases) { Label($0.rawValue, systemImage: $0.icon).tag($0) }
             }
             .pickerStyle(.segmented)
-            .help("Three-Pane (⌘1) or Library (⌘2)")
+            .help("Three-Pane (⌘1), Library (⌘2) or Gallery (⌘3)")
         }
         ToolbarItem(placement: .navigation) {
             Menu {

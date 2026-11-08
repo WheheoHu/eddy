@@ -298,6 +298,17 @@ struct CommandPalette: View {
                     items.append(PaletteItem(id: "feed:\(feed.id)", group: .go, title: feed.title, subtitle: feed.category ?? String(localized: "Subscription"), icon: "dot.radiowaves.up.forward") { go(.libraryFeed(sourceID: feed.id)) })
                 }
             }
+        case .gallery:
+            items.append(PaletteItem(id: "all", group: .go, title: String(localized: "All Media"), icon: "photo.on.rectangle.angled") { go(.gallery(.all)) })
+            for folder in model.galleryFolders {
+                items.append(PaletteItem(id: "folder:\(folder)", group: .go, title: folder, subtitle: String(localized: "Folder"), icon: "folder") { go(.gallery(.folder(name: folder))) })
+            }
+            for feed in model.galleryFeeds {
+                items.append(PaletteItem(id: "feed:\(feed.id)", group: .go, title: feed.title, subtitle: feed.category ?? String(localized: "Subscription"), icon: "dot.radiowaves.up.forward") { go(.gallery(.source(id: feed.id))) })
+            }
+            if kinds.contains(.media) {
+                items.append(PaletteItem(id: "saved", group: .go, title: String(localized: "Saved Media"), icon: "play.rectangle") { go(.gallery(.saved)) })
+            }
         }
         return items
     }
@@ -335,8 +346,9 @@ struct CommandPalette: View {
             ) { appearance = option })
         }
         items.append(PaletteItem(id: "serif", group: .settings, title: serif ? String(localized: "Use Sans-Serif Text") : String(localized: "Use Serif Text"), icon: "textformat") { serif.toggle() })
-        let other: AppMode = mode == .threePane ? .library : .threePane
-        items.append(PaletteItem(id: "mode", group: .settings, title: String(localized: "Switch to \(String(localized: String.LocalizationValue(other.rawValue)))"), icon: other.icon) { mode = other })
+        for other in AppMode.allCases where other != mode {
+            items.append(PaletteItem(id: "mode:\(other.rawValue)", group: .settings, title: String(localized: "Switch to \(String(localized: String.LocalizationValue(other.rawValue)))"), icon: other.icon) { mode = other })
+        }
         return items
     }
 
