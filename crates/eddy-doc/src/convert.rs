@@ -63,6 +63,8 @@ struct Converter {
     lists: Vec<ListCtx>,
     item: Option<ItemCtx>,
     in_pre: bool,
+    /// Inside a table used for layout: its cells are blocks of their own.
+    in_layout_table: u8,
 }
 
 const DISCARD: &[&str] = &[
@@ -88,6 +90,7 @@ impl Converter {
             lists: Vec::new(),
             item: None,
             in_pre: false,
+            in_layout_table: 0,
         }
     }
 
@@ -190,6 +193,13 @@ impl Converter {
             "dt" | "summary" => {
                 self.flush();
                 self.with_style(style::BOLD, |c| c.walk_children(el));
+                self.flush();
+            }
+            // Cells of a layout table don't run into each other. (A data
+            // table's cells never get here: `table` collects their runs.)
+            "td" | "th" | "caption" if self.in_layout_table > 0 => {
+                self.flush();
+                self.walk_children(el);
                 self.flush();
             }
             "a" if is_permalink(el) => {}
@@ -490,12 +500,13 @@ impl Converter {
     fn table(&mut self, el: ElementRef) {
         self.flush();
         let rows: Vec<ElementRef> = table_rows(el);
-        let cell_count: usize = rows.iter().map(|r| cells(*r).len()).sum();
-        let nested = first_descendant(el, "table").is_some();
-        if nested || cell_count <= 1 {
-            // Layout table: keep its content as ordinary blocks.
+        if !is_data_table(el, &rows) {
+            // Layout table: keep its content as ordinary blocks, each
+            // cell's apart from the next.
+            self.in_layout_table = self.in_layout_table.saturating_add(1);
             self.walk_children(el);
             self.flush();
+            self.in_layout_table -= 1;
             return;
         }
         let mut out = Vec::new();
@@ -739,6 +750,50 @@ fn collect_pre_text(el: ElementRef, out: &mut String) {
             _ => {}
         }
     }
+}
+
+/// Whether a table holds data, to be shown as a grid, rather than laying
+/// out a page (a comment thread, an old site's columns). Along the lines
+/// of Readability: a table that says so (headers, a caption, a summary) is
+/// data; one that says it is presentation, nests another table, has a
+/// single row or column, or has paragraphs and lists inside its cells is
+/// layout.
+fn is_data_table(table: ElementRef, rows: &[ElementRef]) -> bool {
+    let attrs = table.value();
+    if attrs.attr("role") == Some("presentation") || attrs.attr("datatable") == Some("0") {
+        return false;
+    }
+    if attrs.attr("summary").is_some_and(|s| !s.trim().is_empty())
+        || first_descendant(table, "caption").is_some()
+        || first_descendant(table, "thead").is_some()
+        || first_descendant(table, "th").is_some()
+    {
+        return true;
+    }
+    if first_descendant(table, "table").is_some() {
+        return false;
+    }
+    let columns = rows.iter().map(|r| cells(*r).len()).max().unwrap_or(0);
+    if rows.len() < 2 || columns < 2 {
+        return false;
+    }
+    const BLOCKS: &[&str] = &[
+        "p",
+        "ul",
+        "ol",
+        "blockquote",
+        "pre",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+    ];
+    !rows
+        .iter()
+        .flat_map(|r| cells(*r))
+        .any(|cell| BLOCKS.iter().any(|b| first_descendant(cell, b).is_some()))
 }
 
 fn table_rows(table: ElementRef) -> Vec<ElementRef> {

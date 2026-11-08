@@ -244,6 +244,59 @@ fn images_figures_tables_and_media() {
     ));
 }
 
+/// A comment thread laid out with tables, the way Hacker News does it:
+/// each comment is a one-row table whose last cell holds the paragraphs.
+/// It reads as paragraphs, one comment after another, not as a grid.
+#[test]
+fn layout_tables_read_as_their_paragraphs() {
+    let d = doc(r#"
+        <table class="comment-tree">
+          <tr><td>
+            <table><tr>
+              <td class="ind" indent="0"><img src="s.gif" height="1" width="0"></td>
+              <td class="votelinks"><a href="vote?id=1"><div class="votearrow"></div></a></td>
+              <td class="default">
+                <div class="comhead"><a href="user?id=ann">ann</a> <span>2 hours ago</span></div><br>
+                <div class="comment"><span class="commtext"><p>First point.</p><p>Second point.</p></span></div>
+              </td>
+            </tr></table>
+          </td></tr>
+          <tr><td>
+            <table><tr>
+              <td class="ind" indent="1"><img src="s.gif" height="1" width="40"></td>
+              <td class="votelinks"></td>
+              <td class="default"><div class="comment"><span class="commtext">A reply.</span></div></td>
+            </tr></table>
+          </td></tr>
+        </table>
+        <table><tr><td>Left column</td><td>Right column</td></tr></table>
+        <table><tr><td>k1</td><td>v1</td></tr><tr><td>k2</td><td>v2</td></tr></table>
+    "#);
+    let texts: Vec<String> = d
+        .blocks
+        .iter()
+        .map(|b| match &b.kind {
+            BlockKind::Paragraph { runs } => eddy_model::runs_plain_text(runs),
+            BlockKind::Table { rows } => format!("table {}x{}", rows.len(), rows[0].cells.len()),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            "ann 2 hours ago",
+            "First point.",
+            "Second point.",
+            "A reply.",
+            // One row: layout, but its cells stay apart.
+            "Left column",
+            "Right column",
+            // A real grid of plain values.
+            "table 2x2",
+        ]
+    );
+}
+
 #[test]
 fn block_ids_are_stable_across_unrelated_edits() {
     let a = doc("<p>First paragraph.</p><p>Second paragraph.</p><p>Repeated</p><p>Repeated</p>");
