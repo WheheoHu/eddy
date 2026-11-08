@@ -538,6 +538,94 @@ async fn walls_and_short_pages_never_replace_feed_content() {
 }
 
 #[tokio::test]
+async fn the_gallery_holds_marked_sources_folders_and_saved_media() {
+    let server = mock_freshrss().await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    engine
+        .configure_freshrss(&server.uri(), "me", "secret")
+        .await
+        .unwrap();
+    engine.refresh().await.unwrap();
+    let all = || engine.gallery_count(&GalleryScope::All, false).unwrap();
+    assert_eq!(all(), 0);
+
+    engine.set_folder_gallery("Tech", true).unwrap();
+    assert_eq!(engine.gallery_folders().unwrap(), ["Tech"]);
+    assert_eq!(all(), 3);
+    assert_eq!(
+        engine
+            .gallery_count(&GalleryScope::Folder("Tech".into()), false)
+            .unwrap(),
+        3
+    );
+    engine.set_folder_gallery("Tech", false).unwrap();
+    assert_eq!(all(), 0);
+
+    let source = engine
+        .sources()
+        .unwrap()
+        .into_iter()
+        .find(|s| s.source.title == "Graphics Blog")
+        .unwrap()
+        .source;
+    engine.set_source_gallery(&source.id, true).unwrap();
+    assert_eq!(all(), 3);
+    let entries = engine
+        .gallery_items(&GalleryScope::Source(source.id.clone()), false, 10, 0)
+        .unwrap();
+    assert_eq!(entries[0].row.item.title, "Unread elsewhere");
+    assert!(engine.in_gallery(&entries[0].row).unwrap());
+
+    // A link that is no media and a feed body without pictures: once
+    // resolved, the item leaves the Gallery.
+    let text_only = entries
+        .iter()
+        .find(|e| e.row.item.title == "Unread elsewhere")
+        .unwrap();
+    let set = engine
+        .resolve_media(&text_only.row.item.id, false)
+        .await
+        .unwrap();
+    assert_eq!(set.status, MediaStatus::NoMedia);
+    assert_eq!(all(), 2);
+
+    // Saved media links are the collection's Media part and in the Gallery.
+    let saved = engine
+        .inner
+        .create_saved(
+            "https://youtu.be/abcdefghijk",
+            &article_html("A Talk", 5),
+            eddy_model::ContentOrigin::Captured,
+            None,
+        )
+        .unwrap();
+    let entry = engine
+        .collection()
+        .unwrap()
+        .into_iter()
+        .find(|e| e.id == saved.item.id)
+        .unwrap();
+    assert_eq!(entry.kind, CollectionKind::Media);
+    let saved_entries = engine
+        .gallery_items(&GalleryScope::Saved, false, 10, 0)
+        .unwrap();
+    assert_eq!(saved_entries.len(), 1);
+    assert!(saved_entries[0].media.is_none());
+    let set = engine.resolve_media(&saved.item.id, false).await.unwrap();
+    assert_eq!(set.items[0].kind, MediaType::Embed);
+    assert_eq!(
+        set.thumbnail.as_deref(),
+        Some("https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg")
+    );
+    let again = engine
+        .gallery_items(&GalleryScope::Saved, false, 10, 0)
+        .unwrap();
+    assert_eq!(again[0].media.as_ref(), Some(&set));
+    assert_eq!(all(), 3);
+}
+
+#[tokio::test]
 async fn saving_urls_and_importing_captures() {
     let pages = mock_pages().await;
     let dir = tempfile::tempdir().unwrap();

@@ -9,6 +9,7 @@ mod fulltext;
 mod hub;
 mod images;
 mod import;
+mod media;
 mod native_host;
 mod platform;
 mod progress;
@@ -23,11 +24,13 @@ pub use content::LoadedDocument;
 pub use eddy_ai::{AiSettings, AutoAction, AutoRule, ProviderSettings, RuleScope, Summary};
 pub use eddy_extract::{ChapterLink, SeriesProposal};
 pub use eddy_fetch::WebRenderer;
+pub use eddy_media::{MediaItem, MediaSet, MediaStatus, MediaType};
 pub use engine::{
     Engine, EngineOptions, EngineStatus, Mode, RefreshSummary, SourceInfo, SourceStats,
 };
 pub use hub::{ServerStatus, plausible_hlc};
 pub use import::{Imported, MAX_IMPORT_BYTES, PdfReader, PdfText};
+pub use media::{GalleryEntry, GalleryScope};
 pub use native_host::{CHROME_EXTENSION_ID, NATIVE_HOST_NAME, install_native_host};
 pub use platform::{LogLevel, MemoryPlatform, Platform};
 pub use progress::{ResumePoint, SeriesInfo};

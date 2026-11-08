@@ -371,7 +371,14 @@ impl Inner {
                             .is_some_and(|d| truncation_hint(&d.document))
                 }
             };
-            if wanted && row.item.url.as_deref().is_some_and(|u| !is_media_url(u)) {
+            // Media links have no article to fetch; the Gallery resolves them.
+            if wanted
+                && row
+                    .item
+                    .url
+                    .as_deref()
+                    .is_some_and(|u| !eddy_media::is_media_url(u))
+            {
                 candidates.push(id);
             }
             if candidates.len() >= AUTO_FETCH_CAP {
@@ -417,18 +424,6 @@ fn reject_wall(html: &str) -> Result<()> {
         ));
     }
     Ok(())
-}
-
-/// Links straight to an image or video file: the feed already shows it.
-fn is_media_url(url: &str) -> bool {
-    const EXTENSIONS: &[&str] = &[
-        "jpg", "jpeg", "png", "gif", "gifv", "webp", "avif", "heic", "mp4", "webm", "mov", "m4v",
-    ];
-    url::Url::parse(url).is_ok_and(|u| {
-        u.path()
-            .rsplit_once('.')
-            .is_some_and(|(_, ext)| EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
-    })
 }
 
 #[derive(Deserialize)]

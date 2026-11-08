@@ -96,6 +96,10 @@ pub(crate) struct Inner {
     pub search: Option<eddy_search::SearchIndex>,
     pub live: std::sync::atomic::AtomicBool,
     pub backfilling: std::sync::atomic::AtomicBool,
+    pub media: eddy_media::Resolver,
+    /// Caps concurrent media lookups across the grid and prefetching.
+    pub media_gate: tokio::sync::Semaphore,
+    pub media_pending: parking_lot::Mutex<std::collections::HashSet<String>>,
 }
 
 /// Cheap to clone; all clones share one engine.
@@ -142,6 +146,9 @@ impl Engine {
             search: eddy_search::SearchIndex::open(&data_dir.join("index")).ok(),
             live: std::sync::atomic::AtomicBool::new(false),
             backfilling: std::sync::atomic::AtomicBool::new(false),
+            media: eddy_media::Resolver::new(),
+            media_gate: tokio::sync::Semaphore::new(4),
+            media_pending: parking_lot::Mutex::new(Default::default()),
         });
         inner.rebuild_fetcher()?;
         inner.store.upsert_source(&Source {
@@ -154,6 +161,7 @@ impl Engine {
             site_url: None,
             full_text: FullTextMode::Never,
             truncated: false,
+            gallery: false,
         })?;
         if !inner.restore_hub()? {
             inner.restore_upstream()?;

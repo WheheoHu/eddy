@@ -10,3 +10,4 @@ eddy-core = { workspace = true }
 eddy-model = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
+url = { workspace = true }
