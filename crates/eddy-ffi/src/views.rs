@@ -97,6 +97,8 @@ pub struct SourceView {
     pub unread: u32,
     pub full_text: FullTextModeView,
     pub truncated: bool,
+    /// Marked for the Gallery on its own (its folder can also be).
+    pub gallery: bool,
 }
 
 impl From<SourceInfo> for SourceView {
@@ -110,6 +112,7 @@ impl From<SourceInfo> for SourceView {
             unread: s.unread,
             full_text: s.source.full_text.into(),
             truncated: s.source.truncated,
+            gallery: s.source.gallery,
         }
     }
 }

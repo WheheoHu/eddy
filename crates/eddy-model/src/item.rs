@@ -96,6 +96,9 @@ pub struct Source {
     pub full_text: FullTextMode,
     /// Truncation detection concluded the feed only carries excerpts.
     pub truncated: bool,
+    /// Shown in the Gallery view (the source's folder can also be).
+    #[serde(default)]
+    pub gallery: bool,
 }
 
 /// Snapshot of an item's metadata. Mutable reading state lives in its own

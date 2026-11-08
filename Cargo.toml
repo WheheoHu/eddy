@@ -15,6 +15,7 @@ eddy-store = { path = "crates/eddy-store" }
 eddy-source-greader = { path = "crates/eddy-source-greader" }
 eddy-extract = { path = "crates/eddy-extract" }
 eddy-fetch = { path = "crates/eddy-fetch" }
+eddy-media = { path = "crates/eddy-media" }
 eddy-ai = { path = "crates/eddy-ai" }
 eddy-search = { path = "crates/eddy-search" }
 eddy-sync = { path = "crates/eddy-sync" }

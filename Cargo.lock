@@ -1053,6 +1053,7 @@ dependencies = [
  "eddy-model",
  "serde_json",
  "tokio",
+ "url",
 ]
 
 [[package]]
@@ -1065,6 +1066,7 @@ dependencies = [
  "eddy-epub",
  "eddy-extract",
  "eddy-fetch",
+ "eddy-media",
  "eddy-model",
  "eddy-search",
  "eddy-source-greader",
@@ -1149,6 +1151,23 @@ dependencies = [
  "thiserror",
  "tokio",
  "uniffi",
+]
+
+[[package]]
+name = "eddy-media"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "eddy-fetch",
+ "parking_lot",
+ "regex",
+ "reqwest",
+ "scraper",
+ "serde",
+ "serde_json",
+ "tokio",
+ "url",
+ "wiremock",
 ]
 
 [[package]]

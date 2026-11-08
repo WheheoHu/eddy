@@ -358,14 +358,20 @@ fn effect(tx: &Transaction, op: &Op) -> Result<()> {
                 params![str_value(v)?, id],
             )?;
         }
+        (Entity::Source, fields::GALLERY) => {
+            tx.execute(
+                "UPDATE sources SET gallery=? WHERE id=?",
+                params![bool_value(v)?, id],
+            )?;
+        }
         (Entity::Source, fields::CREATE) => {
             let s: eddy_model::Source = serde_json::from_value(v.clone())?;
             tx.execute(
-                "INSERT INTO sources(id,account_id,upstream_id,kind,title,category,site_url,full_text,truncated,updated_at)
-                 VALUES(?,?,?,?,?,?,?,?,?,?)
+                "INSERT INTO sources(id,account_id,upstream_id,kind,title,category,site_url,full_text,truncated,gallery,updated_at)
+                 VALUES(?,?,?,?,?,?,?,?,?,?,?)
                  ON CONFLICT(id) DO UPDATE SET title=excluded.title, category=excluded.category,
                    site_url=excluded.site_url, truncated=excluded.truncated, updated_at=excluded.updated_at",
-                params![s.id, s.account_id, s.upstream_id, s.kind.as_str(), s.title, s.category, s.site_url, s.full_text.as_str(), s.truncated, op.hlc.wall_ms as i64],
+                params![s.id, s.account_id, s.upstream_id, s.kind.as_str(), s.title, s.category, s.site_url, s.full_text.as_str(), s.truncated, s.gallery, op.hlc.wall_ms as i64],
             )?;
         }
         (Entity::Source, fields::DELETED) => {

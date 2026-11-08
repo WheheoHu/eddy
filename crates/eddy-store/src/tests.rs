@@ -367,6 +367,67 @@ fn tags_series_settings_and_sources_via_ops() {
 }
 
 #[test]
+fn gallery_lists_marked_sources_and_items_without_known_empty_ones() {
+    let (_d, s) = store();
+    let source = |id: &str| eddy_model::Source {
+        id: id.into(),
+        account_id: Some("acct".into()),
+        upstream_id: None,
+        kind: eddy_model::SourceKind::Feed,
+        title: id.into(),
+        category: Some("A".into()),
+        site_url: None,
+        full_text: eddy_model::FullTextMode::Auto,
+        truncated: false,
+        gallery: false,
+    };
+    s.upsert_source(&source("src")).unwrap();
+    s.upsert_source(&source("other")).unwrap();
+    for (id, src, t) in [("a", "src", 3), ("b", "src", 2), ("c", "other", 1)] {
+        s.insert_item(&Item {
+            source_id: Some(src.into()),
+            ..item(id, t)
+        })
+        .unwrap();
+    }
+
+    s.record_local(
+        &op(1, "d", Entity::Source, "src", fields::GALLERY, json!(true)),
+        false,
+    )
+    .unwrap();
+    assert!(s.source("src").unwrap().unwrap().gallery);
+    // Metadata refreshes from the upstream keep the mark.
+    s.upsert_source(&source("src")).unwrap();
+    assert!(s.source("src").unwrap().unwrap().gallery);
+
+    let gallery = |sources: &[&str], items: &[&str]| {
+        s.items(&ItemQuery {
+            filter: ItemFilter::Gallery {
+                sources: sources.iter().map(|x| x.to_string()).collect(),
+                items: items.iter().map(|x| x.to_string()).collect(),
+            },
+            ..Default::default()
+        })
+        .unwrap()
+        .into_iter()
+        .map(|r| r.item.id)
+        .collect::<Vec<_>>()
+    };
+    assert_eq!(gallery(&["src"], &["c"]), ["a", "b", "c"]);
+    assert!(gallery(&[], &[]).is_empty());
+
+    s.put_media_set("b", "{}", "no_media").unwrap();
+    s.put_media_set("a", "{\"items\":[]}", "ready").unwrap();
+    assert_eq!(gallery(&["src"], &[]), ["a"]);
+    let (json, status, _) = s.media_set("a").unwrap().unwrap();
+    assert_eq!(
+        (json.as_str(), status.as_str()),
+        ("{\"items\":[]}", "ready")
+    );
+}
+
+#[test]
 fn blobs_round_trip_and_eviction_protects_unread_content() {
     let (_d, s) = store();
     let mut read_item = item("read", 1);

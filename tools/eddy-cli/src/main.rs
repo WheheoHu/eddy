@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use eddy_core::{Engine, EngineOptions, ItemFilter, ItemQuery, Platform};
+use eddy_core::{Engine, EngineOptions, GalleryScope, ItemFilter, ItemQuery, Platform};
 use eddy_model::{BlockKind, Document};
 
 /// Development-only keychain: secrets in `cli-secrets.json` (mode 0600)
@@ -182,9 +182,53 @@ async fn main() {
             }
             Err(e) => Err(e),
         },
+        ["media", id] => engine.resolve_media(id, true).await.map(|set| {
+            println!("{:?}  thumbnail {:?}", set.status, set.thumbnail);
+            for m in set.items {
+                println!(
+                    "  {:?} {}  poster {:?}  {:?}x{:?}  {:?}s",
+                    m.kind, m.src, m.poster, m.width, m.height, m.duration
+                );
+            }
+        }),
+        ["gallery", folder, count] => {
+            let count: u32 = count.parse().unwrap_or(20);
+            match engine.set_folder_gallery(folder, true).and_then(|_| {
+                engine.gallery_items(&GalleryScope::Folder(folder.to_string()), false, count, 0)
+            }) {
+                Ok(entries) => {
+                    let mut tally = std::collections::BTreeMap::new();
+                    for e in entries {
+                        let host = e
+                            .row
+                            .item
+                            .url
+                            .as_deref()
+                            .and_then(|u| url::Url::parse(u).ok())
+                            .and_then(|u| u.host_str().map(String::from))
+                            .unwrap_or_default();
+                        let set = engine.resolve_media(&e.row.item.id, true).await;
+                        let key = match &set {
+                            Ok(s) => format!(
+                                "{host:<22} {:?} {:?}",
+                                s.status,
+                                s.items.first().map(|m| m.kind)
+                            ),
+                            Err(err) => format!("{host:<22} error {err}"),
+                        };
+                        *tally.entry(key).or_insert(0) += 1;
+                    }
+                    for (k, n) in tally {
+                        println!("{n:>4}  {k}");
+                    }
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
+        }
         _ => {
             eprintln!(
-                "usage: eddy-cli [--data DIR] save URL | items | doc ID | fulltext ID | connect URL CODE | sync | search QUERY | import FILE"
+                "usage: eddy-cli [--data DIR] save URL | items | doc ID | fulltext ID | connect URL CODE | sync | search QUERY | import FILE | media ID | gallery FOLDER COUNT"
             );
             std::process::exit(2);
         }

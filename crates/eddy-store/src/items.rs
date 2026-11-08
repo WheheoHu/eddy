@@ -22,6 +22,12 @@ pub enum ItemFilter {
     /// Articles and saved pages whose title contains the text, ignoring
     /// ASCII case; chapters are found through their series.
     Title(String),
+    /// The Gallery: items of these sources plus these items, leaving out
+    /// the ones resolved to have no media.
+    Gallery {
+        sources: Vec<String>,
+        items: Vec<String>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -112,8 +118,12 @@ fn source_row(r: &Row) -> rusqlite::Result<Source> {
         site_url: r.get(6)?,
         full_text: FullTextMode::parse(&full_text),
         truncated: r.get(8)?,
+        gallery: r.get(9)?,
     })
 }
+
+const SOURCE_COLUMNS: &str =
+    "id,account_id,upstream_id,kind,title,category,site_url,full_text,truncated,gallery";
 
 fn series_row(r: &Row) -> rusqlite::Result<Series> {
     Ok(Series {
@@ -163,10 +173,10 @@ impl Store {
 
     pub fn sources(&self) -> Result<Vec<Source>> {
         self.with(|c| {
-            let mut stmt = c.prepare(
-                "SELECT id,account_id,upstream_id,kind,title,category,site_url,full_text,truncated FROM sources
-                 ORDER BY kind DESC, COALESCE(category,''), title COLLATE NOCASE",
-            )?;
+            let mut stmt = c.prepare(&format!(
+                "SELECT {SOURCE_COLUMNS} FROM sources
+                 ORDER BY kind DESC, COALESCE(category,''), title COLLATE NOCASE"
+            ))?;
             let rows = stmt.query_map([], source_row)?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
@@ -175,7 +185,7 @@ impl Store {
     pub fn source(&self, id: &str) -> Result<Option<Source>> {
         self.with(|c| {
             Ok(c.query_row(
-                "SELECT id,account_id,upstream_id,kind,title,category,site_url,full_text,truncated FROM sources WHERE id=?",
+                &format!("SELECT {SOURCE_COLUMNS} FROM sources WHERE id=?"),
                 [id],
                 source_row,
             )
@@ -387,6 +397,28 @@ fn conditions(q: &ItemQuery) -> Option<Conditions> {
             clauses.push("i.kind!='chapter' AND i.title LIKE ? ESCAPE '\\'".into());
             values.push(Value::Text(format!("%{escaped}%")));
         }
+        ItemFilter::Gallery { sources, items } => {
+            let mut either = Vec::new();
+            if !sources.is_empty() {
+                either.push(format!(
+                    "i.source_id IN ({})",
+                    vec!["?"; sources.len()].join(",")
+                ));
+                values.extend(sources.iter().map(|s| Value::Text(s.clone())));
+            }
+            if !items.is_empty() {
+                either.push(format!("i.id IN ({})", vec!["?"; items.len()].join(",")));
+                values.extend(items.iter().map(|s| Value::Text(s.clone())));
+            }
+            if either.is_empty() {
+                return None;
+            }
+            clauses.push(format!("i.kind!='chapter' AND ({})", either.join(" OR ")));
+            clauses.push(
+                "NOT EXISTS(SELECT 1 FROM media_sets m WHERE m.item_id=i.id AND m.status='no_media')"
+                    .into(),
+            );
+        }
     }
     if q.unread_only {
         match &q.keep {
@@ -578,6 +610,30 @@ impl Store {
             )?;
             let rows = stmt.query_map([key], |r| r.get(0))?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
+    /// Resolved media of an item: (json, status, resolved_at ms).
+    pub fn media_set(&self, item_id: &str) -> Result<Option<(String, String, i64)>> {
+        self.with(|c| {
+            Ok(c.query_row(
+                "SELECT json, status, resolved_at FROM media_sets WHERE item_id=?",
+                [item_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?)
+        })
+    }
+
+    pub fn put_media_set(&self, item_id: &str, json: &str, status: &str) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "INSERT INTO media_sets(item_id,json,status,resolved_at) VALUES(?,?,?,?)
+                 ON CONFLICT(item_id) DO UPDATE SET json=excluded.json, status=excluded.status,
+                   resolved_at=excluded.resolved_at",
+                params![item_id, json, status, now_ms()],
+            )?;
+            Ok(())
         })
     }
 

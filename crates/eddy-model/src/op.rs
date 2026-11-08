@@ -79,5 +79,6 @@ pub mod fields {
     pub const LOCATOR: &str = "locator";
     pub const STATE: &str = "state";
     pub const FULL_TEXT: &str = "full_text";
+    pub const GALLERY: &str = "gallery";
     pub const VALUE: &str = "value";
 }

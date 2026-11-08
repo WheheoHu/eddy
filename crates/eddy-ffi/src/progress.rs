@@ -100,6 +100,7 @@ pub enum CollectionKindView {
     Pdf,
     WebPage,
     WebSeries,
+    Media,
 }
 
 impl From<core::CollectionKind> for CollectionKindView {
@@ -108,6 +109,7 @@ impl From<core::CollectionKind> for CollectionKindView {
             core::CollectionKind::Book => CollectionKindView::Book,
             core::CollectionKind::Pdf => CollectionKindView::Pdf,
             core::CollectionKind::WebPage => CollectionKindView::WebPage,
+            core::CollectionKind::Media => CollectionKindView::Media,
             core::CollectionKind::WebSeries => CollectionKindView::WebSeries,
         }
     }

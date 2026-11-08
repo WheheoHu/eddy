@@ -125,6 +125,7 @@ impl Upstream for DirectUpstream {
                 site_url: sub.site_url.clone(),
                 full_text: FullTextMode::Auto,
                 truncated: false,
+                gallery: false,
             };
             inner.store.upsert_source(&source)?;
             let changed = previous.get(&id).is_none_or(|p| {

@@ -71,7 +71,7 @@ private final class RenderJob: NSObject, WKNavigationDelegate {
     }
 
     private static func looksLikeChallenge(_ html: String) -> Bool {
-        ["Checking your browser", "Just a moment...", "challenge-platform", "cf-browser-verification", "captcha-delivery.com"].contains { html.contains($0) }
+        ["Checking your browser", "Just a moment...", "challenge-platform", "cf-browser-verification", "captcha-delivery.com", "name=\"js_challenge\""].contains { html.contains($0) }
     }
 
     nonisolated func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {

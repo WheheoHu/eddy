@@ -308,6 +308,7 @@ pub fn is_bot_wall(html: &str) -> bool {
         "Please enable JS and disable any ad blocker",
         "DDoS protection by",
         "<title>Reddit - Prove your humanity</title>",
+        "name=\"js_challenge\"",
     ];
     html.len() < 400_000 && MARKERS.iter().any(|m| html.contains(m))
 }

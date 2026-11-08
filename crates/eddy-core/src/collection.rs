@@ -20,6 +20,8 @@ pub enum CollectionKind {
     Pdf,
     /// A page saved on its own.
     WebPage,
+    /// A saved link to an image or video (YouTube, RedGIFs, a file).
+    Media,
     /// Chapters collected from a table of contents.
     WebSeries,
 }
@@ -80,6 +82,8 @@ impl CollectionEntry {
         CollectionEntry {
             kind: if row.format == ContentFormat::Pdf {
                 CollectionKind::Pdf
+            } else if item.url.as_deref().is_some_and(eddy_media::is_media_url) {
+                CollectionKind::Media
             } else {
                 CollectionKind::WebPage
             },

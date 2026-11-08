@@ -95,6 +95,13 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX content_versions_doc ON content_versions(doc_blob);
     CREATE INDEX items_deleted ON items(id) WHERE deleted = 1;
     "#,
+    // 5: Gallery. Resolved media is local and derivable, so it is not synced.
+    r#"
+    ALTER TABLE sources ADD COLUMN gallery INTEGER NOT NULL DEFAULT 0;
+    CREATE TABLE media_sets(
+        item_id TEXT PRIMARY KEY, json TEXT NOT NULL, status TEXT NOT NULL,
+        resolved_at INTEGER NOT NULL);
+    "#,
 ];
 
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
