@@ -581,6 +581,18 @@ impl Store {
         })
     }
 
+    /// Feed items currently showing a page fetched from their link.
+    pub fn feed_items_on_extracted_versions(&self) -> Result<Vec<String>> {
+        self.with(|c| {
+            let mut stmt = c.prepare(
+                "SELECT i.id FROM items i JOIN content_versions cv ON cv.hash=i.current_version
+                 WHERE i.kind='feed' AND cv.origin='extracted' AND i.deleted=0",
+            )?;
+            let rows = stmt.query_map([], |r| r.get(0))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
     /// The item whose current content came from `url`.
     pub fn item_by_source_url(&self, url: &str) -> Result<Option<String>> {
         self.with(|c| {

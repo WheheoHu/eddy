@@ -449,6 +449,95 @@ async fn full_text_replaces_a_truncated_feed_version() {
 }
 
 #[tokio::test]
+async fn walls_and_short_pages_never_replace_feed_content() {
+    let pages = MockServer::start().await;
+    let html = |body: &str| {
+        ResponseTemplate::new(200)
+            .insert_header("content-type", "text/html")
+            .set_body_string(format!("<html><body>{body}</body></html>"))
+    };
+    Mock::given(method("GET"))
+        .and(path("/1"))
+        .respond_with(html(
+            "<div class='consent'><p>We use cookies to enhance your browsing experience and analyse our traffic. By clicking accept you consent.</p></div>",
+        ))
+        .mount(&pages)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/2"))
+        .respond_with(html(
+            "<p>Sign up for the most real communities. Continue with phone. Continue with email.</p>\
+             <ac-track san=\"xpromo|click|blocking_xpromo_nsfw_blocking\"></ac-track>",
+        ))
+        .mount(&pages)
+        .await;
+    let server = mock_freshrss_linking(&pages.uri()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    engine
+        .configure_freshrss(&server.uri(), "me", "secret")
+        .await
+        .unwrap();
+    engine.refresh().await.unwrap();
+    let id_of = |title: &str| {
+        engine
+            .items(&ItemQuery::default())
+            .unwrap()
+            .into_iter()
+            .find(|r| r.item.title == title)
+            .unwrap()
+            .item
+            .id
+    };
+    let origin_of = |engine: &Engine, id: &str| {
+        let row = engine.inner.store.item(id).unwrap().unwrap();
+        engine
+            .inner
+            .store
+            .content_version(row.item.current_version.as_deref().unwrap())
+            .unwrap()
+            .unwrap()
+            .origin
+    };
+    let (old, new) = (id_of("Old post"), id_of("New post"));
+
+    // A sign-in prompt is refused even when asked for.
+    assert!(matches!(
+        engine.fetch_full_text(&new).await,
+        Err(EngineError::Invalid(m)) if m.contains("登录")
+    ));
+    assert_eq!(origin_of(&engine, &new), eddy_model::ContentOrigin::Feed);
+
+    // In the background, a page that adds little keeps the feed version.
+    assert!(engine.inner.fetch_full_text(&old, true).await.is_err());
+    assert_eq!(origin_of(&engine, &old), eddy_model::ContentOrigin::Feed);
+
+    // Pages that replaced short feed content before go back to the feed
+    // version once, on opening.
+    engine.fetch_full_text(&old).await.unwrap();
+    assert_eq!(
+        origin_of(&engine, &old),
+        eddy_model::ContentOrigin::Extracted
+    );
+    engine
+        .inner
+        .store
+        .meta_delete("restored_feed_versions")
+        .unwrap();
+    drop(engine);
+    let engine = open(dir.path());
+    assert_eq!(origin_of(&engine, &old), eddy_model::ContentOrigin::Feed);
+    assert!(
+        engine
+            .inner
+            .store
+            .meta_get("restored_feed_versions")
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[tokio::test]
 async fn saving_urls_and_importing_captures() {
     let pages = mock_pages().await;
     let dir = tempfile::tempdir().unwrap();

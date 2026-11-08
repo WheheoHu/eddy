@@ -158,6 +158,19 @@ impl Engine {
         if !inner.restore_hub()? {
             inner.restore_upstream()?;
         }
+        if !inner.options.server_role {
+            match inner.restore_feed_versions() {
+                Ok(0) => {}
+                Ok(n) => inner.platform.log(
+                    LogLevel::Info,
+                    &format!("restored feed content of {n} items"),
+                ),
+                Err(e) => inner.platform.log(
+                    LogLevel::Warn,
+                    &format!("restoring feed content failed: {e}"),
+                ),
+            }
+        }
         Ok(Engine { inner })
     }
 

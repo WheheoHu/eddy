@@ -15,9 +15,14 @@ const MARKERS: &[&str] = &[
 ];
 
 /// Quick check on feed-provided content: does it look like an excerpt?
-/// Short bodies and trailing "read more" style markers suggest so.
+/// Short bodies and trailing "read more" style markers suggest so; a short
+/// caption under an image or video is a picture post, complete as it is.
 pub fn truncation_hint(doc: &Document) -> bool {
-    if doc.text_len() < 300 {
+    let has_media = doc
+        .blocks
+        .iter()
+        .any(|b| matches!(b.kind, BlockKind::Image { .. } | BlockKind::Media { .. }));
+    if doc.text_len() < 300 && !has_media {
         return true;
     }
     let tail: Vec<String> = doc

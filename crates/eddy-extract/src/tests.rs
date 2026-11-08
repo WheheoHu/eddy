@@ -177,6 +177,16 @@ fn truncation_detection() {
         &ConvertOptions::default(),
     );
     assert!(truncation_hint(&read_more));
+    let picture = html_to_document(
+        "<p>Rope practice tonight</p><p><img src='https://i.example/a.jpg'></p>",
+        &ConvertOptions::default(),
+    );
+    assert!(!truncation_hint(&picture));
+    let picture_teaser = html_to_document(
+        "<p><img src='https://i.example/a.jpg'></p><p>The first lines of the review…</p>",
+        &ConvertOptions::default(),
+    );
+    assert!(truncation_hint(&picture_teaser));
     assert!(is_truncated(200, 3000));
     assert!(!is_truncated(2900, 3000));
 }
