@@ -153,6 +153,7 @@ struct ReaderPane: View {
                         guard let target = model.item(forLink: url) else { return }
                         if let openItem { openItem(target) } else { model.currentItemID = target }
                     },
+                    onMediaLink: { url in model.play(link: url, in: item) },
                     gestures: gestures,
                     onStep: neighbors.map { neighbors in { neighbors.go($0, .vertical) } },
                     onEscape: escape,
@@ -175,6 +176,13 @@ struct ReaderPane: View {
     @ViewBuilder
     private var banners: some View {
         VStack(spacing: 8) {
+            if let item, rendererID != RendererRegistry.web.id, item.url.map(isMediaUrl(url:)) == true {
+                Banner(icon: "play.rectangle", text: "This post is a video or pictures.") {
+                    Button("Play") { model.play(item) }
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .help("Show it in the media viewer (⌘Return)")
+                }
+            }
             if let note = resumeNote, note.fromOtherDevice, let local = note.localBlockId {
                 Banner(icon: "arrow.triangle.2.circlepath", text: "Continued where you left off on another device.") {
                     Button("Back to This Mac’s Position") {

@@ -107,6 +107,13 @@ impl From<core::GalleryEntry> for GalleryEntryView {
     }
 }
 
+/// Whether a link is an image or video itself (a file, RedGIFs, YouTube,
+/// a Reddit gallery) rather than an article.
+#[uniffi::export]
+pub fn is_media_url(url: String) -> bool {
+    core::is_media_url(&url)
+}
+
 #[uniffi::export]
 impl EddyEngine {
     pub fn gallery_items(

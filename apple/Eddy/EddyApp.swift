@@ -41,6 +41,7 @@ struct EddyApp: App {
 struct RootView: View {
     @Environment(AppModel.self) private var model
     let mode: AppMode
+    @State private var viewerMedia: GalleryMedia?
 
     static let importTypes: [UTType] = [.epub, .pdf]
 
@@ -60,8 +61,17 @@ struct RootView: View {
         }
         .overlay(alignment: .bottom) { MessageBanner() }
         .overlay {
+            if let request = model.mediaRequest {
+                MediaViewer(entries: [request.entry], index: .constant(0), media: viewerMedia ?? GalleryMedia(model: model)) {
+                    model.mediaRequest = nil
+                }
+                .id(request.id)
+            }
+        }
+        .overlay {
             if model.paletteVisible { CommandPalette() }
         }
+        .onAppear { if viewerMedia == nil { viewerMedia = GalleryMedia(model: model) } }
         .confirmationDialog(
             Text("Delete “\(model.pendingDeletion?.title ?? "")”?"),
             isPresented: Binding(get: { model.pendingDeletion != nil }, set: { if !$0 { model.pendingDeletion = nil } }),

@@ -239,18 +239,42 @@ private struct Builder {
             out.append(s)
             out.append(NSAttributedString(string: "\n"))
             ranges.append((block.id, NSRange(location: start, length: 1)))
-        case let .media(kind, src, _, title):
+        case let .media(kind, src, poster, title):
             let start = out.length
             let label = (kind == .audio ? "♪ " : "▶︎ ") + (title ?? (kind == .embed ? "Embedded content" : kind == .video ? "Video" : "Audio"))
-            var attrs = base(style.font(weight: .medium), paragraph())
-            if let url = URL(string: src) { attrs[.link] = url }
+            // Videos and embeds play in the media viewer; audio opens as before.
+            let link = kind == .audio ? URL(string: src) : Self.playLink(kind: kind, src: src, poster: poster)
+            if kind != .audio, let poster {
+                let attachment = ImageAttachment(url: poster, alt: label, width: nil, height: nil)
+                images.append(attachment)
+                let s = NSMutableAttributedString(attachment: attachment)
+                var attrs: [NSAttributedString.Key: Any] = [.paragraphStyle: paragraph(spacingBefore: 4, spacing: 4, align: .center)]
+                if let link { attrs[.link] = link }
+                s.addAttributes(attrs, range: NSRange(location: 0, length: s.length))
+                out.append(s)
+                out.append(NSAttributedString(string: "\n", attributes: [.paragraphStyle: paragraph(align: .center)]))
+            }
+            var attrs = base(style.font(weight: .medium), paragraph(align: kind != .audio && poster != nil ? .center : .natural))
+            if let link { attrs[.link] = link }
             out.append(NSAttributedString(string: label + "\n", attributes: attrs))
-            ranges.append((block.id, NSRange(location: start, length: label.utf16.count)))
+            ranges.append((block.id, NSRange(location: start, length: out.length - start - 1)))
         case .rule:
             let start = out.length
             out.append(NSAttributedString(string: "⁂\n", attributes: base(style.font(), paragraph(spacingBefore: 6, spacing: style.fontSize, align: .center), color: .tertiaryLabelColor)))
             ranges.append((block.id, NSRange(location: start, length: 1)))
         }
+    }
+
+    /// An `eddy-media:` link the reader hands to the media viewer.
+    static func playLink(kind: MediaKindView, src: String, poster: String?) -> URL? {
+        var components = URLComponents()
+        components.scheme = "eddy-media"
+        components.path = "play"
+        components.queryItems = [
+            URLQueryItem(name: "kind", value: kind == .embed ? "embed" : "video"),
+            URLQueryItem(name: "src", value: src),
+        ] + (poster.map { [URLQueryItem(name: "poster", value: $0)] } ?? [])
+        return components.url
     }
 
     mutating func textBlock(_ id: String, _ runs: [RunView], font: NSFont, p: NSParagraphStyle, quote: Int) {

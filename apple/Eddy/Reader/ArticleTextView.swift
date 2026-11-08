@@ -28,6 +28,8 @@ struct ArticleTextView: NSViewRepresentable {
     let onPosition: (_ blockID: String, _ offset: Int, _ atEnd: Bool) -> Void
     /// Links inside an imported book (`epub://`); others open in the browser.
     var onBookLink: (URL) -> Void = { _ in }
+    /// Videos of the article (`eddy-media:` links), for the media viewer.
+    var onMediaLink: (URL) -> Void = { _ in }
     /// Pulls past the top and bottom of the text, and sideways swipes.
     var gestures = EdgeGestures()
     /// Cmd+Left and Cmd+Right.
@@ -80,6 +82,7 @@ struct ArticleTextView: NSViewRepresentable {
         c.onPosition = onPosition
         c.loadImage = loadImage
         c.onBookLink = onBookLink
+        c.onMediaLink = onMediaLink
         container.tracker.gestures = gestures
         if container.appearance?.name != appearance?.name { container.appearance = appearance }
         guard let scroll = c.scroll, let textView = scroll.documentView as? ReaderTextView else { return }
@@ -127,6 +130,7 @@ struct ArticleTextView: NSViewRepresentable {
         var onPosition: ((String, Int, Bool) -> Void)?
         var loadImage: ((String) async -> NSImage?)?
         var onBookLink: ((URL) -> Void)?
+        var onMediaLink: ((URL) -> Void)?
         private var lastReported: (String, Int, Bool)?
         private var reportTask: Task<Void, Never>?
         private var imageTask: Task<Void, Never>?
@@ -342,6 +346,8 @@ struct ArticleTextView: NSViewRepresentable {
             if let url = link as? URL ?? (link as? String).flatMap(URL.init(string:)) {
                 if url.scheme == "epub" {
                     onBookLink?(url)
+                } else if url.scheme == "eddy-media" {
+                    onMediaLink?(url)
                 } else {
                     NSWorkspace.shared.open(url)
                 }

@@ -24,7 +24,7 @@ pub use content::LoadedDocument;
 pub use eddy_ai::{AiSettings, AutoAction, AutoRule, ProviderSettings, RuleScope, Summary};
 pub use eddy_extract::{ChapterLink, SeriesProposal};
 pub use eddy_fetch::WebRenderer;
-pub use eddy_media::{MediaItem, MediaSet, MediaStatus, MediaType};
+pub use eddy_media::{MediaItem, MediaSet, MediaStatus, MediaType, is_media_url};
 pub use engine::{
     Engine, EngineOptions, EngineStatus, Mode, RefreshSummary, SourceInfo, SourceStats,
 };
