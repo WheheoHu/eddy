@@ -46,6 +46,18 @@ pub struct PdfPage {
     /// a notes page). Not pictures by themselves, but their area can be
     /// shown as one, addressed by the rectangle's object index.
     pub frames: Vec<PdfImage>,
+    /// Thin rectangles and lines (table borders, underlines, separators),
+    /// horizontal or vertical.
+    pub rules: Vec<PdfRule>,
+}
+
+/// A horizontal or vertical rule drawn on a page, as its box.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PdfRule {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
 }
 
 /// A raster image on a page. Its pixels are read on demand through
@@ -79,6 +91,23 @@ pub struct PdfLine {
     /// Font size most of the line is set in.
     pub font_size: f32,
     pub bold: bool,
+    /// The line in stretches set alike and without a wide gap inside;
+    /// `text` is them joined. Empty when the reader does not tell, and the
+    /// line is then one plain stretch.
+    pub runs: Vec<PdfRun>,
+}
+
+/// Part of a line in one style with no wide gap inside.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PdfRun {
+    pub text: String,
+    /// Left edge and width on the page.
+    pub x: f32,
+    pub width: f32,
+    pub bold: bool,
+    pub underline: bool,
+    /// The line's text has a space between this run and the one before.
+    pub space_before: bool,
 }
 
 /// Reads PDF text. The app and CLI use `eddy_pdf`; without one (servers),
