@@ -58,8 +58,12 @@ struct ReaderPane: View {
     @State private var lastPosition: (block: String, offset: Int, atEnd: Bool)?
     @State private var cache = ArticleCache()
     @State private var paneHeight: CGFloat = 600
+    @State private var paneWidth: CGFloat = 800
     /// Where the next renderer slides in from.
     @State private var rendererArrival: Edge = .trailing
+    /// Pages links led to, over the item; the last is on screen.
+    @State private var links: [LinkedPage] = []
+    @AppStorage("reader.openLinksInApp") private var openLinksInApp = true
 
     @AppStorage("reader.fontSize") private var fontSize = 17.0
     @AppStorage("reader.serif") private var serif = false
@@ -92,12 +96,23 @@ struct ReaderPane: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
                 Divider()
             }
-            content
-                .overlay(alignment: .top) { banners }
+            ZStack {
+                content
+                    .overlay(alignment: .top) { banners }
+                    .offset(x: covered ? -paneWidth : 0)
+                    .allowsHitTesting(!covered)
+                    .accessibilityHidden(covered)
+                ForEach(Array(links.enumerated()), id: \.element.id) { index, page in
+                    linkedPage(page, onTop: index == links.count - 1)
+                }
+            }
         }
         .clipped()
         .environment(\.colorScheme, scheme)
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { paneHeight = $0 }
+        .onGeometryChange(for: CGSize.self) { $0.size } action: {
+            paneHeight = $0.height
+            paneWidth = $0.width
+        }
         .toolbar { toolbar }
         .task(id: itemID) { await load() }
         .onDisappear(perform: flush)
@@ -170,7 +185,7 @@ struct ReaderPane: View {
                     ContentUnavailableView("PDF Unavailable", systemImage: "doc.richtext", description: Text("The file isn’t on this Mac and couldn’t be downloaded."))
                 }
             } else if rendererID == RendererRegistry.web.id || (document == nil && !loading), let url = item.url.flatMap(URL.init(string:)) {
-                WebPageView(url: url, gestures: gestures, onEscape: escape, focused: focused, onFocus: onFocus, appearance: appearance.nsAppearance, translator: webTranslator)
+                WebPageView(url: url, gestures: covered ? EdgeGestures() : gestures, onEscape: escape, focused: focused && !covered, onFocus: onFocus, appearance: appearance.nsAppearance, translator: webTranslator, onLink: openLinksInApp ? openLink : nil)
                     .transition(.push(from: rendererArrival))
             } else if let document {
                 let version = "\(document.contentHash)|\(mode.rawValue)|\(translations.count)|\(fontSize)|\(serif)|\(lineHeight)|\(scheme)"
@@ -198,10 +213,11 @@ struct ReaderPane: View {
                         if let openItem { openItem(target) } else { model.currentItemID = target }
                     },
                     onMediaLink: { url in model.play(link: url, in: item) },
-                    gestures: gestures,
+                    onWebLink: openLinksInApp ? openLink : nil,
+                    gestures: covered ? EdgeGestures() : gestures,
                     onStep: neighbors.map { neighbors in { neighbors.go($0, .vertical) } },
                     onEscape: escape,
-                    focused: focused,
+                    focused: focused && !covered,
                     onFocus: onFocus,
                     appearance: appearance.nsAppearance
                 )
@@ -215,6 +231,50 @@ struct ReaderPane: View {
         } else {
             ContentUnavailableView("Not Found", systemImage: "doc")
         }
+    }
+
+    /// A link's page, slid in from the right over the item; the ones under
+    /// the top wait off to the left, still loaded.
+    private func linkedPage(_ page: LinkedPage, onTop: Bool) -> some View {
+        WebPageView(
+            url: page.url,
+            gestures: onTop ? linkGestures : EdgeGestures(),
+            onEscape: closeLink,
+            focused: focused && onTop,
+            onFocus: onFocus,
+            appearance: appearance.nsAppearance,
+            onLink: openLinksInApp ? openLink : nil,
+            onPage: { url, title in
+                guard let index = links.firstIndex(where: { $0.id == page.id }) else { return }
+                if let url { links[index].current = url }
+                links[index].title = title.flatMap { $0.isEmpty ? nil : $0 }
+            }
+        )
+        .offset(x: onTop ? 0 : -paneWidth)
+        .allowsHitTesting(onTop)
+        .accessibilityHidden(!onTop)
+        .transition(.move(edge: .trailing))
+    }
+
+    private var covered: Bool { !links.isEmpty }
+
+    private func openLink(_ url: URL) {
+        withAnimation(.easeInOut(duration: 0.25)) { links.append(LinkedPage(url: url)) }
+    }
+
+    private func closeLink() {
+        guard covered else { return }
+        withAnimation(.easeInOut(duration: 0.25)) { _ = links.removeLast() }
+    }
+
+    /// Fingers moving right go back a page.
+    private var linkGestures: EdgeGestures {
+        EdgeGestures(
+            swipeTarget: { fingers in
+                fingers == .right ? .item(String(localized: "Back"), release: String(localized: "Release to go back")) : .none
+            },
+            commit: { _ in closeLink() }
+        )
     }
 
     @ViewBuilder
@@ -272,7 +332,22 @@ struct ReaderPane: View {
                 }
                 .help(showContents.wrappedValue ? "Hide contents" : "Show contents")
             }
-            if let item {
+            if let page = links.last {
+                Button(action: closeLink) { Label("Back", systemImage: "chevron.left") }
+                    .help("Back (Esc)")
+                Text(page.title ?? page.address.host() ?? page.address.absoluteString)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: 260)
+                    .foregroundStyle(.secondary)
+                Button { Task { await model.save(url: page.address.absoluteString) } } label: {
+                    Label("Save Page", systemImage: "square.and.arrow.down")
+                }
+                .disabled(model.busy)
+                .help("Save this page to read later")
+                ShareLink(item: page.address)
+                Link(destination: page.address) { Label("Open in Browser", systemImage: "arrow.up.forward.square") }
+            } else if let item {
                 let context = RenderContext(item: item, document: document, inGallery: inGallery)
                 let renderers = RendererRegistry.available(for: context)
                 if renderers.count > 1 {
@@ -337,6 +412,7 @@ struct ReaderPane: View {
 
     private func load() async {
         loading = true
+        links = []
         document = nil
         pdfURL = nil
         resumePage = nil
@@ -394,6 +470,7 @@ struct ReaderPane: View {
             guard !showingMedia else { return }
             mode = mode == .original ? lastTranslationMode : .original
         case .toggleWeb:
+            guard !covered else { return }
             if rendererID == RendererRegistry.web.id, hasText {
                 slide(to: RendererRegistry.article.id)
             } else if rendererID != RendererRegistry.web.id, hasPage {
@@ -564,6 +641,18 @@ struct ReaderPane: View {
         translations.merge(pendingTranslations) { $1 }
         pendingTranslations = [:]
     }
+}
+
+/// A page a link led to, shown over the item.
+struct LinkedPage: Identifiable {
+    let id = UUID()
+    /// The link's address; the view loads it once.
+    let url: URL
+    /// Where the page is now, after redirects.
+    var current: URL?
+    var title: String?
+
+    var address: URL { current ?? url }
 }
 
 /// Keeps the last built article so redraws don't rebuild it.

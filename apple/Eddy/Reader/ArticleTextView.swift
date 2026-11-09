@@ -30,6 +30,9 @@ struct ArticleTextView: NSViewRepresentable {
     var onBookLink: (URL) -> Void = { _ in }
     /// Videos of the article (`eddy-media:` links), for the media viewer.
     var onMediaLink: (URL) -> Void = { _ in }
+    /// Web links clicked without ⌘; nil, or ⌘-clicked, they open in the
+    /// browser.
+    var onWebLink: ((URL) -> Void)?
     /// Pulls past the top and bottom of the text, and sideways swipes.
     var gestures = EdgeGestures()
     /// Cmd+Left and Cmd+Right.
@@ -83,6 +86,7 @@ struct ArticleTextView: NSViewRepresentable {
         c.loadImage = loadImage
         c.onBookLink = onBookLink
         c.onMediaLink = onMediaLink
+        c.onWebLink = onWebLink
         container.tracker.gestures = gestures
         if container.appearance?.name != appearance?.name { container.appearance = appearance }
         guard let scroll = c.scroll, let textView = scroll.documentView as? ReaderTextView else { return }
@@ -131,6 +135,7 @@ struct ArticleTextView: NSViewRepresentable {
         var loadImage: ((String) async -> NSImage?)?
         var onBookLink: ((URL) -> Void)?
         var onMediaLink: ((URL) -> Void)?
+        var onWebLink: ((URL) -> Void)?
         private var lastReported: (String, Int, Bool)?
         private var reportTask: Task<Void, Never>?
         private var imageTasks: [Task<Void, Never>] = []
@@ -409,6 +414,8 @@ struct ArticleTextView: NSViewRepresentable {
                     onBookLink?(url)
                 } else if url.scheme == "eddy-media" {
                     onMediaLink?(url)
+                } else if let onWebLink, url.isWebLink, !(NSApp.currentEvent?.modifierFlags.contains(.command) ?? false) {
+                    onWebLink(url)
                 } else {
                     NSWorkspace.shared.open(url)
                 }

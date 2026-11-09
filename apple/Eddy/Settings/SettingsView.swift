@@ -533,6 +533,7 @@ private struct ReadingSettings: View {
     @AppStorage("reader.width") private var width = 700.0
     @AppStorage("reader.lineHeight") private var lineHeight = 1.45
     @AppStorage("reader.appearance") private var appearance: ReaderAppearance = .app
+    @AppStorage("reader.openLinksInApp") private var openLinksInApp = true
 
     var body: some View {
         Form {
@@ -553,6 +554,13 @@ private struct ReadingSettings: View {
                 }
             } footer: {
                 Text("Articles, pages and PDFs can stay light or dark whatever the rest of Eddy uses.").foregroundStyle(.secondary)
+            }
+            Section {
+                Toggle("Open links in Eddy", isOn: $openLinksInApp)
+            } header: {
+                Text("Links")
+            } footer: {
+                Text("Links in articles and web pages slide in beside the reader, where you can save them. Swipe right or press Esc to go back; ⌘-click opens a link in your browser.").foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
