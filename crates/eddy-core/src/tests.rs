@@ -2053,6 +2053,7 @@ impl PdfReader for FakePdfReader {
             height: 792.0,
             lines,
             images: Vec::new(),
+            frames: Vec::new(),
         };
         let bytes = std::fs::read(path).ok()?;
         bytes.starts_with(b"%PDF-").then(|| {

@@ -149,6 +149,18 @@ enum Picture {
 
 fn locate(document: &PdfDocument<'_>, page: &PageContext<'_>, index: u32) -> Option<Picture> {
     let object = page.page.objects().get(index as usize).ok()?;
+    if object.object_type() == PdfPageObjectType::Path {
+        if !is_upright(&page.page) {
+            return None;
+        }
+        let b = object.bounds().ok()?;
+        return Some(Picture::Region(Rect {
+            left: b.left().value,
+            bottom: b.bottom().value,
+            right: b.right().value,
+            top: b.top().value,
+        }));
+    }
     if let Some(form) = object.as_x_object_form_object() {
         let bounds = figure_bounds(form, &page.page, page.lines())?;
         return Some(Picture::Region(bounds));
@@ -206,12 +218,46 @@ fn read_page(page: &PdfPage<'_>) -> eddy_core::PdfPage {
     let height = page.height().value;
     let lines = page_lines(page);
     let images = read_images(page, &lines);
+    let frames = read_frames(page);
     eddy_core::PdfPage {
         width,
         height,
         lines,
         images,
+        frames,
     }
+}
+
+/// Paths on an upright page covering a tenth of it or more, which can be
+/// shown by rendering their area.
+fn read_frames(page: &PdfPage<'_>) -> Vec<PdfImage> {
+    if !is_upright(page) {
+        return Vec::new();
+    }
+    let page_area = page.width().value * page.height().value;
+    page.objects()
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| o.object_type() == PdfPageObjectType::Path)
+        .filter_map(|(index, o)| {
+            let b = o.bounds().ok()?;
+            let (width, height) = (b.width().value, b.height().value);
+            if width * height < page_area * 0.1 {
+                return None;
+            }
+            let scale = render_scale(width);
+            Some(PdfImage {
+                index: index as u32,
+                x: b.left().value,
+                y: b.bottom().value,
+                width,
+                height,
+                pixel_width: (width * scale) as u32,
+                pixel_height: (height * scale) as u32,
+                fingerprint: 0,
+            })
+        })
+        .collect()
 }
 
 fn page_lines(page: &PdfPage<'_>) -> Vec<PdfLine> {
@@ -1119,6 +1165,34 @@ q 60 0 0 60 400 100 cm /Im1 Do Q";
         assert_eq!(px(400, 300), (0, 0, 255));
         let (other, _) = decode(picture.index + 1);
         assert_eq!((other.width, other.height), (800, 400), "any strip gives the whole");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn large_rectangles_are_frames_whose_area_renders() {
+        let content = "\
+q 0 1 0 rg 72 300 400 225 re f Q
+q 0 0 1 rg 80 310 20 20 re f Q
+BT /F1 10 Tf 90 400 Td (On the slide) Tj ET";
+        let dir = tempdir();
+        let path = dir.join("frame.pdf");
+        std::fs::write(&path, pdf(content)).unwrap();
+
+        let reader = PdfiumReader::new();
+        let page = reader.read(&path).unwrap().pages.remove(0);
+        assert_eq!(page.frames.len(), 1, "small shapes are not frames: {:?}", page.frames);
+        let frame = &page.frames[0];
+        assert!((frame.x - 72.0).abs() < 0.5 && (frame.width - 400.0).abs() < 0.5);
+        assert_eq!((frame.pixel_width, frame.pixel_height), (1600, 900));
+        let (bytes, mime) = reader.read_image(&path, 0, frame.index).unwrap();
+        assert_eq!(mime, "image/png");
+        let mut png = png::Decoder::new(std::io::Cursor::new(bytes)).read_info().unwrap();
+        let mut buf = vec![0; png.output_buffer_size().unwrap()];
+        let info = png.next_frame(&mut buf).unwrap();
+        assert_eq!((info.width, info.height), (1600, 900));
+        let channels = info.line_size / info.width as usize;
+        let at = 450 * info.line_size + 1400 * channels;
+        assert_eq!((buf[at], buf[at + 1], buf[at + 2]), (0, 255, 0));
         let _ = std::fs::remove_dir_all(dir);
     }
 

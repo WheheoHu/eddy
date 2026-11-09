@@ -139,6 +139,14 @@ struct ReaderPane: View {
                 if new == RendererRegistry.article.id, !translationComplete, !translating { startTranslation() }
             }
         }
+        // A PDF's outline names pages; the reflowed text goes to where the
+        // page starts.
+        .onChange(of: pageTarget) { _, target in
+            guard let target, rendererID == RendererRegistry.article.id,
+                  let pages = document?.pages, pages.indices.contains(target.page)
+            else { return }
+            scrollTarget = ScrollTarget(blockID: pages[target.page])
+        }
     }
 
     @ViewBuilder

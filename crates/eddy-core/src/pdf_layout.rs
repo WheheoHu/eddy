@@ -18,7 +18,7 @@
 use std::collections::{HashMap, HashSet};
 
 use eddy_doc::{ConvertOptions, html_to_document};
-use eddy_model::{Document, PDF_SCHEME};
+use eddy_model::{BlockKind, Document, PDF_SCHEME};
 
 use crate::import::{PdfImage, PdfLine, PdfPage};
 
@@ -34,45 +34,172 @@ const SHORT_LINE: f32 = 0.75;
 /// The document of a PDF stored as blob `key`; images address it as
 /// `pdf://<key>/<page>/<object>`.
 pub(crate) fn document(pages: &[PdfPage], key: &str) -> Document {
-    let html = reflow_html(pages);
+    let blocks = reflow(pages);
+    let html: String = blocks.iter().map(Block::html).collect();
     let base = format!("{PDF_SCHEME}://{key}/");
-    html_to_document(
+    let mut doc = html_to_document(
         &html,
         &ConvertOptions {
             base_url: Some(&base),
             title: None,
         },
-    )
+    );
+    doc.pages = page_starts(&blocks, &doc.blocks, pages.len());
+    doc
 }
 
-fn reflow_html(pages: &[PdfPage]) -> String {
+/// The block each page starts at. Conversion keeps the blocks in order but
+/// may split one (a paragraph with display TeX in it), so converted blocks
+/// are matched to the blocks they came from by their text.
+fn page_starts(blocks: &[Block], converted: &[eddy_model::Block], pages: usize) -> Vec<String> {
+    let squash = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    let texts: Vec<String> = blocks.iter().map(|b| squash(b.text())).collect();
+    // Whether converted block `c` is where block `i` starts.
+    let starts = |i: usize, c: &eddy_model::Block| match (&blocks[i], &c.kind) {
+        (Block::Image { .. }, BlockKind::Image { .. }) => true,
+        (Block::Image { .. }, _) | (_, BlockKind::Image { .. }) => false,
+        _ => {
+            let head: String = squash(&c.plain_text()).chars().take(24).collect();
+            !head.is_empty() && texts[i].starts_with(&head)
+        }
+    };
+    // Page of each converted block.
+    let mut placed: Vec<(usize, &str)> = Vec::with_capacity(converted.len());
+    let mut j = 0;
+    for i in 0..blocks.len() {
+        let Some(c) = converted.get(j) else { break };
+        // Dropped in conversion: its converted block is the next one's.
+        if !starts(i, c) && i + 1 < blocks.len() && starts(i + 1, c) {
+            continue;
+        }
+        placed.push((blocks[i].page(), &c.id));
+        j += 1;
+        // The rest of a block conversion split.
+        while let Some(c) = converted.get(j) {
+            let part = !matches!(blocks[i], Block::Image { .. })
+                && !matches!(c.kind, BlockKind::Image { .. })
+                && texts[i].contains(&squash(&c.plain_text()))
+                && (i + 1 >= blocks.len() || !starts(i + 1, c));
+            if !part {
+                break;
+            }
+            placed.push((blocks[i].page(), &c.id));
+            j += 1;
+        }
+    }
+    if placed.is_empty() {
+        return Vec::new();
+    }
+    let last = placed[placed.len() - 1].1;
+    (0..pages)
+        .map(|page| {
+            placed
+                .iter()
+                .find(|(p, _)| *p >= page)
+                .map_or(last, |(_, id)| *id)
+                .to_string()
+        })
+        .collect()
+}
+
+fn reflow(pages: &[PdfPage]) -> Vec<Block> {
     let body = body_size(pages);
     let repeated = repeated_margin_text(pages);
     let repeated_images = repeated_images(pages);
+    let slide_frames = slide_frames(pages);
     let mut flow = Vec::new();
     for (n, page) in pages.iter().enumerate() {
+        let slides = page_slides(page, &slide_frames);
         let lines: Vec<&PdfLine> = page
             .lines
             .iter()
             .filter(|l| !l.text.trim().is_empty())
             .filter(|l| !is_margin_junk(l, page, &repeated))
+            .filter(|l| !slides.iter().any(|s| center_inside(l, s)))
             .collect();
+        // A slide shows whole, as it was designed; what is drawn on it
+        // (its text, pictures, diagrams) is part of that picture.
         let images: Vec<&PdfImage> = page
             .images
             .iter()
+            .filter(|i| !slides.iter().any(|s| image_inside(i, s)))
             .filter(|i| keeps_image(i, n, page, &lines, body, &repeated_images))
+            .chain(slides.iter().copied())
             .collect();
         // Labels drawn as text over a kept figure belong to the figure.
         let lines: Vec<&PdfLine> = lines
             .into_iter()
             .filter(|l| !images.iter().any(|i| is_label_of(l, i)))
             .collect();
-        flow.extend(order_page(&lines, &images, n, page, body));
+        flow.extend(order_page(&lines, &images, &slides, n, page, body));
     }
     let flow = keep_paragraphs_whole(flow, body);
     let sizes = heading_sizes(&flow, body);
-    let blocks = attach_captions(assemble(&flow, body, &sizes));
-    blocks.iter().map(Block::html).collect()
+    attach_captions(assemble(&flow, body, &sizes))
+}
+
+/// Where slides sit on pages of slides printed with their notes (or a few
+/// to a page): rectangles of a slide's shape, well short of the whole
+/// page, drawn at the same place on most pages. As `(x, y, width, height)`.
+fn slide_frames(pages: &[PdfPage]) -> Vec<(f32, f32, f32, f32)> {
+    if pages.len() < 3 {
+        return Vec::new();
+    }
+    let key = |f: &PdfImage| {
+        let r = |v: f32| (v / 2.0).round() as i32;
+        (r(f.x), r(f.y), r(f.width), r(f.height))
+    };
+    let mut counts: HashMap<(i32, i32, i32, i32), (usize, &PdfImage)> = HashMap::new();
+    for page in pages {
+        let area = page.width * page.height;
+        let mut seen = HashSet::new();
+        for frame in &page.frames {
+            let shape = frame.width / frame.height.max(1.0);
+            if !(1.2..=2.4).contains(&shape) || frame.width * frame.height > area * 0.6 {
+                continue;
+            }
+            if seen.insert(key(frame)) {
+                counts.entry(key(frame)).or_insert((0, frame)).0 += 1;
+            }
+        }
+    }
+    let mut frames: Vec<&PdfImage> = counts
+        .into_values()
+        .filter(|&(n, _)| n >= 3 && n * 2 > pages.len())
+        .map(|(_, f)| f)
+        .collect();
+    frames.sort_by(|a, b| (b.width * b.height).total_cmp(&(a.width * a.height)));
+    // A slide's background and its border are the same place.
+    let mut kept: Vec<&PdfImage> = Vec::new();
+    for frame in frames {
+        if !kept.iter().any(|k| image_inside(frame, k)) {
+            kept.push(frame);
+        }
+    }
+    kept.iter().map(|f| (f.x, f.y, f.width, f.height)).collect()
+}
+
+/// The slides on a page: for each slide frame, the largest rectangle drawn
+/// there.
+fn page_slides<'a>(page: &'a PdfPage, frames: &[(f32, f32, f32, f32)]) -> Vec<&'a PdfImage> {
+    let near = |a: f32, b: f32| (a - b).abs() <= 3.0;
+    frames
+        .iter()
+        .filter_map(|&(x, y, width, height)| {
+            page.frames
+                .iter()
+                .filter(|f| {
+                    near(f.x, x) && near(f.y, y) && near(f.width, width) && near(f.height, height)
+                })
+                .max_by(|a, b| (a.width * a.height).total_cmp(&(b.width * b.height)))
+        })
+        .collect()
+}
+
+fn image_inside(image: &PdfImage, outer: &PdfImage) -> bool {
+    let cx = image.x + image.width / 2.0;
+    let cy = image.y + image.height / 2.0;
+    cx > outer.x && cx < outer.x + outer.width && cy > outer.y && cy < outer.y + outer.height
 }
 
 /// Font size most characters are set in, to half a point.
@@ -292,6 +419,7 @@ fn is_caption(text: &str) -> bool {
 /// A line in reading order with the shape of the column it sits in.
 struct Placed<'a> {
     line: &'a PdfLine,
+    page: usize,
     column_width: f32,
     /// Where most lines of the column start; a line to the right of it is
     /// indented, one to the left is outdented (a hanging indent).
@@ -304,7 +432,13 @@ struct Placed<'a> {
 /// What reads next: a line of text or a figure.
 enum Flow<'a> {
     Text(Placed<'a>),
-    Image { image: &'a PdfImage, page: usize },
+    /// A slide is where its notes start, never moved to let a paragraph
+    /// read on.
+    Image {
+        image: &'a PdfImage,
+        page: usize,
+        slide: bool,
+    },
 }
 
 impl<'a> Flow<'a> {
@@ -350,11 +484,17 @@ fn dominant_x(lines: &[&PdfLine]) -> f32 {
 fn order_page<'a>(
     lines: &[&'a PdfLine],
     images: &[&'a PdfImage],
+    slides: &[&PdfImage],
     page_index: usize,
     page: &PdfPage,
     body: f32,
 ) -> Vec<Flow<'a>> {
     let gutters = find_gutters(lines, images, page, body);
+    let figure = |image: &'a PdfImage| Flow::Image {
+        image,
+        page: page_index,
+        slide: slides.iter().any(|s| std::ptr::eq(*s, image)),
+    };
     let column_of = |piece: &Piece| -> Option<usize> {
         let (x, _, width, _) = piece.rect();
         let right = x + width;
@@ -404,14 +544,12 @@ fn order_page<'a>(
                 out.push(match piece {
                     Piece::Line(line) => Flow::Text(Placed {
                         line,
+                        page: page_index,
                         column_width: width,
                         column_x: x,
                         joined: false,
                     }),
-                    Piece::Image(image) => Flow::Image {
-                        image,
-                        page: page_index,
-                    },
+                    Piece::Image(image) => figure(image),
                 });
             }
         }
@@ -424,14 +562,12 @@ fn order_page<'a>(
                 out.push(match piece {
                     Piece::Line(line) => Flow::Text(Placed {
                         line,
+                        page: page_index,
                         column_width: page.width,
                         column_x: line.x,
                         joined: false,
                     }),
-                    Piece::Image(image) => Flow::Image {
-                        image,
-                        page: page_index,
-                    },
+                    Piece::Image(image) => figure(image),
                 });
             }
         }
@@ -476,7 +612,11 @@ fn keep_paragraphs_whole(mut flow: Vec<Flow<'_>>, body: f32) -> Vec<Flow<'_>> {
             .unwrap_or(flow.len());
         let before = i.checked_sub(1).and_then(|k| flow[k].text());
         let after = flow.get(end).and_then(Flow::text);
+        let slide = flow[i..end]
+            .iter()
+            .any(|f| matches!(f, Flow::Image { slide: true, .. }));
         if let (Some(a), Some(b)) = (before, after)
+            && !slide
             && !is_caption(&b.line.text)
             && heading_size(b.line, body).is_none()
             && !breaks_by_shape(a, b, body)
@@ -610,12 +750,17 @@ fn find_gutters(
     gutters
 }
 
+/// A block of the reflowed text, with the page it starts on.
 enum Block {
     Heading {
         level: u8,
         text: String,
+        page: usize,
     },
-    Paragraph(String),
+    Paragraph {
+        text: String,
+        page: usize,
+    },
     Image {
         page: usize,
         index: u32,
@@ -626,12 +771,25 @@ enum Block {
 }
 
 impl Block {
+    fn page(&self) -> usize {
+        match self {
+            Block::Heading { page, .. } | Block::Paragraph { page, .. } | Block::Image { page, .. } => *page,
+        }
+    }
+
+    fn text(&self) -> &str {
+        match self {
+            Block::Heading { text, .. } | Block::Paragraph { text, .. } => text,
+            Block::Image { caption, .. } => caption,
+        }
+    }
+
     fn html(&self) -> String {
         match self {
-            Block::Heading { level, text } => {
+            Block::Heading { level, text, .. } => {
                 format!("<h{level}>{}</h{level}>", escape_html(text))
             }
-            Block::Paragraph(text) => format!("<p>{}</p>", escape_html(text)),
+            Block::Paragraph { text, .. } => format!("<p>{}</p>", escape_html(text)),
             Block::Image {
                 page,
                 index,
@@ -656,7 +814,7 @@ impl Block {
 fn attach_captions(blocks: Vec<Block>) -> Vec<Block> {
     let mut out: Vec<Block> = Vec::with_capacity(blocks.len());
     for block in blocks {
-        if let Block::Paragraph(text) = &block
+        if let Block::Paragraph { text, .. } = &block
             && is_caption(text)
             && let Some(Block::Image { caption, .. }) = out.last_mut()
             && caption.is_empty()
@@ -715,7 +873,7 @@ fn assemble(flow: &[Flow<'_>], body: f32, sizes: &[u32]) -> Vec<Block> {
     for item in flow {
         match item {
             Flow::Text(p) => text.push(p),
-            Flow::Image { image, page } => {
+            Flow::Image { image, page, .. } => {
                 assemble_text(&text, body, sizes, &mut blocks);
                 text.clear();
                 blocks.push(Block::Image {
@@ -815,6 +973,7 @@ fn assemble_text(placed: &[&Placed<'_>], body: f32, sizes: &[u32], blocks: &mut 
                 blocks.push(Block::Heading {
                     level: level_of(*size),
                     text,
+                    page: lines[0].page,
                 });
             }
             Run::Body(lines) => paragraphs(lines, body, blocks),
@@ -824,17 +983,21 @@ fn assemble_text(placed: &[&Placed<'_>], body: f32, sizes: &[u32], blocks: &mut 
 
 fn paragraphs(lines: &[&Placed<'_>], body: f32, blocks: &mut Vec<Block>) {
     let mut current = String::new();
+    let mut page = 0;
     let mut prev: Option<&Placed> = None;
     for p in lines {
         if let Some(a) = prev
             && breaks_paragraph(a, p, body)
         {
-            flush(&mut current, blocks);
+            flush(&mut current, page, blocks);
+        }
+        if current.trim().is_empty() {
+            page = p.page;
         }
         append_line(&mut current, &p.line.text);
         prev = Some(p);
     }
-    flush(&mut current, blocks);
+    flush(&mut current, page, blocks);
 }
 
 /// Whether `b` starts a new paragraph after `a`.
@@ -892,9 +1055,15 @@ fn append_line(current: &mut String, line: &str) {
     current.push_str(line);
 }
 
-fn flush(current: &mut String, blocks: &mut Vec<Block>) {
-    if !current.trim().is_empty() {
-        blocks.push(Block::Paragraph(std::mem::take(current)));
+/// A paragraph needs a letter or digit: stray punctuation (a dash, a
+/// bracket left over from a layout) is not text, and conversion would
+/// drop it anyway.
+fn flush(current: &mut String, page: usize, blocks: &mut Vec<Block>) {
+    if current.chars().any(char::is_alphanumeric) {
+        blocks.push(Block::Paragraph {
+            text: std::mem::take(current),
+            page,
+        });
     }
     current.clear();
 }
@@ -948,6 +1117,7 @@ mod tests {
             height: H,
             lines,
             images: Vec::new(),
+            frames: Vec::new(),
         }
     }
 
@@ -1279,6 +1449,84 @@ mod tests {
             "the paragraph runs on past the figure: {t:?}"
         );
         assert!(matches!(doc.blocks[1].kind, BlockKind::Image { .. }), "{t:?}");
+    }
+
+    #[test]
+    fn slides_printed_with_notes_show_whole_and_the_notes_read_as_text() {
+        let pages: Vec<PdfPage> = (0..4)
+            .map(|n| {
+                let mut p = page(vec![
+                    line(&format!("Slide {n} title"), 80.0, 700.0, 22.0),
+                    line("Measured", 100.0, 560.0, 9.0),
+                    line("Renderer", 300.0, 560.0, 9.0),
+                ]);
+                p.lines.extend(column(72.0, 468.0, 400.0, 3, &format!("notes{n}")));
+                // The template background, the same on every slide, and
+                // the slide's fill and border.
+                p.images.push(image(2, 60.0, 460.0, 480.0, 270.0, 7));
+                p.frames.push(image(1, 60.0, 460.0, 480.0, 270.0, 0));
+                p.frames.push(image(9, 59.0, 459.0, 482.0, 272.0, 0));
+                p
+            })
+            .collect();
+        let doc = document(&pages);
+        let t = texts(&doc);
+        assert!(!t.iter().any(|s| s.contains("Slide") || s.contains("Measured")), "{t:?}");
+        assert!(t.iter().any(|s| s.starts_with("notes2 line 0")), "{t:?}");
+        let figures = images(&doc);
+        assert_eq!(figures.len(), 4, "{figures:?}");
+        assert_eq!(figures[1].0, "pdf://key/1/9", "the border, which holds the whole slide");
+        let slides: Vec<&str> = doc
+            .blocks
+            .iter()
+            .filter(|b| matches!(b.kind, BlockKind::Image { .. }))
+            .map(|b| b.id.as_str())
+            .collect();
+        assert_eq!(doc.pages, slides, "each page starts at its slide");
+    }
+
+    #[test]
+    fn a_frame_on_only_some_pages_is_not_a_slide() {
+        let mut pages: Vec<PdfPage> = (0..4)
+            .map(|n| page(column(72.0, 468.0, 700.0, 5, &format!("p{n}"))))
+            .collect();
+        pages[1].frames.push(image(3, 60.0, 300.0, 480.0, 270.0, 0));
+        pages[1].lines.push(line("Inside a box", 100.0, 400.0, 10.0));
+        let doc = document(&pages);
+        assert!(images(&doc).is_empty());
+        assert!(texts(&doc).iter().any(|s| s.contains("Inside a box")));
+    }
+
+    #[test]
+    fn each_page_starts_at_its_first_block_or_the_next_one() {
+        let mut last = column(72.0, 468.0, 700.0, 3, "first");
+        last.push(line("Short end.", 72.0, 664.0, 10.0));
+        let mut third = vec![line("Second Part", 72.0, 720.0, 16.0)];
+        third.extend(column(72.0, 468.0, 690.0, 3, "third"));
+        let pages = [page(last), page(Vec::new()), page(third)];
+        let doc = document(&pages);
+        let t = texts(&doc);
+        let heading = t.iter().position(|s| s == "Second Part").unwrap();
+        assert_eq!(doc.pages.len(), 3);
+        assert_eq!(doc.pages[0], doc.blocks[0].id);
+        assert_eq!(doc.pages[1], doc.blocks[heading].id, "an empty page goes to the next");
+        assert_eq!(doc.pages[2], doc.blocks[heading].id);
+    }
+
+    #[test]
+    fn page_starts_survive_paragraphs_split_around_formulas_and_stray_punctuation() {
+        let first = vec![
+            wide("Energy is $$E = mc^2$$ which relates mass and energy here.", 72.0, 700.0, 468.0, 10.0),
+            line("-", 72.0, 660.0, 10.0),
+            line(")", 72.0, 640.0, 10.0),
+            line("Short end.", 72.0, 620.0, 10.0),
+        ];
+        let second = column(72.0, 468.0, 700.0, 3, "second");
+        let doc = document(&[page(first), page(second)]);
+        let t = texts(&doc);
+        assert!(doc.blocks.iter().any(|b| matches!(b.kind, BlockKind::Math { .. })), "{t:?}");
+        let second = t.iter().position(|s| s.starts_with("second line 0")).unwrap();
+        assert_eq!(doc.pages, [doc.blocks[0].id.clone(), doc.blocks[second].id.clone()]);
     }
 
     #[test]

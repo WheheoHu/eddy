@@ -42,6 +42,10 @@ pub struct PdfPage {
     pub lines: Vec<PdfLine>,
     /// Raster images placed on the page, in content-stream order.
     pub images: Vec<PdfImage>,
+    /// Large rectangles drawn on the page (panels, the frame of a slide on
+    /// a notes page). Not pictures by themselves, but their area can be
+    /// shown as one, addressed by the rectangle's object index.
+    pub frames: Vec<PdfImage>,
 }
 
 /// A raster image on a page. Its pixels are read on demand through

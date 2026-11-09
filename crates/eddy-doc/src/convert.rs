@@ -38,6 +38,7 @@ pub fn html_to_document(html: &str, opts: &ConvertOptions) -> Document {
     Document {
         schema_version: crate::SCHEMA_VERSION,
         blocks: assign_ids(blocks),
+        pages: Vec::new(),
     }
 }
 

@@ -151,6 +151,7 @@ impl Inner {
                     return Ok(Some(Document {
                         schema_version: SCHEMA_VERSION,
                         blocks: Vec::new(),
+                        pages: Vec::new(),
                     }));
                 }
             },
