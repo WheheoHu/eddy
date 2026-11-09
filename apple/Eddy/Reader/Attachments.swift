@@ -184,9 +184,26 @@ final class ImageAttachment: NSTextAttachment {
         return image
     }()
 
+    private(set) var isLoaded = false
+
     func loaded(_ image: NSImage) {
         self.image = image
         if image.size.width > 0 { naturalSize = image.size }
+        isLoaded = true
+    }
+
+    /// The size the image takes in a line `lineWidth` wide: scaled down to
+    /// the column, and no taller than a screen.
+    func displaySize(forLineWidth lineWidth: CGFloat) -> CGSize {
+        let maxWidth = max(40, lineWidth - 4)
+        let width = min(naturalSize.width, maxWidth)
+        let height = min(naturalSize.height * width / max(naturalSize.width, 1), 900)
+        let finalWidth = naturalSize.height * width / max(naturalSize.width, 1) > 900 ? naturalSize.width * 900 / max(naturalSize.height, 1) : width
+        return CGSize(width: finalWidth, height: height)
+    }
+
+    func displayHeight(forLineWidth lineWidth: CGFloat) -> CGFloat {
+        displaySize(forLineWidth: lineWidth).height
     }
 
     override func attachmentBounds(
@@ -196,11 +213,7 @@ final class ImageAttachment: NSTextAttachment {
         proposedLineFragment: CGRect,
         position: CGPoint
     ) -> CGRect {
-        let maxWidth = max(40, proposedLineFragment.width - 4)
-        let width = min(naturalSize.width, maxWidth)
-        let height = min(naturalSize.height * width / max(naturalSize.width, 1), 900)
-        let finalWidth = naturalSize.height * width / max(naturalSize.width, 1) > 900 ? naturalSize.width * 900 / max(naturalSize.height, 1) : width
-        return CGRect(x: 0, y: 0, width: finalWidth, height: height)
+        CGRect(origin: .zero, size: displaySize(forLineWidth: proposedLineFragment.width))
     }
 }
 

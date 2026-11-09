@@ -1,0 +1,6 @@
+# Where eddy-pdf finds the static pdfium library (see scripts/fetch-pdfium.sh).
+# Paths are relative to the workspace root; the target suffix lets each
+# platform point at its own build.
+[env]
+PDFIUM_STATIC_LIB_PATH_aarch64_apple_darwin = { value = "build/pdfium/macos/release/lib", relative = true }
+PDFIUM_STATIC_LIB_PATH_x86_64_apple_darwin = { value = "build/pdfium/macos/release/lib", relative = true }

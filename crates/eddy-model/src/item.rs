@@ -202,6 +202,9 @@ pub const EPUB_MIME: &str = "application/epub+zip";
 pub const PDF_MIME: &str = "application/pdf";
 /// URL scheme of files inside an imported EPUB: `epub://<blob key>/<path>`.
 pub const EPUB_SCHEME: &str = "epub";
+/// URL scheme of images inside an imported PDF:
+/// `pdf://<blob key>/<page index>/<object index>`.
+pub const PDF_SCHEME: &str = "pdf";
 
 /// How an item's content is presented, decided by its current version's raw
 /// source. Everything except PDF is a reflowable document.

@@ -4,7 +4,7 @@ Eddy 是本地优先的个人阅读器：Rust 内核（`crates/`）通过 UniFFI
 
 ## 构建与验证
 
-- Rust：`cargo test --workspace`、`cargo clippy --workspace --all-targets`。
+- Rust：`cargo test --workspace`、`cargo clippy --workspace --all-targets`。首次构建前先跑 `scripts/fetch-pdfium.sh`：`eddy-pdf` 静态链接 pdfium，库文件下到 `build/pdfium/`，`.cargo/config.toml` 里的 `PDFIUM_STATIC_LIB_PATH_*` 指向它。
 - Mac 应用：`scripts/build-mac-app.sh`。它先跑 `scripts/build-apple.sh` 生成 XCFramework 和 Swift 绑定，再用 XcodeGen 生成工程并构建。
 - 生成物不进仓库：`apple/Eddy.xcodeproj`、`apple/EddyKit/EddyFFI.xcframework`、`apple/EddyKit/Sources/EddyKit/Generated/`。改了 `eddy-ffi` 的导出接口就重新跑构建脚本。
 - 本机的 `xcode-select` 可能指向命令行工具；`scripts/env.sh` 会自动设置 `DEVELOPER_DIR`，手动调用 `xcodebuild` 时也先 source 它。

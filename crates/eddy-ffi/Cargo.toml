@@ -13,6 +13,7 @@ name = "eddy_ffi"
 async-trait = { workspace = true }
 eddy-core = { workspace = true }
 eddy-model = { workspace = true }
+eddy-pdf = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 uniffi = { workspace = true, features = ["tokio"] }

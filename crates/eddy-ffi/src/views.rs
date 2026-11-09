@@ -550,6 +550,8 @@ pub struct DocumentView {
     pub source_url: Option<String>,
     /// For a PDF, its text (empty when it has none).
     pub blocks: Vec<BlockView>,
+    /// For a PDF, the ID of the block each page starts at, by page index.
+    pub pages: Vec<String>,
 }
 
 impl From<eddy_core::LoadedDocument> for DocumentView {
@@ -565,6 +567,7 @@ impl From<eddy_core::LoadedDocument> for DocumentView {
             format: m::ContentFormat::from_mime(Some(&d.version.raw_mime)).into(),
             source_url: d.version.source_url,
             blocks: d.document.blocks.into_iter().map(Into::into).collect(),
+            pages: d.document.pages,
         }
     }
 }

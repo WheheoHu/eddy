@@ -2031,15 +2031,80 @@ struct FakePdfReader;
 
 impl PdfReader for FakePdfReader {
     fn read(&self, path: &std::path::Path) -> Option<PdfText> {
+        use crate::{PdfLine, PdfPage};
+        // Full-width 10 pt body lines stacked 12 pt apart from `top`.
+        let lines = |texts: &[&str], top: f32| -> Vec<PdfLine> {
+            texts
+                .iter()
+                .enumerate()
+                .map(|(i, t)| PdfLine {
+                    text: t.to_string(),
+                    x: 72.0,
+                    y: top - 12.0 * i as f32,
+                    width: 468.0,
+                    height: 11.5,
+                    font_size: 10.0,
+                    bold: false,
+                })
+                .collect()
+        };
+        let page = |lines: Vec<PdfLine>| PdfPage {
+            width: 612.0,
+            height: 792.0,
+            lines,
+            images: Vec::new(),
+            frames: Vec::new(),
+        };
         let bytes = std::fs::read(path).ok()?;
-        bytes.starts_with(b"%PDF-").then(|| PdfText {
-            title: Some("Microsoft Word - draft.docx".into()),
-            author: Some("Ada".into()),
-            pages: vec![
-                "Importance sampling draws more samples where the inte-\ngrand is large and so reduces the variance of Monte\nCarlo estimates without adding any bias at all.\nA Short Heading\nNext paragraph.".into(),
-                "第二页的内容比较长一些\n继续".into(),
-            ],
+        bytes.starts_with(b"%PDF-").then(|| {
+            let mut first = lines(
+                &[
+                    "Importance sampling draws more samples where the inte-",
+                    "grand is large and so reduces the variance of Monte",
+                    "Carlo estimates without adding any bias at all.",
+                ],
+                700.0,
+            );
+            first.push(PdfLine {
+                text: "A Short Heading".into(),
+                x: 72.0,
+                y: 660.0,
+                width: 90.0,
+                height: 16.0,
+                font_size: 14.0,
+                bold: true,
+            });
+            first.push(PdfLine {
+                text: "Next paragraph.".into(),
+                x: 72.0,
+                y: 640.0,
+                width: 80.0,
+                height: 11.5,
+                font_size: 10.0,
+                bold: false,
+            });
+            let mut second = page(lines(&["第二页的内容比较长一些", "继续"], 700.0));
+            second.images.push(crate::PdfImage {
+                index: 4,
+                x: 72.0,
+                y: 300.0,
+                width: 300.0,
+                height: 200.0,
+                pixel_width: 900,
+                pixel_height: 600,
+                fingerprint: 1,
+            });
+            PdfText {
+                title: Some("Microsoft Word - draft.docx".into()),
+                author: Some("Ada".into()),
+                pages: vec![page(first), second],
+            }
         })
+    }
+
+    fn image(&self, path: &std::path::Path, page: u32, index: u32) -> Option<(Vec<u8>, &'static str)> {
+        std::fs::read(path).ok()?.starts_with(b"%PDF-").then_some(())?;
+        (page == 1 && index == 4).then(|| (b"\x89PNG figure".to_vec(), "image/png"))
     }
 }
 
@@ -2082,8 +2147,30 @@ async fn pdf_import_reads_text_through_the_platform_and_tracks_pages() {
             "A Short Heading",
             "Next paragraph.",
             "第二页的内容比较长一些继续",
+            "",
         ]
     );
+    let figure = doc
+        .blocks
+        .iter()
+        .find_map(|b| match &b.kind {
+            eddy_model::BlockKind::Image { src, .. } => Some(src.clone()),
+            _ => None,
+        })
+        .expect("the figure on page 2");
+    assert!(figure.starts_with("pdf://") && figure.ends_with("/1/4"), "{figure}");
+    // Importing started rendering the figure into the image cache.
+    let cached = crate::images::image_blob_key(&figure);
+    for _ in 0..200 {
+        if engine.inner.store.has_blob(&cached).unwrap() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(engine.inner.store.has_blob(&cached).unwrap(), "figure warmed on import");
+    let (bytes, mime) = engine.image(&figure).await.unwrap();
+    assert_eq!((bytes.as_slice(), mime.as_str()), (&b"\x89PNG figure"[..], "image/png"));
+    assert!(engine.image(&figure.replace("/1/4", "/1/5")).await.is_err());
     assert_eq!(
         engine.search("integrand", 5).unwrap()[0].item.item.id,
         imported.item_id

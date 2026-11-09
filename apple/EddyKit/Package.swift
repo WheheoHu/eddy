@@ -17,6 +17,10 @@ let package = Package(
                 .linkedFramework("Security"),
                 .linkedFramework("SystemConfiguration"),
                 .linkedFramework("CoreFoundation"),
+                // pdfium, statically linked into EddyFFI, is C++ and draws
+                // with CoreGraphics.
+                .linkedFramework("CoreGraphics"),
+                .linkedLibrary("c++"),
                 .linkedLibrary("resolv"),
             ]
         ),

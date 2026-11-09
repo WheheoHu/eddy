@@ -1,7 +1,8 @@
 //! Importing local files. An EPUB becomes a series whose chapters read in
 //! the reflowed reader; a PDF becomes a saved document shown by the
-//! platform's PDF view, with its text kept for search, summaries and the
-//! text view. The original file is every version's pinned raw source.
+//! platform's PDF view, with its text (reflowed by `pdf_layout`) kept for
+//! search, summaries and the text view. The original file is every
+//! version's pinned raw source.
 
 use std::io::{BufReader, Cursor};
 use std::path::{Path, PathBuf};
@@ -10,7 +11,7 @@ use std::sync::Arc;
 use eddy_doc::{ConvertOptions, html_to_document};
 use eddy_epub::{Book, Epub, EpubError};
 use eddy_model::{
-    BlockKind, ContentVersion, Document, EPUB_MIME, EPUB_SCHEME, Entity, Item, ItemKind, PDF_MIME,
+    BlockKind, ContentVersion, Document, EPUB_MIME, EPUB_SCHEME, Entity, Item, ItemKind, PDF_MIME, PDF_SCHEME,
     fields, ids, now_ms,
 };
 use serde_json::json;
@@ -21,19 +22,83 @@ use crate::{EngineError, Result};
 /// Largest file accepted: it has to fit a sync server upload too.
 pub const MAX_IMPORT_BYTES: u64 = eddy_sync::MAX_BLOB_BYTES as u64;
 
-/// Text of a PDF as read by the host platform (PDFKit on Apple).
+/// Text of a PDF with the geometry the layout rules need: each page's
+/// lines with their boxes and font sizes.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PdfText {
     pub title: Option<String>,
     pub author: Option<String>,
-    /// Text of each page, in order.
-    pub pages: Vec<String>,
+    /// Pages in order.
+    pub pages: Vec<PdfPage>,
 }
 
-/// Reads PDF text. Implemented by the host app; without one, PDFs import
-/// and open but have no text to search, summarize or reflow.
+/// One page of text. Coordinates are PDF points with the origin at the
+/// bottom-left corner.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PdfPage {
+    pub width: f32,
+    pub height: f32,
+    /// Lines in content-stream order, not reading order.
+    pub lines: Vec<PdfLine>,
+    /// Raster images placed on the page, in content-stream order.
+    pub images: Vec<PdfImage>,
+    /// Large rectangles drawn on the page (panels, the frame of a slide on
+    /// a notes page). Not pictures by themselves, but their area can be
+    /// shown as one, addressed by the rectangle's object index.
+    pub frames: Vec<PdfImage>,
+}
+
+/// A raster image on a page. Its pixels are read on demand through
+/// `PdfReader::image`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PdfImage {
+    /// Position among the page's objects, stable for a given file.
+    pub index: u32,
+    /// Placement on the page, in the same coordinates as lines.
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub pixel_width: u32,
+    pub pixel_height: u32,
+    /// Identifies the same image data drawn on several pages (a logo, a
+    /// watermark).
+    pub fingerprint: u64,
+}
+
+/// One visual line of text with its bounding box.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PdfLine {
+    pub text: String,
+    /// Left edge of the box.
+    pub x: f32,
+    /// Bottom edge of the box.
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    /// Font size most of the line is set in.
+    pub font_size: f32,
+    pub bold: bool,
+}
+
+/// Reads PDF text. The app and CLI use `eddy_pdf`; without one (servers),
+/// PDFs import and open but have no text to search, summarize or reflow.
 pub trait PdfReader: Send + Sync {
     fn read(&self, path: &Path) -> Option<PdfText>;
+
+    /// Encoded bytes and MIME type of image `index` on page `page`.
+    fn image(&self, _path: &Path, _page: u32, _index: u32) -> Option<(Vec<u8>, &'static str)> {
+        None
+    }
+
+    /// Several images, `(page, index)` each, in request order. Readers
+    /// that can share work between images on a page override this.
+    fn images(&self, path: &Path, requests: &[(u32, u32)]) -> Vec<Option<(Vec<u8>, &'static str)>> {
+        requests
+            .iter()
+            .map(|&(page, index)| self.image(path, page, index))
+            .collect()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -103,7 +168,7 @@ impl Engine {
 }
 
 impl Inner {
-    fn import_file(&self, path: &Path) -> Result<Imported> {
+    fn import_file(self: &Arc<Self>, path: &Path) -> Result<Imported> {
         let size = std::fs::metadata(path).map_err(read_error)?.len();
         if size > MAX_IMPORT_BYTES {
             return Err(EngineError::Invalid(format!(
@@ -212,15 +277,16 @@ impl Inner {
         })
     }
 
-    fn import_pdf(&self, bytes: &[u8], key: &str, file_name: &str) -> Result<Imported> {
+    fn import_pdf(self: &Arc<Self>, bytes: &[u8], key: &str, file_name: &str) -> Result<Imported> {
         self.store.put_blob_keyed(key, bytes, PDF_MIME, true)?;
         let text = self.read_pdf(key)?.unwrap_or_default();
         let title = pdf_title(text.title.as_deref(), file_name);
         let item_id = self.create_imported_item(ItemKind::Saved, &title, text.author.as_deref())?;
-        let document = pdf_text_document(&text.pages);
+        let document = crate::pdf_layout::document(&text.pages, key);
         let ingested = self.ingest_document(&item_id, document, key, PDF_MIME, None)?;
         self.switch_version(&item_id, &ingested)?;
         self.after_ingest(&item_id, &ingested);
+        self.warm_pdf_images(&ingested.document);
         Ok(Imported {
             item_id,
             series_id: None,
@@ -280,7 +346,7 @@ impl Inner {
 
     /// The text document of a stored PDF, when a PDF reader is available.
     pub(crate) fn pdf_document(&self, key: &str) -> Result<Option<Document>> {
-        Ok(self.read_pdf(key)?.map(|t| pdf_text_document(&t.pages)))
+        Ok(self.read_pdf(key)?.map(|t| crate::pdf_layout::document(&t.pages, key)))
     }
 
     /// Regenerates an EPUB chapter's document from the stored book.
@@ -345,6 +411,26 @@ impl Inner {
         Ok(bytes.map(|b| (b, mime)))
     }
 
+    /// An image inside a stored PDF, decoded by the PDF reader.
+    pub(crate) async fn pdf_image(&self, url: &str) -> Result<Option<(Vec<u8>, &'static str)>> {
+        let Some((key, page, index)) = parse_pdf_image_url(url) else {
+            return Ok(None);
+        };
+        let reader = self.pdf_reader.read().clone();
+        let Some(reader) = reader else {
+            return Ok(None);
+        };
+        let Some(file) = self.local_blob_file(&key).await? else {
+            return Ok(None);
+        };
+        Ok(
+            tokio::task::spawn_blocking(move || reader.image(&file, page, index))
+                .await
+                .ok()
+                .flatten(),
+        )
+    }
+
     /// Path of a blob, downloading it from the sync server when missing here.
     pub(crate) async fn local_blob_file(&self, key: &str) -> Result<Option<PathBuf>> {
         if let Some(path) = self.store.blob_file(key)? {
@@ -380,6 +466,19 @@ pub(crate) fn parse_archive_url(url: &str) -> Option<(String, String)> {
     let key = url.host_str()?.to_string();
     let path = eddy_epub::decode_path(url.path());
     (!path.is_empty()).then_some((key, path))
+}
+
+/// The PDF blob, page and object index of a `pdf://` image URL.
+pub(crate) fn parse_pdf_image_url(url: &str) -> Option<(String, u32, u32)> {
+    let url = url::Url::parse(url).ok()?;
+    if url.scheme() != PDF_SCHEME {
+        return None;
+    }
+    let key = url.host_str()?.to_string();
+    let mut parts = url.path().trim_start_matches('/').split('/');
+    let page = parts.next()?.parse().ok()?;
+    let index = parts.next()?.parse().ok()?;
+    parts.next().is_none().then_some((key, page, index))
 }
 
 /// Converts a chapter. Untitled chapters take their opening heading as the
@@ -440,78 +539,6 @@ fn pdf_title(meta: Option<&str>, file_name: &str) -> String {
         .map(str::to_string)
         .or_else(|| (!file_name.is_empty()).then(|| file_name.to_string()))
         .unwrap_or_else(|| "PDF".into())
-}
-
-/// Reflowable text of a PDF. Lines join into paragraphs; a blank line or a
-/// clearly short one (the last line of a paragraph) ends one, and a short
-/// line after a finished sentence (a heading) stands alone. Hyphenation at
-/// line ends is undone and CJK lines join without spaces.
-pub(crate) fn pdf_text_document(pages: &[String]) -> Document {
-    let mut paragraphs: Vec<String> = Vec::new();
-    let mut current = String::new();
-    for page in pages {
-        let lines: Vec<&str> = page.lines().map(str::trim).collect();
-        let mut lengths: Vec<usize> = lines
-            .iter()
-            .map(|l| l.chars().count())
-            .filter(|&n| n > 0)
-            .collect();
-        lengths.sort_unstable();
-        let full = lengths.get(lengths.len() * 3 / 4).copied().unwrap_or(0);
-        for line in lines {
-            if line.is_empty() {
-                flush(&mut current, &mut paragraphs);
-                continue;
-            }
-            let short = (line.chars().count() as f64) < full as f64 * 0.75;
-            if short && current.ends_with(SENTENCE_ENDS) {
-                flush(&mut current, &mut paragraphs);
-            }
-            append_line(&mut current, line);
-            if short {
-                flush(&mut current, &mut paragraphs);
-            }
-        }
-    }
-    flush(&mut current, &mut paragraphs);
-    let html: String = paragraphs
-        .iter()
-        .map(|p| format!("<p>{}</p>", escape_html(p)))
-        .collect();
-    html_to_document(&html, &ConvertOptions::default())
-}
-
-const SENTENCE_ENDS: [char; 10] = ['.', '!', '?', ':', '。', '！', '？', '：', '”', '"'];
-
-fn append_line(current: &mut String, line: &str) {
-    let last = current.chars().last();
-    let first = line.chars().next();
-    match (last, first) {
-        (None, _) => {}
-        (Some('-'), Some(c)) if c.is_lowercase() => {
-            current.pop();
-        }
-        (Some(a), Some(b)) if is_cjk(a) || is_cjk(b) => {}
-        _ => current.push(' '),
-    }
-    current.push_str(line);
-}
-
-fn flush(current: &mut String, paragraphs: &mut Vec<String>) {
-    if !current.trim().is_empty() {
-        paragraphs.push(std::mem::take(current));
-    }
-    current.clear();
-}
-
-fn is_cjk(c: char) -> bool {
-    matches!(c, '\u{3000}'..='\u{9FFF}' | '\u{AC00}'..='\u{D7AF}' | '\u{F900}'..='\u{FAFF}' | '\u{FF00}'..='\u{FFEF}')
-}
-
-fn escape_html(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 fn epub_error(e: EpubError) -> EngineError {

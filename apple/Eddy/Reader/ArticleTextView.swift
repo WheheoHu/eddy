@@ -133,7 +133,10 @@ struct ArticleTextView: NSViewRepresentable {
         var onMediaLink: ((URL) -> Void)?
         private var lastReported: (String, Int, Bool)?
         private var reportTask: Task<Void, Never>?
-        private var imageTask: Task<Void, Never>?
+        private var imageTasks: [Task<Void, Never>] = []
+        private var pendingImages: [ImageAttachment] = []
+        private var imageRanges: [ObjectIdentifier: NSRange] = [:]
+        private let imageConcurrency = 2
         /// Position set by the app (resume, outline jump, the end of a
         /// previous chapter) that images loading above must not disturb,
         /// until the user scrolls on their own.
@@ -152,7 +155,7 @@ struct ArticleTextView: NSViewRepresentable {
             let held = keepPosition ? holdPosition() : nil
             self.article = article
             self.version = version
-            imageTask?.cancel()
+            imageTasks.forEach { $0.cancel() }
             textView.textStorage?.setAttributedString(article.text)
             textView.updateInsets()
             hasShown = true
@@ -209,30 +212,88 @@ struct ArticleTextView: NSViewRepresentable {
             DispatchQueue.main.async { [weak self] in self?.scrollingProgrammatically = false }
         }
 
+        /// Loads the article's images a couple at a time, those on or near
+        /// the screen first, so what the reader is looking at fills in
+        /// before the rest of a long document.
         private func loadImages(_ images: [ImageAttachment]) {
-            guard let loadImage else { return }
-            imageTask = Task { [weak self] in
-                for attachment in images {
-                    if Task.isCancelled { return }
-                    guard let image = await loadImage(attachment.url) else { continue }
-                    if Task.isCancelled { return }
-                    self?.replaceImage(attachment, with: image)
-                }
+            imageTasks.forEach { $0.cancel() }
+            imageTasks = []
+            pendingImages = images.filter { !$0.isLoaded }
+            imageRanges = [:]
+            guard loadImage != nil, !pendingImages.isEmpty, let storage = textView?.textStorage else { return }
+            storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+                if let attachment = value as? ImageAttachment { imageRanges[ObjectIdentifier(attachment)] = range }
+            }
+            imageTasks = (0..<imageConcurrency).map { _ in
+                Task { [weak self] in await self?.loadNextImages() }
             }
         }
 
-        /// Swaps in a loaded image, keeping the reading position steady.
-        private func replaceImage(_ attachment: ImageAttachment, with image: NSImage) {
-            guard let textView, let storage = textView.textStorage else { return }
-            let anchor = self.anchor ?? currentPosition().map { ScrollTarget(blockID: $0.0, offset: $0.1) }
-            attachment.loaded(image)
-            var found: NSRange?
-            storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, range, stop in
-                if (value as? ImageAttachment) === attachment { found = range; stop.pointee = true }
+        private func loadNextImages() async {
+            while !Task.isCancelled, let loadImage, let attachment = nextImage() {
+                let image = await loadImage(attachment.url)
+                if Task.isCancelled { return }
+                if let image { replaceImage(attachment, with: image) }
             }
-            guard let range = found else { return }
+        }
+
+        /// The next image to load: one laid out within a screen of the
+        /// visible area if there is one, else the first in reading order.
+        private func nextImage() -> ImageAttachment? {
+            guard !pendingImages.isEmpty else { return nil }
+            var pick = 0
+            if let scroll, let textView, let tlm = textView.textLayoutManager {
+                let visible = scroll.contentView.bounds.insetBy(dx: 0, dy: -scroll.contentView.bounds.height)
+                for (i, attachment) in pendingImages.enumerated() {
+                    guard let range = imageRanges[ObjectIdentifier(attachment)],
+                          let location = tlm.location(tlm.documentRange.location, offsetBy: range.location),
+                          let fragment = tlm.textLayoutFragment(for: location), fragment.state != .none
+                    else { continue }
+                    if fragment.layoutFragmentFrame.offsetBy(dx: 0, dy: textView.textContainerOrigin.y).intersects(visible) {
+                        pick = i
+                        break
+                    }
+                }
+            }
+            return pendingImages.remove(at: pick)
+        }
+
+        /// Swaps in a loaded image without disturbing the reader. An image
+        /// that keeps its size (PDF figures, pictures with dimensions in
+        /// the HTML) is only redrawn; one that changes height relays out
+        /// its paragraph, and the view moves with the text when that
+        /// paragraph is above what is on screen.
+        private func replaceImage(_ attachment: ImageAttachment, with image: NSImage) {
+            guard let scroll, let textView, let storage = textView.textStorage, let tlm = textView.textLayoutManager,
+                  let range = imageRanges[ObjectIdentifier(attachment)], range.location + range.length <= storage.length
+            else { return }
+            let lineWidth = textView.textContainer?.size.width ?? textView.bounds.width
+            let before = attachment.displayHeight(forLineWidth: lineWidth)
+            attachment.loaded(image)
+            let after = attachment.displayHeight(forLineWidth: lineWidth)
+            let origin = textView.textContainerOrigin
+            let location = tlm.location(tlm.documentRange.location, offsetBy: range.location)
+            let fragment = location.flatMap { tlm.textLayoutFragment(for: $0) }
+            let frame = fragment.map { $0.layoutFragmentFrame.offsetBy(dx: origin.x, dy: origin.y) }
+            if abs(after - before) < 0.5 {
+                // Not laid out yet: it comes up with the image when it is.
+                guard let fragment, fragment.state != .none, let frame else { return }
+                tlm.invalidateLayout(for: fragment.rangeInElement)
+                textView.setNeedsDisplay(frame.insetBy(dx: -8, dy: -8))
+                return
+            }
+            let top = scroll.contentView.bounds.minY
+            let above = frame.map { $0.maxY <= top } ?? false
             storage.edited(.editedAttributes, range: range, changeInLength: 0)
-            if let anchor { scroll(to: anchor, animated: false, report: false) }
+            if let anchor, anchor.toEnd || article?.location(of: anchor.blockID, offset: anchor.offset).map({ range.location < $0 }) == true {
+                // Still at a position the app chose: keep it there.
+                self.scroll(to: anchor, animated: false, report: false)
+            } else if above {
+                scrollingProgrammatically = true
+                scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, top + after - before)))
+                scroll.reflectScrolledClipView(scroll.contentView)
+                DispatchQueue.main.async { [weak self] in self?.scrollingProgrammatically = false }
+            }
             report(onlyAtEnd: true)
         }
 

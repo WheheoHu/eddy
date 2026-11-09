@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 pub struct Document {
     pub schema_version: u32,
     pub blocks: Vec<Block>,
+    /// For a PDF, the block each page starts at, by page index: the first
+    /// block taken from that page, or from the next page with any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pages: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

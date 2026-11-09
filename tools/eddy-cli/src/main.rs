@@ -5,6 +5,7 @@
 //! eddy-cli [--data DIR] save URL
 //! eddy-cli [--data DIR] items
 //! eddy-cli [--data DIR] doc ITEM_ID
+//! eddy-cli [--data DIR] text ITEM_ID
 //! eddy-cli [--data DIR] fulltext ITEM_ID
 //! eddy-cli [--data DIR] import FILE.epub|FILE.pdf
 
@@ -104,6 +105,7 @@ async fn main() {
     std::fs::create_dir_all(&data).expect("data dir");
     let secrets = Arc::new(FileSecrets(data.join("cli-secrets.json")));
     let engine = Engine::open(&data, secrets, EngineOptions::default()).expect("open engine");
+    engine.set_pdf_reader(Some(Arc::new(eddy_pdf::PdfiumReader::new())));
     let result = match args
         .iter()
         .map(String::as_str)
@@ -120,6 +122,21 @@ async fn main() {
         }),
         ["doc", id] => engine.document(id).await.map(|d| match d {
             Some(d) => summarize(&d.document),
+            None => println!("no content"),
+        }),
+        // Every block as text, one per line prefixed with its kind; for
+        // checking how a PDF or page reflowed.
+        ["text", id] => engine.document(id).await.map(|d| match d {
+            Some(d) => {
+                for b in &d.document.blocks {
+                    let tag = match &b.kind {
+                        BlockKind::Heading { level, .. } => format!("h{level}"),
+                        BlockKind::Image { src, .. } => format!("image {src}"),
+                        other => other.tag().to_string(),
+                    };
+                    println!("[{tag}] {}", b.plain_text());
+                }
+            }
             None => println!("no content"),
         }),
         ["fulltext", id] => engine
@@ -228,7 +245,7 @@ async fn main() {
         }
         _ => {
             eprintln!(
-                "usage: eddy-cli [--data DIR] save URL | items | doc ID | fulltext ID | connect URL CODE | sync | search QUERY | import FILE | media ID | gallery FOLDER COUNT"
+                "usage: eddy-cli [--data DIR] save URL | items | doc ID | text ID | fulltext ID | connect URL CODE | sync | search QUERY | import FILE | media ID | gallery FOLDER COUNT"
             );
             std::process::exit(2);
         }

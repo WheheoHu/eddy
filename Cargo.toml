@@ -20,6 +20,7 @@ eddy-ai = { path = "crates/eddy-ai" }
 eddy-search = { path = "crates/eddy-search" }
 eddy-sync = { path = "crates/eddy-sync" }
 eddy-core = { path = "crates/eddy-core" }
+eddy-pdf = { path = "crates/eddy-pdf" }
 
 anyhow = "1"
 async-trait = "0.1"
