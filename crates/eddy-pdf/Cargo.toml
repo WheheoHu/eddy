@@ -1,0 +1,15 @@
+[package]
+name = "eddy-pdf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Static pdfium (scripts/fetch-pdfium.sh) is release 8046, so the bindings are
+# pinned to the newest API level it fully provides instead of `pdfium_latest`.
+[dependencies]
+eddy-core = { workspace = true }
+pdfium-render = { version = "0.9", default-features = false, features = ["pdfium_7881", "thread_safe", "static"] }
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+pdfium-render = { version = "0.9", default-features = false, features = ["libc++", "core_graphics"] }

@@ -68,40 +68,11 @@ impl eddy_core::WebRenderer for RendererAdapter {
     }
 }
 
-#[derive(uniffi::Record, Clone, Debug)]
-pub struct PdfTextView {
-    pub title: Option<String>,
-    pub author: Option<String>,
-    /// Text of each page, in order.
-    pub pages: Vec<String>,
-}
-
-/// Implemented by the host app: reads the text of the PDF at `path`
-/// (PDFKit on Apple), or `None` when it cannot be opened.
-#[uniffi::export(with_foreign)]
-pub trait PdfTextExtractor: Send + Sync {
-    fn extract(&self, path: String) -> Option<PdfTextView>;
-}
-
 /// Receives the running total of older articles added while FreshRSS
 /// history loads.
 #[uniffi::export(with_foreign)]
 pub trait HistoryListener: Send + Sync {
     fn on_progress(&self, added: u32);
-}
-
-struct PdfAdapter(Arc<dyn PdfTextExtractor>);
-
-impl eddy_core::PdfReader for PdfAdapter {
-    fn read(&self, path: &std::path::Path) -> Option<eddy_core::PdfText> {
-        self.0
-            .extract(path.to_string_lossy().into_owned())
-            .map(|t| eddy_core::PdfText {
-                title: t.title,
-                author: t.author,
-                pages: t.pages,
-            })
-    }
 }
 
 #[derive(uniffi::Record, Clone, Debug)]
@@ -208,6 +179,7 @@ impl EddyEngine {
                 server_role: false,
             },
         )?;
+        engine.set_pdf_reader(Some(Arc::new(eddy_pdf::PdfiumReader::new())));
         Ok(Arc::new(EddyEngine { engine }))
     }
 
@@ -391,12 +363,6 @@ impl EddyEngine {
         let renderer =
             renderer.map(|r| Arc::new(RendererAdapter(r)) as Arc<dyn eddy_core::WebRenderer>);
         Ok(self.engine.set_web_renderer(renderer)?)
-    }
-
-    pub fn set_pdf_text_extractor(&self, extractor: Option<Arc<dyn PdfTextExtractor>>) {
-        self.engine.set_pdf_reader(
-            extractor.map(|e| Arc::new(PdfAdapter(e)) as Arc<dyn eddy_core::PdfReader>),
-        );
     }
 
     /// Imports an EPUB (as a publication) or a PDF (as a saved document).

@@ -142,7 +142,6 @@ final class AppModel {
         do {
             let engine = try EddyCore.openDefault()
             try engine.setWebRenderer(renderer: WebViewRenderer())
-            engine.setPdfTextExtractor(extractor: PDFKitTextExtractor())
             self.engine = engine
         } catch {
             engine = nil

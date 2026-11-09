@@ -10,6 +10,7 @@ PROFILE="${1:-debug}"
 source "$ROOT/scripts/env.sh"
 
 cd "$ROOT"
+"$ROOT/scripts/fetch-pdfium.sh" macos
 CARGO_FLAGS=()
 if [[ "$PROFILE" == "release" ]]; then
   CARGO_FLAGS+=(--release)

@@ -2031,14 +2031,62 @@ struct FakePdfReader;
 
 impl PdfReader for FakePdfReader {
     fn read(&self, path: &std::path::Path) -> Option<PdfText> {
+        use crate::{PdfLine, PdfPage};
+        // Full-width 10 pt body lines stacked 12 pt apart from `top`.
+        let lines = |texts: &[&str], top: f32| -> Vec<PdfLine> {
+            texts
+                .iter()
+                .enumerate()
+                .map(|(i, t)| PdfLine {
+                    text: t.to_string(),
+                    x: 72.0,
+                    y: top - 12.0 * i as f32,
+                    width: 468.0,
+                    height: 11.5,
+                    font_size: 10.0,
+                    bold: false,
+                })
+                .collect()
+        };
+        let page = |lines: Vec<PdfLine>| PdfPage {
+            width: 612.0,
+            height: 792.0,
+            lines,
+        };
         let bytes = std::fs::read(path).ok()?;
-        bytes.starts_with(b"%PDF-").then(|| PdfText {
-            title: Some("Microsoft Word - draft.docx".into()),
-            author: Some("Ada".into()),
-            pages: vec![
-                "Importance sampling draws more samples where the inte-\ngrand is large and so reduces the variance of Monte\nCarlo estimates without adding any bias at all.\nA Short Heading\nNext paragraph.".into(),
-                "第二页的内容比较长一些\n继续".into(),
-            ],
+        bytes.starts_with(b"%PDF-").then(|| {
+            let mut first = lines(
+                &[
+                    "Importance sampling draws more samples where the inte-",
+                    "grand is large and so reduces the variance of Monte",
+                    "Carlo estimates without adding any bias at all.",
+                ],
+                700.0,
+            );
+            first.push(PdfLine {
+                text: "A Short Heading".into(),
+                x: 72.0,
+                y: 660.0,
+                width: 90.0,
+                height: 16.0,
+                font_size: 14.0,
+                bold: true,
+            });
+            first.push(PdfLine {
+                text: "Next paragraph.".into(),
+                x: 72.0,
+                y: 640.0,
+                width: 80.0,
+                height: 11.5,
+                font_size: 10.0,
+                bold: false,
+            });
+            let second = lines(&["第二页的内容比较长一些", "继续"], 700.0);
+            PdfText {
+                title: Some("Microsoft Word - draft.docx".into()),
+                author: Some("Ada".into()),
+                pages: vec![page(first), page(second)],
+            }
         })
     }
 }
