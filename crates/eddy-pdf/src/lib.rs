@@ -4,7 +4,8 @@
 //! sit; `eddy_core` turns those into a reflowed document. Nothing here knows
 //! about columns, headers or which images are worth keeping.
 
-use std::collections::HashMap;
+use std::cell::OnceCell;
+use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::OnceLock;
@@ -35,29 +36,58 @@ impl PdfiumReader {
         let pdfium = pdfium()?;
         let document = pdfium.load_pdf_from_file(path, None).ok()?;
         let page = document.pages().get(i32::try_from(page).ok()?).ok()?;
-        let object = page.objects().get(index as usize).ok()?;
-        if let Some(form) = object.as_x_object_form_object() {
-            let lines = page_lines(&page);
-            let bounds = figure_bounds(form, &page, &lines)?;
-            return render_region(&page, bounds).map(|png| (png, "image/png"));
-        }
-        let image = object.as_image_object()?;
-        if is_upright(&page) {
-            let rasters = raster_rects(&page);
-            let group = tile_groups(&rasters)
-                .into_iter()
-                .find(|g| g.iter().any(|&i| rasters[i].0 == index));
-            if let Some(group) = group.filter(|g| g.len() > 1) {
-                let bounds = group.iter().map(|&i| rasters[i].1).reduce(Rect::union)?;
-                return render_region(&page, bounds).map(|png| (png, "image/png"));
+        let page = PageContext::new(page);
+        match locate(&document, &page, index)? {
+            Picture::Encoded(bytes, mime) => Some((bytes, mime)),
+            Picture::Region(bounds) => {
+                let scale = render_scale(bounds.width());
+                let bitmap = render_page(&page.page, scale)?;
+                crop_region(&page.page, &bitmap, scale, bounds).map(|png| (png, "image/png"))
             }
         }
-        if let Some(jpeg) = plain_jpeg(image) {
-            return Some((jpeg, "image/jpeg"));
+    }
+
+    /// Several images at once, `(page, index)` each, in request order. The
+    /// file is opened once, and the pictures on a page that are shown by
+    /// rendering its area share one rendering of the page per scale.
+    pub fn read_images(&self, path: &Path, requests: &[(u32, u32)]) -> Vec<Option<(Vec<u8>, &'static str)>> {
+        let mut out: Vec<Option<(Vec<u8>, &'static str)>> = vec![None; requests.len()];
+        let Some(pdfium) = pdfium() else { return out };
+        let Ok(document) = pdfium.load_pdf_from_file(path, None) else {
+            return out;
+        };
+        let mut by_page: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+        for (i, (page, _)) in requests.iter().enumerate() {
+            by_page.entry(*page).or_default().push(i);
         }
-        let bitmap = image.get_processed_bitmap(&document).ok()?;
-        let (width, height) = (bitmap.width(), bitmap.height());
-        encode_png(&bitmap, (0, 0, width, height)).map(|png| (png, "image/png"))
+        for (page_number, wanted) in by_page {
+            let Ok(page_number) = i32::try_from(page_number) else { continue };
+            let Ok(page) = document.pages().get(page_number) else { continue };
+            let page = PageContext::new(page);
+            // Regions grouped by rendering scale, in first-seen order.
+            let mut regions: Vec<(u32, Vec<(usize, Rect)>)> = Vec::new();
+            for i in wanted {
+                match locate(&document, &page, requests[i].1) {
+                    Some(Picture::Encoded(bytes, mime)) => out[i] = Some((bytes, mime)),
+                    Some(Picture::Region(bounds)) => {
+                        let key = render_scale(bounds.width()).to_bits();
+                        match regions.iter_mut().find(|(k, _)| *k == key) {
+                            Some((_, group)) => group.push((i, bounds)),
+                            None => regions.push((key, vec![(i, bounds)])),
+                        }
+                    }
+                    None => {}
+                }
+            }
+            for (key, group) in regions {
+                let scale = f32::from_bits(key);
+                let Some(bitmap) = render_page(&page.page, scale) else { continue };
+                for (i, bounds) in group {
+                    out[i] = crop_region(&page.page, &bitmap, scale, bounds).map(|png| (png, "image/png"));
+                }
+            }
+        }
+        out
     }
 }
 
@@ -69,6 +99,75 @@ impl PdfReader for PdfiumReader {
     fn image(&self, path: &Path, page: u32, index: u32) -> Option<(Vec<u8>, &'static str)> {
         self.read_image(path, page, index)
     }
+
+    fn images(&self, path: &Path, requests: &[(u32, u32)]) -> Vec<Option<(Vec<u8>, &'static str)>> {
+        self.read_images(path, requests)
+    }
+}
+
+/// Raster rectangles on a page and the groups of them that make one picture.
+struct Rasters {
+    rects: Vec<(u32, Rect)>,
+    groups: Vec<Vec<usize>>,
+}
+
+/// A page with what locating its pictures needs, computed once per page.
+struct PageContext<'a> {
+    page: PdfPage<'a>,
+    lines: OnceCell<Vec<PdfLine>>,
+    rasters: OnceCell<Rasters>,
+}
+
+impl<'a> PageContext<'a> {
+    fn new(page: PdfPage<'a>) -> Self {
+        Self {
+            page,
+            lines: OnceCell::new(),
+            rasters: OnceCell::new(),
+        }
+    }
+
+    fn lines(&self) -> &[PdfLine] {
+        self.lines.get_or_init(|| page_lines(&self.page))
+    }
+
+    fn rasters(&self) -> &Rasters {
+        self.rasters.get_or_init(|| {
+            let rects = raster_rects(&self.page);
+            let groups = tile_groups(&rects);
+            Rasters { rects, groups }
+        })
+    }
+}
+
+/// How an image address is shown: bytes as stored or encoded from the
+/// object's own pixels, or an area of the page to render.
+enum Picture {
+    Encoded(Vec<u8>, &'static str),
+    Region(Rect),
+}
+
+fn locate(document: &PdfDocument<'_>, page: &PageContext<'_>, index: u32) -> Option<Picture> {
+    let object = page.page.objects().get(index as usize).ok()?;
+    if let Some(form) = object.as_x_object_form_object() {
+        let bounds = figure_bounds(form, &page.page, page.lines())?;
+        return Some(Picture::Region(bounds));
+    }
+    let image = object.as_image_object()?;
+    if is_upright(&page.page) {
+        let Rasters { rects, groups } = page.rasters();
+        let group = groups.iter().find(|g| g.iter().any(|&i| rects[i].0 == index));
+        if let Some(group) = group.filter(|g| g.len() > 1) {
+            let bounds = group.iter().map(|&i| rects[i].1).reduce(Rect::union)?;
+            return Some(Picture::Region(bounds));
+        }
+    }
+    if let Some(jpeg) = plain_jpeg(image) {
+        return Some(Picture::Encoded(jpeg, "image/jpeg"));
+    }
+    let bitmap = image.get_processed_bitmap(document).ok()?;
+    let (width, height) = (bitmap.width(), bitmap.height());
+    encode_png(&bitmap, (0, 0, width, height)).map(|png| Picture::Encoded(png, "image/png"))
 }
 
 fn pdfium() -> Option<&'static Pdfium> {
@@ -522,22 +621,26 @@ fn render_scale(width: f32) -> f32 {
     (1600.0 / width.max(1.0)).clamp(2.0, 4.0)
 }
 
-/// The area `bounds` of an upright page, rendered and encoded as PNG.
-fn render_region(page: &PdfPage<'_>, bounds: Rect) -> Option<Vec<u8>> {
-    let scale = render_scale(bounds.width());
+/// The whole page at `scale` pixels per point.
+fn render_page<'a>(page: &'a PdfPage<'a>, scale: f32) -> Option<PdfBitmap<'a>> {
     // Pixels stay in pdfium's native BGRA, as image bitmaps come.
     let config = PdfRenderConfig::new()
         .scale_page_by_factor(scale)
         .render_form_data(false)
         .set_reverse_byte_order(false);
-    let bitmap = page.render_with_config(&config).ok()?;
+    page.render_with_config(&config).ok()
+}
+
+/// The area `bounds` of an upright page, cut from `bitmap` (the page
+/// rendered at `scale`) and encoded as PNG.
+fn crop_region(page: &PdfPage<'_>, bitmap: &PdfBitmap<'_>, scale: f32, bounds: Rect) -> Option<Vec<u8>> {
     let page_height = page.height().value;
     let px = |v: f32| (v * scale).round() as i32;
     let left = px(bounds.left).clamp(0, bitmap.width());
     let top = px(page_height - bounds.top).clamp(0, bitmap.height());
     let right = px(bounds.right).clamp(0, bitmap.width());
     let bottom = px(page_height - bounds.bottom).clamp(0, bitmap.height());
-    encode_png(&bitmap, (left, top, right - left, bottom - top))
+    encode_png(bitmap, (left, top, right - left, bottom - top))
 }
 
 /// The stored bytes when the image is a plain RGB or grayscale JPEG.
@@ -1016,6 +1119,35 @@ q 60 0 0 60 400 100 cm /Im1 Do Q";
         assert_eq!(px(400, 300), (0, 0, 255));
         let (other, _) = decode(picture.index + 1);
         assert_eq!((other.width, other.height), (800, 400), "any strip gives the whole");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_batch_gives_the_same_pictures_as_single_requests() {
+        // A figure rendered from the page, a plain raster, and two strips.
+        let content = "\
+BT /F1 10 Tf 72 700 Td (Body text) Tj ET
+q 100 0 0 80 300 500 cm /Fm1 Do Q
+q 60 0 0 60 400 100 cm /Im1 Do Q
+q 200 0 0 50 72 300 cm /Im1 Do Q
+q 200 0 0 50 72 250 cm /Im1 Do Q";
+        let dir = tempdir();
+        let path = dir.join("batch.pdf");
+        std::fs::write(&path, pdf(content)).unwrap();
+
+        let reader = PdfiumReader::new();
+        let images = reader.read(&path).unwrap().pages.remove(0).images;
+        assert_eq!(images.len(), 3, "{images:?}");
+        let mut requests: Vec<(u32, u32)> = images.iter().map(|i| (0, i.index)).collect();
+        requests.push((0, 99));
+        requests.push((7, 0));
+        let batch = reader.read_images(&path, &requests);
+        assert_eq!(batch.len(), requests.len());
+        for (request, picture) in requests.iter().zip(&batch) {
+            assert_eq!(*picture, reader.read_image(&path, request.0, request.1), "{request:?}");
+        }
+        assert!(batch[..3].iter().all(Option::is_some));
+        assert!(batch[3..].iter().all(Option::is_none), "unknown objects and pages give nothing");
         let _ = std::fs::remove_dir_all(dir);
     }
 

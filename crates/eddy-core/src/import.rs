@@ -86,6 +86,15 @@ pub trait PdfReader: Send + Sync {
     fn image(&self, _path: &Path, _page: u32, _index: u32) -> Option<(Vec<u8>, &'static str)> {
         None
     }
+
+    /// Several images, `(page, index)` each, in request order. Readers
+    /// that can share work between images on a page override this.
+    fn images(&self, path: &Path, requests: &[(u32, u32)]) -> Vec<Option<(Vec<u8>, &'static str)>> {
+        requests
+            .iter()
+            .map(|&(page, index)| self.image(path, page, index))
+            .collect()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -155,7 +164,7 @@ impl Engine {
 }
 
 impl Inner {
-    fn import_file(&self, path: &Path) -> Result<Imported> {
+    fn import_file(self: &Arc<Self>, path: &Path) -> Result<Imported> {
         let size = std::fs::metadata(path).map_err(read_error)?.len();
         if size > MAX_IMPORT_BYTES {
             return Err(EngineError::Invalid(format!(
@@ -264,7 +273,7 @@ impl Inner {
         })
     }
 
-    fn import_pdf(&self, bytes: &[u8], key: &str, file_name: &str) -> Result<Imported> {
+    fn import_pdf(self: &Arc<Self>, bytes: &[u8], key: &str, file_name: &str) -> Result<Imported> {
         self.store.put_blob_keyed(key, bytes, PDF_MIME, true)?;
         let text = self.read_pdf(key)?.unwrap_or_default();
         let title = pdf_title(text.title.as_deref(), file_name);
@@ -273,6 +282,7 @@ impl Inner {
         let ingested = self.ingest_document(&item_id, document, key, PDF_MIME, None)?;
         self.switch_version(&item_id, &ingested)?;
         self.after_ingest(&item_id, &ingested);
+        self.warm_pdf_images(&ingested.document);
         Ok(Imported {
             item_id,
             series_id: None,

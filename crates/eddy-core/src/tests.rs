@@ -2158,6 +2158,15 @@ async fn pdf_import_reads_text_through_the_platform_and_tracks_pages() {
         })
         .expect("the figure on page 2");
     assert!(figure.starts_with("pdf://") && figure.ends_with("/1/4"), "{figure}");
+    // Importing started rendering the figure into the image cache.
+    let cached = crate::images::image_blob_key(&figure);
+    for _ in 0..200 {
+        if engine.inner.store.has_blob(&cached).unwrap() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(engine.inner.store.has_blob(&cached).unwrap(), "figure warmed on import");
     let (bytes, mime) = engine.image(&figure).await.unwrap();
     assert_eq!((bytes.as_slice(), mime.as_str()), (&b"\x89PNG figure"[..], "image/png"));
     assert!(engine.image(&figure.replace("/1/4", "/1/5")).await.is_err());

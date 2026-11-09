@@ -104,6 +104,8 @@ pub(crate) struct Inner {
     /// Caps concurrent media lookups across the grid and prefetching.
     pub media_gate: tokio::sync::Semaphore,
     pub media_pending: parking_lot::Mutex<std::collections::HashSet<String>>,
+    /// PDFs whose figures are being rendered into the image cache.
+    pub pdf_warming: parking_lot::Mutex<std::collections::HashSet<String>>,
 }
 
 /// Cheap to clone; all clones share one engine.
@@ -156,6 +158,7 @@ impl Engine {
             media: eddy_media::Resolver::new(),
             media_gate: tokio::sync::Semaphore::new(4),
             media_pending: parking_lot::Mutex::new(Default::default()),
+            pdf_warming: parking_lot::Mutex::new(Default::default()),
         });
         inner.rebuild_fetcher()?;
         inner.store.upsert_source(&Source {
@@ -362,6 +365,9 @@ impl Engine {
     /// The current document of an item, re-downloading evicted feed content.
     pub async fn document(&self, item_id: &str) -> Result<Option<LoadedDocument>> {
         if let Some(doc) = self.inner.current_document(item_id)? {
+            // Opening a PDF (first time, or after its document was rebuilt)
+            // starts its figures rendering, so they come up as it is read.
+            self.inner.warm_pdf_images(&doc.document);
             return Ok(Some(doc));
         }
         if self.fetch_missing_blobs(item_id).await?
