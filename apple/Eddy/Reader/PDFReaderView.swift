@@ -5,6 +5,8 @@ import SwiftUI
 struct PageTarget: Equatable {
     var page: Int
     var token = UUID()
+    /// Where the reflowed text shows the same place; nil: the page's start.
+    var block: String? = nil
 }
 
 /// An imported PDF in PDFKit's view, laid out as the file is. Reports the

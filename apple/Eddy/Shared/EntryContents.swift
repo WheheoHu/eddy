@@ -6,7 +6,9 @@ import SwiftUI
 struct OutlineEntry: Identifiable, Sendable {
     enum Target: Hashable, Sendable {
         case block(String)
-        case page(Int)
+        /// A PDF page, and the block where the reflowed text reaches the
+        /// same place (nil: where the page starts).
+        case page(Int, block: String?)
     }
 
     let id: Int
@@ -37,13 +39,88 @@ struct OutlineEntry: Identifiable, Sendable {
                 guard let child = node.child(at: i) else { continue }
                 if let title = child.label?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty,
                    let page = child.destination?.page {
-                    entries.append(OutlineEntry(id: entries.count, title: title, level: level, target: .page(document.index(for: page))))
+                    entries.append(OutlineEntry(id: entries.count, title: title, level: level, target: .page(document.index(for: page), block: nil)))
                 }
                 if level < 3 { walk(child, level: level + 1) }
             }
         }
         walk(root, level: 1)
         return entries
+    }
+
+    /// A PDF's contents for both views: its bookmarks, each placed in the
+    /// reflowed text at its own heading rather than where its page starts;
+    /// without bookmarks, the reflowed text's headings with their pages.
+    static func pdf(bookmarks: [OutlineEntry], text doc: DocumentView?) -> [OutlineEntry] {
+        guard let doc, !doc.blocks.isEmpty else { return bookmarks }
+        var index: [String: Int] = [:]
+        for (i, block) in doc.blocks.enumerated() where index[block.id] == nil { index[block.id] = i }
+        let pageStart = { (page: Int) -> Int? in doc.pages.indices.contains(page) ? index[doc.pages[page]] : nil }
+        if bookmarks.isEmpty { return pageHeadings(of: doc, index: index) }
+
+        var used = Set<Int>()
+        return bookmarks.map { mark in
+            guard case let .page(page, _) = mark.target, let from = pageStart(page) else { return mark }
+            let title = squashed(mark.title)
+            guard !title.isEmpty else { return mark }
+            // The page and the next: a heading set at the foot of a page
+            // can start the next one once reflowed.
+            let to = max(pageStart(page + 2) ?? doc.blocks.count, from + 1)
+            let window = (from..<min(to, doc.blocks.count)).filter { !used.contains($0) }
+            let heading = window.first { i in
+                guard case .heading = doc.blocks[i].kind else { return false }
+                let text = squashed(text(of: doc.blocks[i]))
+                return text.hasPrefix(title) || (text.count >= 6 && title.hasPrefix(text))
+            }
+            // A run-in heading starts its paragraph; a label in the margin
+            // can come apart over a few short blocks.
+            let starts = { (i: Int) -> Bool in
+                let first = squashed(text(of: doc.blocks[i]))
+                if first.hasPrefix(title) { return true }
+                guard first.count >= 3, title.hasPrefix(first) else { return false }
+                let joined = doc.blocks[i..<min(i + 3, doc.blocks.count)].map { squashed(text(of: $0)) }.joined()
+                return joined.hasPrefix(title)
+            }
+            let hit = heading ?? window.first(where: starts)
+            guard let hit else { return mark }
+            used.insert(hit)
+            return OutlineEntry(id: mark.id, title: mark.title, level: mark.level, target: .page(page, block: doc.blocks[hit].id))
+        }
+    }
+
+    /// Headings of a reflowed PDF, each with the page it is on; levels
+    /// count from the topmost one used.
+    private static func pageHeadings(of doc: DocumentView, index: [String: Int]) -> [OutlineEntry] {
+        let starts = doc.pages.enumerated().compactMap { page, id in index[id].map { (block: $0, page: page) } }
+        var found: [(title: String, level: Int, page: Int, block: String)] = []
+        var page = 0
+        var next = 0
+        for (i, block) in doc.blocks.enumerated() {
+            while next < starts.count, starts[next].block <= i {
+                page = starts[next].page
+                next += 1
+            }
+            guard case let .heading(level, _) = block.kind, level <= 4 else { continue }
+            let title = text(of: block).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !title.isEmpty { found.append((title, Int(level), page, block.id)) }
+        }
+        let top = found.map(\.level).min() ?? 1
+        return found.enumerated().map { n, h in
+            OutlineEntry(id: n, title: h.title, level: h.level - top + 1, target: .page(h.page, block: h.block))
+        }
+    }
+
+    private static func text(of block: BlockView) -> String {
+        switch block.kind {
+        case let .heading(_, runs), let .paragraph(runs), let .listItem(_, _, _, _, runs): runs.map(\.text).joined()
+        default: ""
+        }
+    }
+
+    /// Letters and digits only, lowercased: "3.1 Decoupled  Rendering" and
+    /// "3.1. Decoupled Rendering" are the same title.
+    private static func squashed(_ s: String) -> String {
+        String(s.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }.map(Character.init))
     }
 }
 
@@ -146,7 +223,7 @@ struct EntryContents: View {
                     HStack {
                         Text(line.title).lineLimit(2)
                         Spacer()
-                        if case let .page(page) = line.target {
+                        if case let .page(page, _) = line.target {
                             Text("\(page + 1)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                         }
                     }
@@ -165,11 +242,11 @@ struct EntryContents: View {
             return
         }
         if entry.kind == .pdf {
-            guard let url = await model.contentFile(itemID) else {
-                outline = []
-                return
+            var bookmarks: [OutlineEntry] = []
+            if let url = await model.contentFile(itemID) {
+                bookmarks = await Task.detached { OutlineEntry.bookmarks(of: PDFDocument(url: url)) }.value
             }
-            outline = await Task.detached { OutlineEntry.bookmarks(of: PDFDocument(url: url)) }.value
+            outline = OutlineEntry.pdf(bookmarks: bookmarks, text: await model.document(itemID))
         } else {
             outline = OutlineEntry.headings(of: await model.document(itemID))
         }
