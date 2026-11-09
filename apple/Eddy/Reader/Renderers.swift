@@ -57,6 +57,13 @@ struct WebPageView: NSViewRepresentable {
     var appearance: NSAppearance?
     /// Translates the page in place when a translation is asked for.
     var translator: WebTranslator?
+    /// Takes the links the user clicks to other pages; nil follows them in
+    /// this view.
+    var onLink: ((URL) -> Void)?
+    /// The address the page is at and its title, as they change.
+    var onPage: ((URL?, String?) -> Void)?
+    /// A page finished loading, the first or one it moved on to.
+    var onLoad: (() -> Void)?
 
     func makeNSView(context: Context) -> GestureContainer {
         let config = WKWebViewConfiguration()
@@ -65,6 +72,8 @@ struct WebPageView: NSViewRepresentable {
         let view = ReaderWebView(frame: .zero, configuration: config)
         view.allowsBackForwardNavigationGestures = false
         view.navigationDelegate = view
+        view.uiDelegate = view
+        view.observePage()
         let container = GestureContainer(content: view)
         view.tracker = container.tracker
         view.show(url)
@@ -76,9 +85,12 @@ struct WebPageView: NSViewRepresentable {
         guard let view = container.content as? ReaderWebView else { return }
         view.onEscape = onEscape
         view.onFocus = onFocus
-        if let translator {
-            translator.webView = view
-            view.onLoad = { [weak translator] in translator?.pageLoaded() }
+        view.onLink = onLink
+        view.onPage = onPage
+        translator?.webView = view
+        view.onLoad = { [weak translator, onLoad] in
+            translator?.pageLoaded()
+            onLoad?()
         }
         view.wantsFocus = focused
         if view.appearance?.name != appearance?.name { view.appearance = appearance }
@@ -92,14 +104,17 @@ struct WebPageView: NSViewRepresentable {
     }
 }
 
-final class ReaderWebView: WKWebView, WKNavigationDelegate {
+final class ReaderWebView: WKWebView, WKNavigationDelegate, WKUIDelegate {
     weak var tracker: EdgeGestureTracker?
     var onEscape: (() -> Void)?
     var onFocus: (() -> Void)?
     /// A page finished loading.
     var onLoad: (() -> Void)?
+    var onLink: ((URL) -> Void)?
+    var onPage: ((URL?, String?) -> Void)?
     /// The address asked for, which the page may have moved on from.
     private(set) var shown: URL?
+    private var observations: [NSKeyValueObservation] = []
 
     func show(_ url: URL) {
         shown = url
@@ -110,8 +125,52 @@ final class ReaderWebView: WKWebView, WKNavigationDelegate {
         didSet { if wantsFocus, !oldValue { claimFocus(self) } }
     }
 
+    func observePage() {
+        observations = [
+            observe(\.url) { view, _ in MainActor.assumeIsolated { view.onPage?(view.url, view.title) } },
+            observe(\.title) { view, _ in MainActor.assumeIsolated { view.onPage?(view.url, view.title) } },
+        ]
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         onLoad?()
+    }
+
+    /// Links in frames, jumps within the page and links that open a new
+    /// window (handled below) are followed as WebKit does.
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
+        guard navigationAction.navigationType == .linkActivated,
+              navigationAction.targetFrame?.isMainFrame == true,
+              let url = navigationAction.request.url,
+              !isSamePage(url)
+        else { return decisionHandler(.allow) }
+        guard onLink != nil || !url.isWebLink || navigationAction.modifierFlags.contains(.command) else {
+            return decisionHandler(.allow)
+        }
+        decisionHandler(.cancel)
+        open(url, navigationAction.modifierFlags)
+    }
+
+    /// `target="_blank"` links: no second window, the link opens as any
+    /// other does.
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        if navigationAction.navigationType == .linkActivated, let url = navigationAction.request.url {
+            open(url, navigationAction.modifierFlags)
+        }
+        return nil
+    }
+
+    private func open(_ url: URL, _ modifiers: NSEvent.ModifierFlags) {
+        if let onLink, url.isWebLink, !modifiers.contains(.command) {
+            onLink(url)
+        } else {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    private func isSamePage(_ target: URL) -> Bool {
+        guard target.fragment != nil, let current = url else { return false }
+        return target.withoutFragment == current.withoutFragment
     }
 
     override func viewDidMoveToWindow() {
@@ -139,5 +198,16 @@ final class ReaderWebView: WKWebView, WKNavigationDelegate {
         } else {
             super.keyDown(with: event)
         }
+    }
+}
+
+extension URL {
+    /// A page a web view can show.
+    var isWebLink: Bool { scheme == "http" || scheme == "https" }
+
+    var withoutFragment: URL {
+        guard var components = URLComponents(url: self, resolvingAgainstBaseURL: false) else { return self }
+        components.fragment = nil
+        return components.url ?? self
     }
 }

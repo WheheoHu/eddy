@@ -319,6 +319,16 @@ impl EddyEngine {
         })
     }
 
+    /// A page a link opened, summarized from its HTML; nothing is stored.
+    pub async fn summarize_page(&self, url: String, html: String) -> R<SummaryView> {
+        let s = self.engine.summarize_page(&url, &html).await?;
+        Ok(SummaryView {
+            tldr: s.tldr,
+            points: s.points,
+            cached: false,
+        })
+    }
+
     pub fn cached_summary(&self, item_id: String) -> R<Option<SummaryView>> {
         Ok(self.engine.cached_summary(&item_id)?.map(|s| SummaryView {
             tldr: s.tldr,

@@ -144,26 +144,54 @@ struct EngineImage: View {
     }
 }
 
+/// The notice along the bottom of the window. A saved page offers to show
+/// itself; an error copies when clicked, and stays a little longer.
 struct MessageBanner: View {
     @Environment(AppModel.self) private var model
+    @State private var copied = false
 
     var body: some View {
-        if let message = model.message {
+        if let notice = model.notice {
             HStack(spacing: 10) {
-                Image(systemName: "info.circle")
-                Text(message).lineLimit(2)
-                Button("OK") { model.message = nil }.buttonStyle(.borderless)
+                Image(systemName: notice.kind == .error ? "exclamationmark.triangle" : "info.circle")
+                    .foregroundStyle(notice.kind == .error ? AnyShapeStyle(.orange) : AnyShapeStyle(.primary))
+                Text(notice.text).lineLimit(2)
+                switch notice.kind {
+                case .info:
+                    Button("OK") { model.notice = nil }
+                case .error:
+                    Button(copied ? "Copied" : "Copy") { copy(notice) }
+                        .help("Copy the error")
+                    Button { model.notice = nil } label: { Image(systemName: "xmark") }
+                        .help("Dismiss")
+                case let .saved(itemID):
+                    Button("Show") {
+                        model.notice = nil
+                        model.reveal(itemID: itemID)
+                    }
+                    .help("Show it in Saved")
+                }
             }
+            .buttonStyle(.borderless)
             .font(.callout)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .background(.regularMaterial, in: Capsule())
+            .contentShape(Capsule())
+            .onTapGesture { if notice.kind == .error { copy(notice) } }
             .shadow(color: .black.opacity(0.1), radius: 8, y: 2)
             .padding(20)
-            .task(id: message) {
-                try? await Task.sleep(for: .seconds(6))
-                if model.message == message { model.message = nil }
+            .task(id: notice.token) {
+                copied = false
+                try? await Task.sleep(for: .seconds(notice.kind == .error ? 12 : 6))
+                if model.notice?.token == notice.token { model.notice = nil }
             }
         }
+    }
+
+    private func copy(_ notice: Notice) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(notice.text, forType: .string)
+        copied = true
     }
 }

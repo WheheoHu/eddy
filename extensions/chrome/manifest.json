@@ -8,13 +8,15 @@
     "activeTab",
     "scripting",
     "nativeMessaging",
-    "contextMenus"
+    "contextMenus",
+    "clipboardWrite"
   ],
   "background": {
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "保存到 Eddy"
+    "default_title": "保存到 Eddy",
+    "default_popup": "popup.html"
   },
   "commands": {
     "_execute_action": {

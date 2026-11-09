@@ -6,7 +6,8 @@ use eddy_ai::{
     AiError, AiSettings, AutoAction, ChatMessage, OpenAiCompatible, PROMPT_VERSION, Provider,
     ProviderSettings, RuleScope, Summary, batches, lang_code_for, normalize_base,
 };
-use eddy_doc::{Segment, translation_segments};
+use eddy_doc::{ConvertOptions, Segment, html_to_document, translation_segments};
+use eddy_extract::extract;
 use eddy_model::{Document, Entity, fields, ids};
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
@@ -489,6 +490,32 @@ impl Inner {
         })
     }
 
+    /// Summarizes a page that isn't stored (one a link opened) from its
+    /// HTML, the article extracted as saving would. Nothing is kept.
+    pub(crate) async fn summarize_page(&self, url: &str, html: &str) -> Result<Summary> {
+        let settings = self.ai_settings()?;
+        let provider = self.provider(&settings)?;
+        let rule = self.fetcher.read().rule_for(url).cloned();
+        let extracted =
+            extract(html, url, rule.as_ref()).map_err(|e| EngineError::Invalid(e.to_string()))?;
+        let document = html_to_document(
+            &extracted.content_html,
+            &ConvertOptions {
+                base_url: Some(url),
+                title: extracted.title.as_deref(),
+            },
+        );
+        self.store.add_ai_usage(&today(), 1)?;
+        eddy_ai::summarize(
+            provider.as_ref(),
+            extracted.title.as_deref().unwrap_or_default(),
+            &document.plain_text(),
+            &settings.target_language,
+        )
+        .await
+        .map_err(|e| EngineError::Invalid(e.to_string()))
+    }
+
     /// Tags the item from the user's vocabulary. Tags the user rejected for
     /// this item are never re-applied; new names become suggestions.
     pub(crate) async fn suggest_tags(&self, item_id: &str) -> Result<ItemTagsResult> {
@@ -697,6 +724,10 @@ impl Engine {
 
     pub async fn summarize(&self, item_id: &str, force: bool) -> Result<SummaryResult> {
         self.inner.summarize(item_id, force).await
+    }
+
+    pub async fn summarize_page(&self, url: &str, html: &str) -> Result<Summary> {
+        self.inner.summarize_page(url, html).await
     }
 
     pub async fn suggest_tags(&self, item_id: &str) -> Result<ItemTagsResult> {

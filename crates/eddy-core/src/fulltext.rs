@@ -684,6 +684,18 @@ impl Engine {
         Ok(row)
     }
 
+    /// The saved page at `url`, as captured or as saving would write the
+    /// address.
+    pub fn saved_item_for_url(&self, url: &str) -> Result<Option<String>> {
+        let normalized = url::Url::parse(url.trim()).map(|u| u.to_string()).ok();
+        for candidate in std::iter::once(url).chain(normalized.as_deref()) {
+            if let Some(row) = self.inner.saved_by_url(candidate)? {
+                return Ok(Some(row.item.id));
+            }
+        }
+        Ok(None)
+    }
+
     /// Directory where the browser capture host drops pages.
     pub fn spool_dir(&self) -> std::path::PathBuf {
         self.inner.data_dir.join("spool")

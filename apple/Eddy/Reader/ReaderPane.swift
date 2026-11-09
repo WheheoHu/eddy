@@ -58,8 +58,12 @@ struct ReaderPane: View {
     @State private var lastPosition: (block: String, offset: Int, atEnd: Bool)?
     @State private var cache = ArticleCache()
     @State private var paneHeight: CGFloat = 600
+    @State private var paneWidth: CGFloat = 800
     /// Where the next renderer slides in from.
     @State private var rendererArrival: Edge = .trailing
+    /// Pages links led to, over the item; the last is on screen.
+    @State private var links: [LinkedPage] = []
+    @AppStorage("reader.openLinksInApp") private var openLinksInApp = true
 
     @AppStorage("reader.fontSize") private var fontSize = 17.0
     @AppStorage("reader.serif") private var serif = false
@@ -88,16 +92,33 @@ struct ReaderPane: View {
     var body: some View {
         VStack(spacing: 0) {
             if showSummary {
-                SummaryPanel(itemID: itemID, maxHeight: paneHeight * 0.4) { toggleSummary(false) }
+                SummaryPanel(
+                    id: itemID,
+                    maxHeight: paneHeight * 0.4,
+                    cached: { (try? model.engine?.cachedSummary(itemId: itemID)) ?? nil },
+                    summarize: { try await model.engine?.summarize(itemId: itemID, force: false) },
+                    close: { toggleSummary(false) }
+                )
                     .transition(.move(edge: .top).combined(with: .opacity))
                 Divider()
             }
-            content
-                .overlay(alignment: .top) { banners }
+            ZStack {
+                content
+                    .overlay(alignment: .top) { banners }
+                    .offset(x: covered ? -paneWidth : 0)
+                    .allowsHitTesting(!covered)
+                    .accessibilityHidden(covered)
+                ForEach(Array(links.enumerated()), id: \.element.id) { index, page in
+                    linkedPage(page, onTop: index == links.count - 1)
+                }
+            }
         }
         .clipped()
         .environment(\.colorScheme, scheme)
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { paneHeight = $0 }
+        .onGeometryChange(for: CGSize.self) { $0.size } action: {
+            paneHeight = $0.height
+            paneWidth = $0.width
+        }
         .toolbar { toolbar }
         .task(id: itemID) { await load() }
         .onDisappear(perform: flush)
@@ -170,7 +191,7 @@ struct ReaderPane: View {
                     ContentUnavailableView("PDF Unavailable", systemImage: "doc.richtext", description: Text("The file isn’t on this Mac and couldn’t be downloaded."))
                 }
             } else if rendererID == RendererRegistry.web.id || (document == nil && !loading), let url = item.url.flatMap(URL.init(string:)) {
-                WebPageView(url: url, gestures: gestures, onEscape: escape, focused: focused, onFocus: onFocus, appearance: appearance.nsAppearance, translator: webTranslator)
+                WebPageView(url: url, gestures: covered ? EdgeGestures() : gestures, onEscape: escape, focused: focused && !covered, onFocus: onFocus, appearance: appearance.nsAppearance, translator: webTranslator, onLink: openLinksInApp ? openLink : nil)
                     .transition(.push(from: rendererArrival))
             } else if let document {
                 let version = "\(document.contentHash)|\(mode.rawValue)|\(translations.count)|\(fontSize)|\(serif)|\(lineHeight)|\(scheme)"
@@ -198,10 +219,11 @@ struct ReaderPane: View {
                         if let openItem { openItem(target) } else { model.currentItemID = target }
                     },
                     onMediaLink: { url in model.play(link: url, in: item) },
-                    gestures: gestures,
+                    onWebLink: openLinksInApp ? openLink : nil,
+                    gestures: covered ? EdgeGestures() : gestures,
                     onStep: neighbors.map { neighbors in { neighbors.go($0, .vertical) } },
                     onEscape: escape,
-                    focused: focused,
+                    focused: focused && !covered,
                     onFocus: onFocus,
                     appearance: appearance.nsAppearance
                 )
@@ -215,6 +237,125 @@ struct ReaderPane: View {
         } else {
             ContentUnavailableView("Not Found", systemImage: "doc")
         }
+    }
+
+    /// A link's page, slid in from the right over the item; the ones under
+    /// the top wait off to the left, still loaded.
+    private func linkedPage(_ page: LinkedPage, onTop: Bool) -> some View {
+        VStack(spacing: 0) {
+            if page.showSummary {
+                SummaryPanel(
+                    id: "\(page.id.uuidString)#\(page.loads)",
+                    maxHeight: paneHeight * 0.4,
+                    waiting: page.loads == 0,
+                    cached: { links.first { $0.id == page.id }?.summary },
+                    summarize: { try await summarizeLink(page.id) },
+                    close: { toggleLinkSummary(false) }
+                )
+                .transition(.move(edge: .top).combined(with: .opacity))
+                Divider()
+            }
+            WebPageView(
+                url: page.url,
+                gestures: onTop ? linkGestures : EdgeGestures(),
+                onEscape: {
+                    if page.translator.translating { page.translator.cancel() } else { closeLink() }
+                },
+                focused: focused && onTop,
+                onFocus: onFocus,
+                appearance: appearance.nsAppearance,
+                translator: page.translator,
+                onLink: openLinksInApp ? openLink : nil,
+                onPage: { url, title in
+                    guard let index = links.firstIndex(where: { $0.id == page.id }) else { return }
+                    if let url { links[index].current = url }
+                    links[index].title = title.flatMap { $0.isEmpty ? nil : $0 }
+                },
+                // A new page: an open summary summarizes it afresh.
+                onLoad: {
+                    guard let index = links.firstIndex(where: { $0.id == page.id }) else { return }
+                    links[index].summary = nil
+                    links[index].loads += 1
+                }
+            )
+            .overlay(alignment: .top) { linkBanners(page) }
+        }
+        .clipped()
+        .offset(x: onTop ? 0 : -paneWidth)
+        .allowsHitTesting(onTop)
+        .accessibilityHidden(!onTop)
+        .transition(.move(edge: .trailing))
+    }
+
+    private var covered: Bool { !links.isEmpty }
+
+    @ViewBuilder
+    private func linkBanners(_ page: LinkedPage) -> some View {
+        let translator = page.translator
+        VStack {
+            if translator.translating {
+                Banner(icon: "character.bubble", text: "Translating the page…") {
+                    ProgressView().controlSize(.small)
+                    Button("Cancel") { translator.cancel() }.help("Stop translating (Esc); what is translated stays")
+                }
+            } else if translator.stopped, page.mode != .original {
+                Banner(icon: "pause.circle", text: "Translation stopped") {
+                    Button("Continue") { translator.show(page.mode) }
+                    Button { setLinkMode(.original) } label: { Image(systemName: "xmark") }
+                }
+            }
+        }
+        .padding(.top, 10)
+    }
+
+    private func openLink(_ url: URL) {
+        // A summary on screen stays on for the page the link opens.
+        let summarizing = links.last?.showSummary ?? showSummary
+        withAnimation(.easeInOut(duration: 0.25)) { links.append(LinkedPage(url: url, model: model, showSummary: summarizing)) }
+    }
+
+    private func closeLink() {
+        guard let page = links.last else { return }
+        page.translator.cancel()
+        withAnimation(.easeInOut(duration: 0.25)) { _ = links.removeLast() }
+    }
+
+    /// Translates the page on top as `mode` asks, once AI is set up.
+    private func setLinkMode(_ mode: ReadingMode) {
+        guard let top = links.indices.last else { return }
+        if mode != .original, !model.aiConfigured {
+            model.message = "Add an AI provider in Settings to translate."
+            return
+        }
+        if mode != .original { lastTranslationMode = mode }
+        links[top].mode = mode
+        links[top].translator.show(mode)
+    }
+
+    private func toggleLinkSummary(_ show: Bool) {
+        guard let top = links.indices.last else { return }
+        withAnimation(.easeInOut(duration: 0.2)) { links[top].showSummary = show }
+    }
+
+    /// Summarizes the page as it is now, without the translations written
+    /// into it; the summary stays with the page.
+    private func summarizeLink(_ id: UUID) async throws -> SummaryView? {
+        guard let page = links.first(where: { $0.id == id }), let view = page.translator.webView else { return nil }
+        let script = "(() => { const d = document.documentElement.cloneNode(true); d.querySelectorAll('.eddy-tr').forEach(e => e.remove()); return '<!doctype html>\\n' + d.outerHTML })()"
+        guard let html = try await view.evaluateJavaScript(script) as? String else { return nil }
+        let summary = try await model.engine?.summarizePage(url: page.address.absoluteString, html: html)
+        if let index = links.firstIndex(where: { $0.id == id }) { links[index].summary = summary }
+        return summary
+    }
+
+    /// Fingers moving right go back a page.
+    private var linkGestures: EdgeGestures {
+        EdgeGestures(
+            swipeTarget: { fingers in
+                fingers == .right ? .item(String(localized: "Back"), release: String(localized: "Release to go back")) : .none
+            },
+            commit: { _ in closeLink() }
+        )
     }
 
     @ViewBuilder
@@ -272,7 +413,30 @@ struct ReaderPane: View {
                 }
                 .help(showContents.wrappedValue ? "Hide contents" : "Show contents")
             }
-            if let item {
+            if let page = links.last {
+                Button(action: closeLink) { Label("Back", systemImage: "chevron.left") }
+                    .help("Back (Esc)")
+                Text(page.title ?? page.address.host() ?? page.address.absoluteString)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: 260)
+                    .foregroundStyle(.secondary)
+                Picker("Language", selection: Binding(get: { page.mode }, set: setLinkMode)) {
+                    ForEach(ReadingMode.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.menu)
+                .frame(width: 120)
+                .help("Show a translation alongside or instead of the original")
+                Button { toggleLinkSummary(!page.showSummary) } label: { Label("Summary", systemImage: "sparkles") }
+                    .help(page.showSummary ? "Hide the AI summary" : "AI summary")
+                Button { Task { await model.save(url: page.address.absoluteString) } } label: {
+                    Label("Save Page", systemImage: "square.and.arrow.down")
+                }
+                .disabled(model.busy)
+                .help("Save this page to read later")
+                ShareLink(item: page.address)
+                Link(destination: page.address) { Label("Open in Browser", systemImage: "arrow.up.forward.square") }
+            } else if let item {
                 let context = RenderContext(item: item, document: document, inGallery: inGallery)
                 let renderers = RendererRegistry.available(for: context)
                 if renderers.count > 1 {
@@ -337,6 +501,8 @@ struct ReaderPane: View {
 
     private func load() async {
         loading = true
+        links.forEach { $0.translator.cancel() }
+        links = []
         document = nil
         pdfURL = nil
         resumePage = nil
@@ -374,6 +540,7 @@ struct ReaderPane: View {
 
     private func flush() {
         webTranslator?.cancel()
+        links.forEach { $0.translator.cancel() }
         // Marked unread while open: leaving doesn't put the position back.
         guard model.item(itemID)?.read != false else { return }
         if let lastPosition { model.flushProgress(itemID, blockID: lastPosition.block, offset: lastPosition.offset, atEnd: lastPosition.atEnd) }
@@ -385,6 +552,15 @@ struct ReaderPane: View {
     }
 
     private func perform(_ action: ReaderCommand.Action) {
+        if let page = links.last {
+            switch action {
+            case .summary: toggleLinkSummary(true)
+            case let .readingMode(new): setLinkMode(new)
+            case .toggleTranslation: setLinkMode(page.mode == .original ? lastTranslationMode : .original)
+            case .toggleWeb, .toggleFullText, .step: break
+            }
+            return
+        }
         switch action {
         case .summary:
             toggleSummary(true)
@@ -503,7 +679,7 @@ struct ReaderPane: View {
             } catch {
                 flushTranslations()
                 guard generation == translationGeneration else { return }
-                model.message = error.localizedDescription
+                model.report(error)
                 translationStopped = true
             }
             translating = false
@@ -566,6 +742,32 @@ struct ReaderPane: View {
     }
 }
 
+/// A page a link led to, shown over the item. Its translation and summary
+/// are its own, and go with it.
+struct LinkedPage: Identifiable {
+    let id = UUID()
+    /// The link's address; the view loads it once.
+    let url: URL
+    /// Where the page is now, after redirects.
+    var current: URL?
+    var title: String?
+    let translator: WebTranslator
+    var mode: ReadingMode = .original
+    var showSummary: Bool
+    /// Pages finished loading here; the summary is of the latest.
+    var loads = 0
+    var summary: SummaryView?
+
+    @MainActor
+    init(url: URL, model: AppModel, showSummary: Bool) {
+        self.url = url
+        self.showSummary = showSummary
+        translator = WebTranslator(model: model, key: "link:\(id.uuidString)")
+    }
+
+    var address: URL { current ?? url }
+}
+
 /// Keeps the last built article so redraws don't rebuild it.
 final class ArticleCache {
     private var version: String?
@@ -584,9 +786,14 @@ final class ArticleCache {
 /// down. Summarizes as soon as it opens when nothing is cached.
 struct SummaryPanel: View {
     @Environment(AppModel.self) private var model
-    let itemID: String
+    /// What is summarized; another one starts over.
+    let id: String
     /// Longer summaries scroll within this height.
     let maxHeight: CGFloat
+    /// What is to be summarized isn't there yet (a page still loading).
+    var waiting = false
+    let cached: () -> SummaryView?
+    let summarize: () async throws -> SummaryView?
     let close: () -> Void
     @State private var summary: SummaryView?
     @State private var loading = false
@@ -613,9 +820,10 @@ struct SummaryPanel: View {
         .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.background.secondary)
-        .task(id: itemID) {
-            summary = (try? model.engine?.cachedSummary(itemId: itemID)) ?? nil
-            if summary == nil, model.aiConfigured { await load() }
+        .task(id: id) {
+            summary = cached()
+            errorText = nil
+            if summary == nil, !waiting, model.aiConfigured { await load() }
         }
     }
 
@@ -630,10 +838,10 @@ struct SummaryPanel: View {
                         Text(point)
                     }
                 }
-            } else if loading {
+            } else if loading || (waiting && model.aiConfigured) {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                    Text("Summarizing…").foregroundStyle(.secondary)
+                    Text(loading ? "Summarizing…" : "Waiting for the page to load…").foregroundStyle(.secondary)
                 }
             } else if let errorText {
                 HStack {
@@ -656,7 +864,7 @@ struct SummaryPanel: View {
         errorText = nil
         defer { loading = false }
         do {
-            summary = try await model.engine?.summarize(itemId: itemID, force: false)
+            summary = try await summarize()
         } catch {
             errorText = error.localizedDescription
         }

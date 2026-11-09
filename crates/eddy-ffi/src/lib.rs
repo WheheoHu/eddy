@@ -343,6 +343,11 @@ impl EddyEngine {
         Ok(self.engine.import_captures().await?)
     }
 
+    /// The saved page at `url`, for showing it from the browser.
+    pub fn saved_item_for_url(&self, url: String) -> R<Option<String>> {
+        Ok(self.engine.saved_item_for_url(&url)?)
+    }
+
     pub fn import_rule_pack(&self, name: String, contents: String) -> R<RulePackSummaryView> {
         Ok(self.engine.import_rule_pack(&name, &contents)?.into())
     }

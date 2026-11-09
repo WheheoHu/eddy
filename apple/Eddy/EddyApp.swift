@@ -43,6 +43,7 @@ struct EddyApp: App {
                 .environment(model)
                 .frame(minWidth: 960, minHeight: 620)
         }
+        .handlesExternalEvents(matching: ["*"])
         .defaultSize(width: 1360, height: 860)
         // One toolbar height whether or not a screen shows a title.
         .windowToolbarStyle(.unifiedCompact)
@@ -95,6 +96,9 @@ struct RootView: View {
         }
         .background(ModeSwitchInstaller())
         .overlay(alignment: .bottom) { MessageBanner() }
+        // Links from the browser go to this window, not a new one.
+        .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
+        .onOpenURL { link in Task { await model.open(link) } }
         .overlay {
             if let request = model.mediaRequest {
                 MediaViewer(entries: [request.entry], current: .constant(request.entry.id), media: model.media) {

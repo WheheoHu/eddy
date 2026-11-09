@@ -1,7 +1,8 @@
 //! Chrome native messaging host for the Eddy extension. Each message carries
 //! a page the user is looking at (or a bare link); it is written atomically
 //! into Eddy's spool directory, which the app imports on its own schedule, so
-//! saving works even while Eddy is closed.
+//! saving works even while Eddy is closed. A `{"show": url}` message opens
+//! Eddy at the page saved from `url` instead.
 
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -83,11 +84,51 @@ fn store(dir: &Path, raw: &[u8]) -> Result<String, String> {
     Ok(id)
 }
 
-fn serve(input: &mut impl Read, output: &mut impl Write, dir: &Path) -> io::Result<()> {
+#[derive(Deserialize)]
+struct Show {
+    show: String,
+}
+
+/// The link that opens Eddy at the page saved from `page`. Eddy imports
+/// what is waiting in the spool before it looks.
+fn show_link(page: &str) -> Result<String, String> {
+    if !(page.starts_with("https://") || page.starts_with("http://")) {
+        return Err("only http and https pages can be shown".into());
+    }
+    let mut link = url::Url::parse("eddy://show").map_err(|e| e.to_string())?;
+    link.query_pairs_mut().append_pair("url", page);
+    Ok(link.into())
+}
+
+fn open_link(link: &str) -> Result<(), String> {
+    let status = std::process::Command::new("/usr/bin/open")
+        .arg(link)
+        .status()
+        .map_err(|e| e.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("Eddy couldn't be opened".into())
+    }
+}
+
+fn serve(
+    input: &mut impl Read,
+    output: &mut impl Write,
+    dir: &Path,
+    open: impl Fn(&str) -> Result<(), String>,
+) -> io::Result<()> {
     while let Some(raw) = read_message(input)? {
-        let reply = match store(dir, &raw) {
-            Ok(id) => serde_json::json!({"ok": true, "id": id}),
-            Err(e) => serde_json::json!({"ok": false, "error": e}),
+        let reply = if let Ok(Show { show }) = serde_json::from_slice(&raw) {
+            match show_link(&show).and_then(|link| open(&link)) {
+                Ok(()) => serde_json::json!({"ok": true}),
+                Err(e) => serde_json::json!({"ok": false, "error": e}),
+            }
+        } else {
+            match store(dir, &raw) {
+                Ok(id) => serde_json::json!({"ok": true, "id": id}),
+                Err(e) => serde_json::json!({"ok": false, "error": e}),
+            }
         };
         write_message(output, &reply)?;
     }
@@ -96,7 +137,7 @@ fn serve(input: &mut impl Read, output: &mut impl Write, dir: &Path) -> io::Resu
 
 fn main() {
     let dir = spool_dir();
-    if let Err(e) = serve(&mut io::stdin().lock(), &mut io::stdout().lock(), &dir) {
+    if let Err(e) = serve(&mut io::stdin().lock(), &mut io::stdout().lock(), &dir, open_link) {
         eprintln!("eddy-capture-host: {e}");
         std::process::exit(1);
     }
@@ -120,7 +161,7 @@ mod tests {
         );
         input.extend(frame(&serde_json::json!({"url": "javascript:alert(1)"})));
         let mut output = Vec::new();
-        serve(&mut input.as_slice(), &mut output, dir.path()).unwrap();
+        serve(&mut input.as_slice(), &mut output, dir.path(), |_| Ok(())).unwrap();
 
         let mut replies = output.as_slice();
         let first: serde_json::Value =
@@ -136,6 +177,37 @@ mod tests {
             serde_json::from_slice(&std::fs::read(files[0].path()).unwrap()).unwrap();
         assert_eq!(saved.title.as_deref(), Some("A"));
         assert!(saved.captured_at > 0);
+    }
+
+    #[test]
+    fn show_opens_eddy_at_the_page_and_stores_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut input = frame(&serde_json::json!({"show": "https://example.com/a?b=1&c=2#d"}));
+        input.extend(frame(&serde_json::json!({"show": "file:///etc/passwd"})));
+        let opened = std::cell::RefCell::new(Vec::new());
+        let mut output = Vec::new();
+        serve(&mut input.as_slice(), &mut output, dir.path(), |link| {
+            opened.borrow_mut().push(link.to_string());
+            Ok(())
+        })
+        .unwrap();
+
+        let mut replies = output.as_slice();
+        let first: serde_json::Value =
+            serde_json::from_slice(&read_message(&mut replies).unwrap().unwrap()).unwrap();
+        let second: serde_json::Value =
+            serde_json::from_slice(&read_message(&mut replies).unwrap().unwrap()).unwrap();
+        assert_eq!(first["ok"], true);
+        assert_eq!(second["ok"], false);
+        let opened = opened.into_inner();
+        assert_eq!(opened.len(), 1);
+        let link = url::Url::parse(&opened[0]).unwrap();
+        assert_eq!((link.scheme(), link.host_str()), ("eddy", Some("show")));
+        assert_eq!(
+            link.query_pairs().find(|(k, _)| k == "url").unwrap().1,
+            "https://example.com/a?b=1&c=2#d"
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
     #[test]

@@ -939,6 +939,26 @@ async fn saving_urls_and_importing_captures() {
         .unwrap();
     let doc = engine.document(&captured.item.id).await.unwrap().unwrap();
     assert_eq!(doc.version.origin, eddy_model::ContentOrigin::Captured);
+    // The extension's "Show" finds it by the address it captured.
+    assert_eq!(
+        engine
+            .saved_item_for_url("https://paper.example/members/1")
+            .unwrap()
+            .as_deref(),
+        Some(captured.item.id.as_str())
+    );
+    assert_eq!(
+        engine
+            .saved_item_for_url(&format!("{}/essay", pages.uri()))
+            .unwrap(),
+        Some(saved.item.id.clone())
+    );
+    assert_eq!(
+        engine
+            .saved_item_for_url("https://paper.example/other")
+            .unwrap(),
+        None
+    );
 
     // Evicting the derived document regenerates it by re-extracting the page.
     let blob = doc.version.doc_blob.clone().unwrap();
@@ -1395,6 +1415,24 @@ async fn translation_summary_and_tags_with_caching() {
     let s = engine.summarize(&row.item.id, false).await.unwrap();
     assert_eq!(s.summary.tldr, "一句话");
     assert!(engine.summarize(&row.item.id, false).await.unwrap().cached);
+
+    // A page a link opened is summarized from its HTML, and not stored.
+    let paragraphs: String = (0..8)
+        .map(|i| format!("<p>Paragraph {i} with enough words to read as an article body.</p>"))
+        .collect();
+    let page = format!(
+        "<html><head><title>Linked</title></head><body><article><h1>Linked</h1>{paragraphs}</article></body></html>"
+    );
+    let items_before = engine.items(&ItemQuery::default()).unwrap().len();
+    let linked = engine
+        .summarize_page("https://example.com/linked", &page)
+        .await
+        .unwrap();
+    assert_eq!(linked.tldr, "一句话");
+    assert_eq!(
+        engine.items(&ItemQuery::default()).unwrap().len(),
+        items_before
+    );
 
     let rendering = engine.create_tag("Rendering").unwrap();
     assert_eq!(engine.create_tag(" rendering ").unwrap(), rendering);
