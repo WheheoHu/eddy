@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      margin: 0;
+      padding: 14px 16px;
+      width: 260px;
+      font: 13px -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    .row { display: flex; align-items: center; gap: 10px; }
+    #status { flex: 1; font-weight: 500; }
+    #detail {
+      margin-top: 8px;
+      color: GrayText;
+      word-break: break-word;
+      max-height: 120px;
+      overflow: auto;
+      cursor: copy;
+    }
+    #detail:empty { display: none; }
+    button {
+      font: inherit;
+      padding: 4px 12px;
+      border-radius: 6px;
+      border: 1px solid color-mix(in srgb, CanvasText 20%, transparent);
+      background: color-mix(in srgb, CanvasText 6%, transparent);
+      color: inherit;
+      cursor: pointer;
+    }
+    button.primary { background: #0a84ff; border-color: #0a84ff; color: white; }
+    button[hidden] { display: none; }
+  </style>
+</head>
+<body>
+  <div class="row">
+    <span id="status">正在保存到 Eddy…</span>
+    <button id="show" class="primary" hidden>Show</button>
+    <button id="copy" hidden>复制错误</button>
+  </div>
+  <div id="detail" title="点击复制"></div>
+  <script src="popup.js"></script>
+</body>
+</html>

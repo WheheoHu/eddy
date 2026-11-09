@@ -100,7 +100,7 @@ final class WebTranslator {
                     }
                 } catch {
                     guard self.generation == generation else { return }
-                    model.message = error.localizedDescription
+                    model.report(error)
                     translating = false
                     stopped = true
                     return

@@ -23,14 +23,15 @@ function isPdf(tab) {
   return /\.pdf($|[?#])/i.test(tab.url || "");
 }
 
+// Hands the tab to Eddy; the reply carries the address saved, for "Show".
 async function capture(tab) {
   if (!tab || !/^https?:/.test(tab.url || "")) {
-    return flash(tab?.id, false, "只能保存网页");
+    return { ok: false, error: "只能保存网页" };
   }
   // Chrome's PDF viewer has no page DOM; Eddy downloads the file itself.
   if (isPdf(tab)) {
     const reply = await send({ url: tab.url, title: tab.title });
-    return flash(tab.id, reply.ok, reply.error);
+    return { ...reply, url: tab.url };
   }
   let page;
   try {
@@ -47,10 +48,21 @@ async function capture(tab) {
     page = { url: tab.url, title: tab.title };
   }
   const reply = await send(page);
-  await flash(tab.id, reply.ok, reply.error);
+  return { ...reply, url: page.url };
 }
 
-chrome.action.onClicked.addListener(capture);
+// The popup saves the tab it was opened on, and asks for "Show".
+chrome.runtime.onMessage.addListener((message, _sender, respond) => {
+  if (message.type === "capture") {
+    chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => capture(tab)).then(respond);
+    return true;
+  }
+  if (message.type === "show") {
+    send({ show: message.url }).then(respond);
+    return true;
+  }
+  return false;
+});
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({ id: "eddy-save-link", title: "用 Eddy 稍后阅读这个链接", contexts: ["link"] });
@@ -62,6 +74,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     const reply = await send({ url: info.linkUrl });
     await flash(tab?.id, reply.ok, reply.error);
   } else if (info.menuItemId === "eddy-save-page") {
-    await capture(tab);
+    const reply = await capture(tab);
+    await flash(tab?.id, reply.ok, reply.error);
   }
 });

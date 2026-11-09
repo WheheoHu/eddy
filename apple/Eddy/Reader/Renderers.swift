@@ -62,6 +62,8 @@ struct WebPageView: NSViewRepresentable {
     var onLink: ((URL) -> Void)?
     /// The address the page is at and its title, as they change.
     var onPage: ((URL?, String?) -> Void)?
+    /// A page finished loading, the first or one it moved on to.
+    var onLoad: (() -> Void)?
 
     func makeNSView(context: Context) -> GestureContainer {
         let config = WKWebViewConfiguration()
@@ -85,9 +87,10 @@ struct WebPageView: NSViewRepresentable {
         view.onFocus = onFocus
         view.onLink = onLink
         view.onPage = onPage
-        if let translator {
-            translator.webView = view
-            view.onLoad = { [weak translator] in translator?.pageLoaded() }
+        translator?.webView = view
+        view.onLoad = { [weak translator, onLoad] in
+            translator?.pageLoaded()
+            onLoad?()
         }
         view.wantsFocus = focused
         if view.appearance?.name != appearance?.name { view.appearance = appearance }

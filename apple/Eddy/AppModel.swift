@@ -21,6 +21,22 @@ enum AppMode: String, CaseIterable, Identifiable {
 
 /// Something picked in the command palette, for the view that can do it.
 /// The token makes picking the same thing twice a change.
+/// What the bottom banner says, and what it offers to do about it.
+struct Notice: Equatable {
+    enum Kind: Equatable {
+        case info
+        /// Something failed; the text can be copied.
+        case error
+        /// A page was saved; "Show" brings it into view.
+        case saved(itemID: String)
+    }
+
+    let text: String
+    var kind: Kind = .info
+    /// The same words twice are two notices, each with its own timeout.
+    var token = UUID()
+}
+
 struct PaletteRequest<Value: Equatable>: Equatable {
     let value: Value
     var token = UUID()
@@ -96,7 +112,19 @@ final class AppModel {
     var busy = false
     /// Older articles added so far while FreshRSS history loads; 0 otherwise.
     var historyAdded = 0
-    var message: String?
+    /// The banner along the bottom of the window.
+    var notice: Notice?
+    /// A plain notice, saying what happened.
+    var message: String? {
+        get { notice?.text }
+        set { notice = newValue.map { Notice(text: $0) } }
+    }
+
+    /// Shows what went wrong; the banner can copy it.
+    func report(_ error: Error, about subject: String? = nil) {
+        let text = subject.map { "\($0): \(error.localizedDescription)" } ?? error.localizedDescription
+        notice = Notice(text: text, kind: .error)
+    }
     var openError: String?
 
     /// What is being read; shared by both modes so switching keeps context.
@@ -345,7 +373,7 @@ final class AppModel {
         do {
             _ = try await engine?.markAllRead(filter: request.list.filter, until: request.until)
         } catch {
-            message = error.localizedDescription
+            report(error)
         }
         reload()
     }
@@ -356,7 +384,7 @@ final class AppModel {
         do {
             try engine?.markUnread(itemIds: itemIDs)
         } catch {
-            message = error.localizedDescription
+            report(error)
         }
         reload()
     }
@@ -428,7 +456,7 @@ final class AppModel {
             do {
                 imported.append(try await engine.importFile(path: url.path))
             } catch {
-                message = "\(url.lastPathComponent): \(error.localizedDescription)"
+                report(error, about: url.lastPathComponent)
             }
         }
         reload()
@@ -455,7 +483,7 @@ final class AppModel {
             if reading { currentItemID = nil }
             message = "Deleted “\(entry.title)”"
         } catch {
-            message = error.localizedDescription
+            report(error)
         }
         reload()
     }
@@ -471,7 +499,7 @@ final class AppModel {
         } catch EddyError.NotConfigured {
             message = "Connect FreshRSS or a sync server in Settings to load subscriptions."
         } catch {
-            message = error.localizedDescription
+            report(error)
         }
         leadImages.removeAll()
         reload()
@@ -501,13 +529,13 @@ final class AppModel {
         defer { busy = false }
         do {
             let item = try await engine.saveUrl(url: url)
-            message = "Saved “\(item.title)”"
+            notice = Notice(text: String(localized: "Saved “\(item.title)”"), kind: .saved(itemID: item.id))
             reload()
             if let proposal = try? engine.detectSeriesIn(itemId: item.id), proposal.chapters.count >= 4 {
                 pendingSeries = proposal
             }
         } catch {
-            message = error.localizedDescription
+            report(error)
         }
     }
 
@@ -532,7 +560,7 @@ final class AppModel {
             do {
                 proposal = try await engine.detectSeriesAt(url: url)
             } catch {
-                message = error.localizedDescription
+                report(error)
                 return
             }
         }
@@ -554,15 +582,52 @@ final class AppModel {
             reload()
             return true
         } catch {
-            message = error.localizedDescription
+            report(error)
             return false
         }
     }
 
+    private var captureImport: Task<Void, Never>?
+
+    /// One import at a time: the spool watcher and a "Show" from the
+    /// browser can both ask, and two at once would save a page twice.
     func importCaptures() async {
-        if let n = try? await engine?.importCaptures(), n > 0 {
-            message = n == 1 ? "Imported 1 page from the browser" : "Imported \(n) pages from the browser"
-            reload()
+        let previous = captureImport
+        let run = Task {
+            await previous?.value
+            if let n = try? await engine?.importCaptures(), n > 0 {
+                message = n == 1 ? "Imported 1 page from the browser" : "Imported \(n) pages from the browser"
+                reload()
+            }
+        }
+        captureImport = run
+        await run.value
+    }
+
+    /// Opens an item where it lives: a saved page in its collection, an
+    /// article in its subscription. The Gallery has no place for a saved
+    /// page, so it hands over to the three panes.
+    func reveal(itemID id: String) {
+        let defaults = UserDefaults.standard
+        if defaults.string(forKey: "app.mode") == AppMode.gallery.rawValue {
+            defaults.set(AppMode.threePane.rawValue, forKey: "app.mode")
+        }
+        revealedItem = PaletteRequest(value: id)
+    }
+
+    /// `eddy://show?url=…`, from the browser extension: the page saved from
+    /// that address, once anything still waiting in the spool is in.
+    func open(_ link: URL) async {
+        guard link.scheme == "eddy", link.host() == "show",
+              let page = URLComponents(url: link, resolvingAgainstBaseURL: false)?
+                  .queryItems?.first(where: { $0.name == "url" })?.value
+        else { return }
+        AppDelegate.comeForward()
+        await importCaptures()
+        if let id = (try? engine?.savedItemForUrl(url: page)) ?? nil {
+            reveal(itemID: id)
+        } else {
+            message = String(localized: "That page isn’t in Eddy yet.")
         }
     }
 
@@ -591,19 +656,19 @@ final class AppModel {
     }
 
     func setGallery(folder: String, _ shown: Bool) {
-        do { try engine?.setFolderGallery(name: folder, shown: shown) } catch { message = error.localizedDescription }
+        do { try engine?.setFolderGallery(name: folder, shown: shown) } catch { report(error) }
         reload()
     }
 
     /// Gives the subscription its own full-text mode (a rule at the top),
     /// or `nil` to leave it to the other rules.
     func setFullText(source: SourceView, _ mode: FullTextModeView?) {
-        do { try engine?.setSourceFullTextRule(sourceId: source.id, mode: mode) } catch { message = error.localizedDescription }
+        do { try engine?.setSourceFullTextRule(sourceId: source.id, mode: mode) } catch { report(error) }
         reload()
     }
 
     func setGallery(source: SourceView, _ shown: Bool) {
-        do { try engine?.setSourceGallery(sourceId: source.id, shown: shown) } catch { message = error.localizedDescription }
+        do { try engine?.setSourceGallery(sourceId: source.id, shown: shown) } catch { report(error) }
         reload()
     }
 

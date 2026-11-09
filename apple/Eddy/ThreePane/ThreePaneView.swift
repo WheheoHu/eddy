@@ -87,7 +87,7 @@ struct ThreePaneView: View {
             choose(destination)
             focus = .list
         }
-        .onChange(of: model.revealedItem) { _, request in
+        .onChange(of: model.revealedItem, initial: true) { _, request in
             guard let id = request?.value else { return }
             model.revealedItem = nil
             reveal(id)

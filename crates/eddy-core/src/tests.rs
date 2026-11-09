@@ -939,6 +939,26 @@ async fn saving_urls_and_importing_captures() {
         .unwrap();
     let doc = engine.document(&captured.item.id).await.unwrap().unwrap();
     assert_eq!(doc.version.origin, eddy_model::ContentOrigin::Captured);
+    // The extension's "Show" finds it by the address it captured.
+    assert_eq!(
+        engine
+            .saved_item_for_url("https://paper.example/members/1")
+            .unwrap()
+            .as_deref(),
+        Some(captured.item.id.as_str())
+    );
+    assert_eq!(
+        engine
+            .saved_item_for_url(&format!("{}/essay", pages.uri()))
+            .unwrap(),
+        Some(saved.item.id.clone())
+    );
+    assert_eq!(
+        engine
+            .saved_item_for_url("https://paper.example/other")
+            .unwrap(),
+        None
+    );
 
     // Evicting the derived document regenerates it by re-extracting the page.
     let blob = doc.version.doc_blob.clone().unwrap();

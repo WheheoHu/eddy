@@ -245,8 +245,9 @@ struct ReaderPane: View {
         VStack(spacing: 0) {
             if page.showSummary {
                 SummaryPanel(
-                    id: page.id.uuidString,
+                    id: "\(page.id.uuidString)#\(page.loads)",
                     maxHeight: paneHeight * 0.4,
+                    waiting: page.loads == 0,
                     cached: { links.first { $0.id == page.id }?.summary },
                     summarize: { try await summarizeLink(page.id) },
                     close: { toggleLinkSummary(false) }
@@ -269,6 +270,12 @@ struct ReaderPane: View {
                     guard let index = links.firstIndex(where: { $0.id == page.id }) else { return }
                     if let url { links[index].current = url }
                     links[index].title = title.flatMap { $0.isEmpty ? nil : $0 }
+                },
+                // A new page: an open summary summarizes it afresh.
+                onLoad: {
+                    guard let index = links.firstIndex(where: { $0.id == page.id }) else { return }
+                    links[index].summary = nil
+                    links[index].loads += 1
                 }
             )
             .overlay(alignment: .top) { linkBanners(page) }
@@ -302,7 +309,9 @@ struct ReaderPane: View {
     }
 
     private func openLink(_ url: URL) {
-        withAnimation(.easeInOut(duration: 0.25)) { links.append(LinkedPage(url: url, model: model)) }
+        // A summary on screen stays on for the page the link opens.
+        let summarizing = links.last?.showSummary ?? showSummary
+        withAnimation(.easeInOut(duration: 0.25)) { links.append(LinkedPage(url: url, model: model, showSummary: summarizing)) }
     }
 
     private func closeLink() {
@@ -670,7 +679,7 @@ struct ReaderPane: View {
             } catch {
                 flushTranslations()
                 guard generation == translationGeneration else { return }
-                model.message = error.localizedDescription
+                model.report(error)
                 translationStopped = true
             }
             translating = false
@@ -744,12 +753,15 @@ struct LinkedPage: Identifiable {
     var title: String?
     let translator: WebTranslator
     var mode: ReadingMode = .original
-    var showSummary = false
+    var showSummary: Bool
+    /// Pages finished loading here; the summary is of the latest.
+    var loads = 0
     var summary: SummaryView?
 
     @MainActor
-    init(url: URL, model: AppModel) {
+    init(url: URL, model: AppModel, showSummary: Bool) {
         self.url = url
+        self.showSummary = showSummary
         translator = WebTranslator(model: model, key: "link:\(id.uuidString)")
     }
 
@@ -778,6 +790,8 @@ struct SummaryPanel: View {
     let id: String
     /// Longer summaries scroll within this height.
     let maxHeight: CGFloat
+    /// What is to be summarized isn't there yet (a page still loading).
+    var waiting = false
     let cached: () -> SummaryView?
     let summarize: () async throws -> SummaryView?
     let close: () -> Void
@@ -808,7 +822,8 @@ struct SummaryPanel: View {
         .background(.background.secondary)
         .task(id: id) {
             summary = cached()
-            if summary == nil, model.aiConfigured { await load() }
+            errorText = nil
+            if summary == nil, !waiting, model.aiConfigured { await load() }
         }
     }
 
@@ -823,10 +838,10 @@ struct SummaryPanel: View {
                         Text(point)
                     }
                 }
-            } else if loading {
+            } else if loading || (waiting && model.aiConfigured) {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                    Text("Summarizing…").foregroundStyle(.secondary)
+                    Text(loading ? "Summarizing…" : "Waiting for the page to load…").foregroundStyle(.secondary)
                 }
             } else if let errorText {
                 HStack {
