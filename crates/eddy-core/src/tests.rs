@@ -1396,6 +1396,24 @@ async fn translation_summary_and_tags_with_caching() {
     assert_eq!(s.summary.tldr, "一句话");
     assert!(engine.summarize(&row.item.id, false).await.unwrap().cached);
 
+    // A page a link opened is summarized from its HTML, and not stored.
+    let paragraphs: String = (0..8)
+        .map(|i| format!("<p>Paragraph {i} with enough words to read as an article body.</p>"))
+        .collect();
+    let page = format!(
+        "<html><head><title>Linked</title></head><body><article><h1>Linked</h1>{paragraphs}</article></body></html>"
+    );
+    let items_before = engine.items(&ItemQuery::default()).unwrap().len();
+    let linked = engine
+        .summarize_page("https://example.com/linked", &page)
+        .await
+        .unwrap();
+    assert_eq!(linked.tldr, "一句话");
+    assert_eq!(
+        engine.items(&ItemQuery::default()).unwrap().len(),
+        items_before
+    );
+
     let rendering = engine.create_tag("Rendering").unwrap();
     assert_eq!(engine.create_tag(" rendering ").unwrap(), rendering);
     let tags = engine.suggest_tags(&row.item.id).await.unwrap();

@@ -15,8 +15,6 @@ struct ThreePaneView: View {
     /// The collection entry picked in the middle column.
     @State private var entryID: String?
     @State private var unreadOnly = false
-    @State private var query = ""
-    @State private var results: [ItemView]?
     @State private var scrollTarget: ScrollTarget?
     @State private var pageTarget: PageTarget?
     /// Back and forward through the articles of the middle column.
@@ -63,14 +61,12 @@ struct ThreePaneView: View {
         } detail: {
             detail
         }
-        .searchable(text: $query, placement: .toolbar, prompt: "Search")
         .toolbar { AddToolbar(model: model) }
         .toolbar(removing: .title)
         .onAppear(perform: showCurrentEntry)
         .onChange(of: model.revealed) { _, revealed in
             guard let revealed else { return }
             model.revealed = nil
-            query = ""
             show(entryID: revealed)
         }
         .onChange(of: model.revision) {
@@ -82,14 +78,12 @@ struct ThreePaneView: View {
             if new != landAtEnd { landAtEnd = nil }
         }
         .onChange(of: selection) { history.reset(model.currentItemID) }
-        .onChange(of: query) { history.reset(model.currentItemID) }
         .onChange(of: focus) { _, new in if new != nil { readerFocused = false } }
         .onChange(of: articleList, initial: true) { _, list in model.currentList = list }
         .onDisappear { model.currentList = nil }
         .onChange(of: model.navigation) { _, request in
             guard case let .threePane(destination) = request?.value else { return }
             model.navigation = nil
-            query = ""
             choose(destination)
             focus = .list
         }
@@ -97,11 +91,6 @@ struct ThreePaneView: View {
             guard let id = request?.value else { return }
             model.revealedItem = nil
             reveal(id)
-        }
-        .task(id: query) {
-            guard !query.isEmpty else { results = nil; return }
-            try? await Task.sleep(for: .milliseconds(250))
-            results = await model.search(query).map(\.item)
         }
     }
 
@@ -245,7 +234,6 @@ struct ThreePaneView: View {
     /// article in its subscription.
     private func reveal(_ id: String) {
         guard let item = model.item(id) else { return }
-        query = ""
         if let entry = model.entry(containing: item) {
             show(entryID: entry.id)
         } else if let sourceID = item.sourceId {
@@ -266,7 +254,7 @@ struct ThreePaneView: View {
 
     @ViewBuilder
     private var middle: some View {
-        if results == nil, let kinds = selection?.kinds {
+        if let kinds = selection?.kinds {
             CollectionList(
                 kinds: kinds, sort: collectionSort, selection: Binding(get: { entryID }, set: openEntry),
                 focus: $focus, onReturn: read, onEscape: { focus = .sidebar }
@@ -292,7 +280,7 @@ struct ThreePaneView: View {
 
     private var articles: some View {
         @Bindable var model = model
-        let rows = results ?? rowsForSelection
+        let rows = rowsForSelection
         return List(rows, selection: $model.currentItemID) { item in
             ArticleRow(item: item).tag(item.id)
         }
@@ -317,7 +305,7 @@ struct ThreePaneView: View {
         .pane($focus, .list, onReturn: read, onEscape: { focus = .sidebar })
         .overlay {
             if rows.isEmpty {
-                ContentUnavailableView(results != nil ? "No Results" : "Nothing Here", systemImage: results != nil ? "magnifyingglass" : "tray")
+                ContentUnavailableView("Nothing Here", systemImage: "tray")
             }
         }
         .toolbar {
@@ -346,9 +334,9 @@ struct ThreePaneView: View {
     }
 
     /// The middle column as a list of subscription articles, for "Mark All
-    /// as Read"; nil for the collection and for search results.
+    /// as Read"; nil for the collection.
     private var articleList: ArticleList? {
-        guard results == nil, let selection else { return nil }
+        guard let selection else { return nil }
         switch selection {
         case let .smart(smart):
             let filter: ItemFilterView = switch smart {
@@ -484,7 +472,7 @@ struct ThreePaneView: View {
             return .chapters({ model.chapters(seriesID) }, current: item.id, open: travel)
         }
         guard entry == nil else { return nil }
-        return .articles({ results ?? rowsForSelection }, current: item.id, history: history, item: { model.item($0) }, open: travel)
+        return .articles({ rowsForSelection }, current: item.id, history: history, item: { model.item($0) }, open: travel)
     }
 
     /// Opens a neighbor, sliding it in from the side it lies on. The edge

@@ -24,9 +24,14 @@ final class WebTranslator {
     @ObservationIgnored private var run: Task<Void, Never>?
     @ObservationIgnored private var generation = 0
 
-    init(model: AppModel, itemID: String) {
+    convenience init(model: AppModel, itemID: String) {
+        self.init(model: model, key: "web:\(itemID)")
+    }
+
+    /// `key` names the run for cancelling; any page has one.
+    init(model: AppModel, key: String) {
         self.model = model
-        key = "web:\(itemID)"
+        self.key = key
     }
 
     /// Shows the page in `mode`: original hides the translations and stops
