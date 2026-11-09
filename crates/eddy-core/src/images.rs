@@ -16,7 +16,14 @@ impl Inner {
         if !matches!(parsed.scheme(), "http" | "https" | EPUB_SCHEME | PDF_SCHEME) {
             return Err(EngineError::Invalid("图片地址无效。".into()));
         }
-        let key = format!("img{}", &sha256_hex(url.as_bytes())[..40]);
+        // What a PDF image address shows (which strips and layers make one
+        // picture) is decided by the document model, so it versions with it.
+        let cache_name = if parsed.scheme() == PDF_SCHEME {
+            format!("{url}#{}", eddy_doc::SCHEMA_VERSION)
+        } else {
+            url.to_string()
+        };
+        let key = format!("img{}", &sha256_hex(cache_name.as_bytes())[..40]);
         if let Some(bytes) = self.store.get_blob(&key)? {
             let mime = self
                 .store

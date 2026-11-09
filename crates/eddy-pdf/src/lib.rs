@@ -42,6 +42,16 @@ impl PdfiumReader {
             return render_region(&page, bounds).map(|png| (png, "image/png"));
         }
         let image = object.as_image_object()?;
+        if is_upright(&page) {
+            let rasters = raster_rects(&page);
+            let group = tile_groups(&rasters)
+                .into_iter()
+                .find(|g| g.iter().any(|&i| rasters[i].0 == index));
+            if let Some(group) = group.filter(|g| g.len() > 1) {
+                let bounds = group.iter().map(|&i| rasters[i].1).reduce(Rect::union)?;
+                return render_region(&page, bounds).map(|png| (png, "image/png"));
+            }
+        }
         if let Some(jpeg) = plain_jpeg(image) {
             return Some((jpeg, "image/jpeg"));
         }
@@ -112,12 +122,19 @@ fn page_lines(page: &PdfPage<'_>) -> Vec<PdfLine> {
     }
 }
 
+fn is_upright(page: &PdfPage<'_>) -> bool {
+    matches!(page.rotation(), Ok(PdfPageRenderRotation::None))
+}
+
 /// Raster images drawn directly on the page, and included graphics (form
 /// XObjects holding images or vector drawings, as pdflatex embeds figures),
-/// which are shown by rendering their area of the page.
+/// which are shown by rendering their area of the page. Rasters that touch
+/// or overlap make one picture: PowerPoint exports a large image as strips,
+/// and animation steps stack images in one place.
 fn read_images(page: &PdfPage<'_>, lines: &[PdfLine]) -> Vec<PdfImage> {
-    let upright = matches!(page.rotation(), Ok(PdfPageRenderRotation::None));
+    let upright = is_upright(page);
     let mut images = Vec::new();
+    let mut rasters: Vec<PdfImage> = Vec::new();
     for (index, object) in page.objects().iter().enumerate() {
         if let Some(form) = object.as_x_object_form_object() {
             if !upright {
@@ -158,7 +175,7 @@ fn read_images(page: &PdfPage<'_>, lines: &[PdfLine]) -> Vec<PdfImage> {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         (pixel_width, pixel_height).hash(&mut hasher);
         image.get_raw_image_data().unwrap_or_default().hash(&mut hasher);
-        images.push(PdfImage {
+        rasters.push(PdfImage {
             index: index as u32,
             x: bounds.left().value,
             y: bounds.bottom().value,
@@ -169,7 +186,101 @@ fn read_images(page: &PdfPage<'_>, lines: &[PdfLine]) -> Vec<PdfImage> {
             fingerprint: hasher.finish(),
         });
     }
+    let rects: Vec<(u32, Rect)> = rasters.iter().map(|i| (i.index, image_rect(i))).collect();
+    for group in tile_groups(&rects) {
+        if group.len() == 1 || !upright {
+            images.extend(group.iter().map(|&i| rasters[i].clone()));
+            continue;
+        }
+        let Some(bounds) = group.iter().map(|&i| rects[i].1).reduce(Rect::union) else {
+            continue;
+        };
+        let scale = render_scale(bounds.width());
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for &i in &group {
+            rasters[i].fingerprint.hash(&mut hasher);
+        }
+        images.push(PdfImage {
+            index: group.iter().map(|&i| rasters[i].index).min().unwrap_or(0),
+            x: bounds.left,
+            y: bounds.bottom,
+            width: bounds.width(),
+            height: bounds.height(),
+            pixel_width: (bounds.width() * scale) as u32,
+            pixel_height: (bounds.height() * scale) as u32,
+            fingerprint: hasher.finish(),
+        });
+    }
+    images.sort_by_key(|i| i.index);
     images
+}
+
+fn image_rect(image: &PdfImage) -> Rect {
+    Rect {
+        left: image.x,
+        bottom: image.y,
+        right: image.x + image.width,
+        top: image.y + image.height,
+    }
+}
+
+/// Object indices and page rectangles of the raster images on a page.
+fn raster_rects(page: &PdfPage<'_>) -> Vec<(u32, Rect)> {
+    page.objects()
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| o.as_image_object().is_some())
+        .filter_map(|(index, o)| {
+            let b = o.bounds().ok()?;
+            Some((
+                index as u32,
+                Rect {
+                    left: b.left().value,
+                    bottom: b.bottom().value,
+                    right: b.right().value,
+                    top: b.top().value,
+                },
+            ))
+        })
+        .collect()
+}
+
+/// Groups of rectangles that touch or overlap (within a point and a half,
+/// as strips are placed with rounding), each group in its input order.
+fn tile_groups(rects: &[(u32, Rect)]) -> Vec<Vec<usize>> {
+    let slack = 1.5;
+    let mut parent: Vec<usize> = (0..rects.len()).collect();
+    fn root(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+    for i in 0..rects.len() {
+        for j in i + 1..rects.len() {
+            let (a, b) = (rects[i].1, rects[j].1);
+            let touches = a.left - slack < b.right
+                && b.left - slack < a.right
+                && a.bottom - slack < b.top
+                && b.bottom - slack < a.top;
+            if touches {
+                let (ri, rj) = (root(&mut parent, i), root(&mut parent, j));
+                parent[rj] = ri;
+            }
+        }
+    }
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut slot: HashMap<usize, usize> = HashMap::new();
+    for i in 0..rects.len() {
+        let r = root(&mut parent, i);
+        let at = *slot.entry(r).or_insert_with(|| {
+            groups.push(Vec::new());
+            groups.len() - 1
+        });
+        groups[at].push(i);
+    }
+    groups
 }
 
 /// What a form XObject draws, counted through nested forms.
@@ -859,6 +970,52 @@ q 100 0 0 80 300 500 cm /Fm1 Do Q";
         assert_eq!(px(212, 52), (255, 0, 0), "the top of the figure is the red half");
         assert_eq!(px(212, 292), (0, 0, 255), "the bottom is the blue half");
         assert_eq!(px(4, 4), (255, 255, 255), "the padding is the white page");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn strips_and_stacked_layers_make_one_picture_as_it_shows() {
+        // Two strips of one picture, a layer drawn over both (an animation
+        // step), and a separate image elsewhere on the page.
+        let content = "\
+q 200 0 0 50 72 500 cm /Im1 Do Q
+q 200 0 0 50 72 450 cm /Im1 Do Q
+q 200 0 0 100 72 450 cm /Im1 Do Q
+q 60 0 0 60 400 100 cm /Im1 Do Q";
+        let dir = tempdir();
+        let path = dir.join("strips.pdf");
+        std::fs::write(&path, pdf(content)).unwrap();
+
+        let text = PdfiumReader::new().read(&path).unwrap();
+        let images = &text.pages[0].images;
+        assert_eq!(images.len(), 2, "{images:?}");
+        let picture = &images[0];
+        assert!((picture.x - 72.0).abs() < 0.5 && (picture.y - 450.0).abs() < 0.5);
+        assert!((picture.width - 200.0).abs() < 0.5 && (picture.height - 100.0).abs() < 0.5);
+        assert!((images[1].x - 400.0).abs() < 0.5, "the separate image stays apart");
+
+        let decode = |index: u32| {
+            let (bytes, mime) = PdfiumReader::new().image(&path, 0, index).unwrap();
+            assert_eq!(mime, "image/png");
+            let mut reader = png::Decoder::new(std::io::Cursor::new(bytes)).read_info().unwrap();
+            let mut buf = vec![0; reader.output_buffer_size().unwrap()];
+            let info = reader.next_frame(&mut buf).unwrap();
+            (info, buf)
+        };
+        let (info, buf) = decode(picture.index);
+        assert_eq!((info.width, info.height), (800, 400), "200x100 pt at 4 px/pt");
+        let channels = info.line_size / info.width as usize;
+        let px = |x: usize, y: usize| {
+            let at = y * info.line_size + x * channels;
+            (buf[at], buf[at + 1], buf[at + 2])
+        };
+        // The top layer shows: red over its upper half, blue below. Each
+        // strip alone would have been red-over-blue within its own height.
+        assert_eq!(px(400, 100), (255, 0, 0));
+        assert_eq!(px(400, 150), (255, 0, 0));
+        assert_eq!(px(400, 300), (0, 0, 255));
+        let (other, _) = decode(picture.index + 1);
+        assert_eq!((other.width, other.height), (800, 400), "any strip gives the whole");
         let _ = std::fs::remove_dir_all(dir);
     }
 
