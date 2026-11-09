@@ -473,7 +473,7 @@ struct ThreePaneView: View {
     private func jump(_ target: OutlineEntry.Target) {
         switch target {
         case let .block(id): scrollTarget = ScrollTarget(blockID: id)
-        case let .page(page): pageTarget = PageTarget(page: page)
+        case let .page(page, block): pageTarget = PageTarget(page: page, block: block)
         }
     }
 

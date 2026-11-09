@@ -139,13 +139,15 @@ struct ReaderPane: View {
                 if new == RendererRegistry.article.id, !translationComplete, !translating { startTranslation() }
             }
         }
-        // A PDF's outline names pages; the reflowed text goes to where the
-        // page starts.
+        // A PDF's outline names pages; the reflowed text goes to the entry's
+        // own heading, or else to where the page starts.
         .onChange(of: pageTarget) { _, target in
-            guard let target, rendererID == RendererRegistry.article.id,
-                  let pages = document?.pages, pages.indices.contains(target.page)
-            else { return }
-            scrollTarget = ScrollTarget(blockID: pages[target.page])
+            guard let target, rendererID == RendererRegistry.article.id else { return }
+            if let block = target.block {
+                scrollTarget = ScrollTarget(blockID: block)
+            } else if let pages = document?.pages, pages.indices.contains(target.page) {
+                scrollTarget = ScrollTarget(blockID: pages[target.page])
+            }
         }
     }
 
