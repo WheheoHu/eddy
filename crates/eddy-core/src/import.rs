@@ -49,6 +49,18 @@ pub struct PdfPage {
     /// Thin rectangles and lines (table borders, underlines, separators),
     /// horizontal or vertical.
     pub rules: Vec<PdfRule>,
+    /// Outlined or shaded rectangles that may frame text (a code listing,
+    /// a callout), in content-stream order.
+    pub boxes: Vec<PdfBox>,
+}
+
+/// A rectangle drawn on a page, outlined or filled.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PdfBox {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
 }
 
 /// A horizontal or vertical rule drawn on a page, as its box.
@@ -106,6 +118,8 @@ pub struct PdfRun {
     pub width: f32,
     pub bold: bool,
     pub underline: bool,
+    /// Set in a monospaced (typewriter) face.
+    pub mono: bool,
     /// The line's text has a space between this run and the one before.
     pub space_before: bool,
 }

@@ -21,6 +21,7 @@ use eddy_doc::{ConvertOptions, html_to_document};
 use eddy_model::{BlockKind, Document, PDF_SCHEME};
 
 use crate::import::{PdfImage, PdfLine, PdfPage, PdfRun};
+use crate::pdf_listing::{self, Listing};
 use crate::pdf_table::{self, Table};
 
 /// Fraction of the page height at top and bottom that counts as margin.
@@ -113,6 +114,11 @@ fn reflow(pages: &[PdfPage]) -> Vec<Block> {
         .map(|(page, tables)| split_lines(page, tables, body, label_edge))
         .collect();
     let pages = pages.as_slice();
+    let listings: Vec<Vec<Listing>> = pages
+        .iter()
+        .zip(&tables)
+        .map(|(page, tables)| pdf_listing::listings(page, |l| tables.iter().any(|t| t.holds(l))))
+        .collect();
     let repeated = repeated_margin_text(pages);
     let repeated_images = repeated_images(pages);
     let slide_frames = slide_frames(pages);
@@ -123,6 +129,10 @@ fn reflow(pages: &[PdfPage]) -> Vec<Block> {
             .iter()
             .filter(|t| !slides.iter().any(|s| t.center_inside(s)))
             .collect();
+        let listings: Vec<&Listing> = listings[n]
+            .iter()
+            .filter(|b| !slides.iter().any(|s| b.center_inside(s)))
+            .collect();
         let lines: Vec<&PdfLine> = page
             .lines
             .iter()
@@ -130,6 +140,7 @@ fn reflow(pages: &[PdfPage]) -> Vec<Block> {
             .filter(|l| !is_margin_junk(l, page, &repeated))
             .filter(|l| !slides.iter().any(|s| center_inside(l, s)))
             .filter(|l| !tables.iter().any(|t| t.holds(l)))
+            .filter(|l| !listings.iter().any(|b| b.holds(l)))
             .collect();
         // A slide shows whole, as it was designed; what is drawn on it
         // (its text, pictures, diagrams) is part of that picture.
@@ -154,6 +165,7 @@ fn reflow(pages: &[PdfPage]) -> Vec<Block> {
             lines: &lines,
             images: &images,
             tables: &tables,
+            listings: &listings,
             labels: &labels,
         };
         flow.extend(order_page(&content, &slides, n, page, body));
@@ -473,13 +485,18 @@ enum Flow<'a> {
     },
     /// Tables stay where they are.
     Table { table: &'a Table, page: usize },
+    /// A boxed code listing, which floats like a figure.
+    Listing { listing: &'a Listing, page: usize },
+    /// Figures set side by side with their own captions under them, read
+    /// one after another and moved as one.
+    Group(Vec<Flow<'a>>),
 }
 
 impl<'a> Flow<'a> {
     fn text(&self) -> Option<&Placed<'a>> {
         match self {
             Flow::Text(p) => Some(p),
-            Flow::Image { .. } | Flow::Table { .. } => None,
+            Flow::Image { .. } | Flow::Table { .. } | Flow::Listing { .. } | Flow::Group(_) => None,
         }
     }
 
@@ -489,12 +506,19 @@ impl<'a> Flow<'a> {
             Flow::Text(p) => p.line.y + p.line.height,
             Flow::Image { image, .. } => image.y + image.height,
             Flow::Table { table, .. } => table.top,
+            Flow::Listing { listing, .. } => listing.top,
+            Flow::Group(items) => items.iter().map(Flow::top).fold(f32::MIN, f32::max),
         }
     }
 
     /// Kept where it is when a paragraph runs past it.
     fn pinned(&self) -> bool {
-        matches!(self, Flow::Image { slide: true, .. } | Flow::Table { .. })
+        match self {
+            Flow::Image { slide, .. } => *slide,
+            Flow::Table { .. } => true,
+            Flow::Group(items) => items.iter().any(Flow::pinned),
+            Flow::Text(_) | Flow::Listing { .. } => false,
+        }
     }
 }
 
@@ -503,6 +527,7 @@ enum Piece<'a> {
     Line(&'a PdfLine),
     Image(&'a PdfImage),
     Table(&'a Table),
+    Listing(&'a Listing),
 }
 
 impl Piece<'_> {
@@ -512,8 +537,126 @@ impl Piece<'_> {
             Piece::Line(l) => (l.x, l.y, l.width, l.height),
             Piece::Image(i) => (i.x, i.y, i.width, i.height),
             Piece::Table(t) => (t.left, t.bottom, t.right - t.left, t.top - t.bottom),
+            Piece::Listing(b) => (b.left, b.bottom, b.right - b.left, b.top - b.bottom),
         }
     }
+}
+
+/// A column's pieces in reading order: one at a time, or a group of
+/// figures side by side, each column of the group top-down.
+enum Part<'a> {
+    One(Piece<'a>),
+    Group(Vec<Vec<Piece<'a>>>),
+}
+
+/// Finds figures set side by side in a column (sub-figures, listings next
+/// to each other), each with its caption lines under it. Without this
+/// their captions interleave line by line. Text beside a figure (wrapped
+/// around it) is not a group: every column of a group holds a figure or
+/// only lines smaller than the body text.
+fn side_by_side<'a>(col: Vec<Piece<'a>>, body: f32) -> Vec<Part<'a>> {
+    let left = col.iter().map(|p| p.rect().0).fold(f32::MAX, f32::min);
+    let right = col.iter().map(|p| p.rect().0 + p.rect().2).fold(f32::MIN, f32::max);
+    let narrow = |p: &Piece| p.rect().2 < (right - left) * 0.6;
+    let mut out = Vec::with_capacity(col.len());
+    let mut i = 0;
+    while i < col.len() {
+        if !narrow(&col[i]) {
+            out.push(Part::One(col[i]));
+            i += 1;
+            continue;
+        }
+        let end = (i..col.len()).find(|&k| !narrow(&col[k])).unwrap_or(col.len());
+        let run = &col[i..end];
+        match group_in(run, body) {
+            Some((start, stop, columns)) => {
+                out.extend(run[..start].iter().map(|&p| Part::One(p)));
+                out.push(Part::Group(columns));
+                out.extend(run[stop..].iter().map(|&p| Part::One(p)));
+            }
+            None => out.extend(run.iter().map(|&p| Part::One(p))),
+        }
+        i = end;
+    }
+    out
+}
+
+/// Pieces whose horizontal extents touch, as columns left to right; each
+/// column is indexes into `pieces`, in their order.
+fn x_columns(pieces: &[Piece<'_>], body: f32) -> Vec<Vec<usize>> {
+    let mut order: Vec<usize> = (0..pieces.len()).collect();
+    order.sort_by(|&a, &b| pieces[a].rect().0.total_cmp(&pieces[b].rect().0));
+    let mut columns: Vec<(f32, Vec<usize>)> = Vec::new();
+    for k in order {
+        let (x, _, w, _) = pieces[k].rect();
+        match columns.last_mut() {
+            Some((right, members)) if x < *right + body * 0.3 => {
+                *right = right.max(x + w);
+                members.push(k);
+            }
+            _ => columns.push((x + w, vec![k])),
+        }
+    }
+    columns
+        .into_iter()
+        .map(|(_, mut members)| {
+            members.sort_unstable();
+            members
+        })
+        .collect()
+}
+
+/// The stretch of `run` that is a side-by-side group, as its start, end
+/// and columns of pieces.
+fn group_in<'a>(run: &[Piece<'a>], body: f32) -> Option<(usize, usize, Vec<Vec<Piece<'a>>>)> {
+    let is_figure = |p: &Piece| !matches!(p, Piece::Line(_));
+    if !run.iter().any(is_figure) {
+        return None;
+    }
+    let columns = x_columns(run, body);
+    if columns.len() < 2 {
+        return None;
+    }
+    let mut column_of = vec![0; run.len()];
+    for (c, members) in columns.iter().enumerate() {
+        for &k in members {
+            column_of[k] = c;
+        }
+    }
+    let overlaps = |a: &Piece, b: &Piece| {
+        let (_, ay, _, ah) = a.rect();
+        let (_, by, _, bh) = b.rect();
+        ay < by + bh + 1.0 && by < ay + ah + 1.0
+    };
+    // Something sits level with it in another column of the group.
+    let partnered = |k: usize| (0..run.len()).any(|m| column_of[m] != column_of[k] && overlaps(&run[k], &run[m]));
+    let start = (0..run.len()).find(|&k| partnered(k))?;
+    let mut stop = (0..run.len()).rev().find(|&k| partnered(k))? + 1;
+    // A caption under a figure can run a line or two longer than the one
+    // beside it.
+    while stop < run.len() {
+        let Piece::Line(line) = run[stop] else { break };
+        let above = (start..stop).rev().find(|&k| column_of[k] == column_of[stop]);
+        let close = above.is_some_and(|k| {
+            let (_, y, _, _) = run[k].rect();
+            y - (line.y + line.height) < line.height.max(body) * 0.8
+        });
+        if line.font_size >= body * 0.95 || !close {
+            break;
+        }
+        stop += 1;
+    }
+    let pieces = &run[start..stop];
+    let columns: Vec<Vec<Piece>> = x_columns(pieces, body)
+        .into_iter()
+        .map(|members| members.into_iter().map(|k| pieces[k]).collect())
+        .collect();
+    let holds_figure = |c: &Vec<Piece>| {
+        c.iter().any(is_figure)
+            || c.iter()
+                .all(|p| matches!(p, Piece::Line(l) if l.font_size < body * 0.95))
+    };
+    (columns.len() >= 2 && columns.iter().all(holds_figure)).then_some((start, stop, columns))
 }
 
 /// The left edge most lines share, to the point.
@@ -534,6 +677,7 @@ struct PageContent<'c, 'a> {
     lines: &'c [&'a PdfLine],
     images: &'c [&'a PdfImage],
     tables: &'c [&'a Table],
+    listings: &'c [&'a Listing],
     /// Labels in the margin column, each its lines top-down.
     labels: &'c [Vec<&'a PdfLine>],
 }
@@ -552,6 +696,7 @@ fn order_page<'a>(
         lines,
         images,
         tables,
+        listings,
         labels,
     } = *content;
     let gutters = find_gutters(lines, images, page, body);
@@ -580,6 +725,7 @@ fn order_page<'a>(
         .map(|l| Piece::Line(l))
         .chain(images.iter().map(|i| Piece::Image(i)))
         .chain(tables.iter().map(|t| Piece::Table(t)))
+        .chain(listings.iter().map(|b| Piece::Listing(b)))
         .collect();
     // Top-down by 2-point rows; within a row, a title set flush with the
     // top of a figure reads before it, then left to right.
@@ -615,27 +761,46 @@ fn order_page<'a>(
     let columns = gutters.len() + 1;
     let mut out = Vec::new();
     let mut band: Vec<Vec<Piece<'a>>> = vec![Vec::new(); columns];
+    // The measure of a column: its widest line and where most lines start.
+    let measure = |pieces: &[Piece<'a>]| {
+        let lines: Vec<&PdfLine> = pieces
+            .iter()
+            .filter_map(|p| match p {
+                Piece::Line(l) => Some(*l),
+                Piece::Image(_) | Piece::Table(_) | Piece::Listing(_) => None,
+            })
+            .collect();
+        (lines.iter().map(|l| l.width).fold(0.0, f32::max), dominant_x(&lines))
+    };
+    let to_flow = |piece: Piece<'a>, width: f32, x: f32| match piece {
+        Piece::Line(line) => placed(line, width, x),
+        Piece::Image(image) => figure(image),
+        Piece::Table(table) => Flow::Table {
+            table,
+            page: page_index,
+        },
+        Piece::Listing(listing) => Flow::Listing {
+            listing,
+            page: page_index,
+        },
+    };
     let flush_band = |band: &mut Vec<Vec<Piece<'a>>>, out: &mut Vec<Flow<'a>>| {
         for col in band.iter_mut() {
-            let col_lines: Vec<&PdfLine> = col
-                .iter()
-                .filter_map(|p| match p {
-                    Piece::Line(l) => Some(*l),
-                    Piece::Image(_) | Piece::Table(_) => None,
-                })
-                .collect();
-            let width = col_lines.iter().map(|l| l.width).fold(0.0, f32::max);
-            let x = dominant_x(&col_lines);
+            let pieces = std::mem::take(col);
+            let (width, x) = measure(&pieces);
             // Pieces in a column are already top-down; same-row ties are by x.
-            for piece in col.drain(..) {
-                out.push(match piece {
-                    Piece::Line(line) => placed(line, width, x),
-                    Piece::Image(image) => figure(image),
-                    Piece::Table(table) => Flow::Table {
-                        table,
-                        page: page_index,
-                    },
-                });
+            for part in side_by_side(pieces, body) {
+                match part {
+                    Part::One(piece) => out.push(to_flow(piece, width, x)),
+                    Part::Group(columns) => {
+                        let mut items = Vec::new();
+                        for column in columns {
+                            let (width, x) = measure(&column);
+                            items.extend(column.into_iter().map(|p| to_flow(p, width, x)));
+                        }
+                        out.push(Flow::Group(items));
+                    }
+                }
             }
         }
     };
@@ -659,14 +824,11 @@ fn order_page<'a>(
             Some(col) => band[col].push(piece),
             None => {
                 flush_band(&mut band, &mut out);
-                out.push(match piece {
-                    Piece::Line(line) => placed(line, spanning_width, line.x),
-                    Piece::Image(image) => figure(image),
-                    Piece::Table(table) => Flow::Table {
-                        table,
-                        page: page_index,
-                    },
-                });
+                let x = match piece {
+                    Piece::Line(line) => line.x,
+                    _ => 0.0,
+                };
+                out.push(to_flow(piece, spanning_width, x));
             }
         }
     }
@@ -711,9 +873,22 @@ fn insert_labels<'a>(
 /// text of the page, not in the middle of the column it sits under. A
 /// page that is mostly small text (references) is left alone.
 fn defer_footnotes<'a>(flow: Vec<Flow<'a>>, page: &PdfPage, body: f32) -> Vec<Flow<'a>> {
+    let body_lines: Vec<&PdfLine> = flow
+        .iter()
+        .filter_map(Flow::text)
+        .map(|p| p.line)
+        .filter(|l| l.font_size >= body * 0.85)
+        .collect();
+    // A footnote has no body text below it in its column (small type in a
+    // display equation does).
     let is_note = |f: &Flow| {
         f.text().is_some_and(|p| {
-            p.line.font_size < body * 0.85 && p.line.y + p.line.height < page.height * 0.3
+            let l = p.line;
+            l.font_size < body * 0.85
+                && l.y + l.height < page.height * 0.3
+                && !body_lines
+                    .iter()
+                    .any(|b| b.y + b.height < l.y && b.x < l.x + l.width && b.x + b.width > l.x)
         })
     };
     let chars = |f: &Flow| f.text().map_or(0, |p| p.line.text.chars().count());
@@ -742,21 +917,35 @@ fn keep_paragraphs_whole(mut flow: Vec<Flow<'_>>, body: f32) -> Vec<Flow<'_>> {
         let end = (i..flow.len())
             .find(|&k| flow[k].text().is_some())
             .unwrap_or(flow.len());
+        // The figures' caption, if one follows, goes with them.
+        let mut resume = end;
+        if flow.get(end).and_then(Flow::text).is_some_and(|c| is_caption(&c.line.text)) {
+            resume += 1;
+            while let (Some(c), Some(next)) = (flow[resume - 1].text(), flow.get(resume).and_then(Flow::text)) {
+                if breaks_paragraph(c, next, body) {
+                    break;
+                }
+                resume += 1;
+            }
+        }
         let before = i.checked_sub(1).and_then(|k| flow[k].text());
-        let after = flow.get(end).and_then(Flow::text);
+        let after = flow.get(resume).and_then(Flow::text);
         let pinned = flow[i..end].iter().any(Flow::pinned);
+        // Moving a caption too takes a sentence the figure cut short.
+        let cut_short = resume == end || before.is_some_and(|a| !ends_sentence(&a.line.text));
         if let (Some(a), Some(b)) = (before, after)
             && !pinned
+            && cut_short
             && !is_caption(&b.line.text)
             && !is_heading(b, body)
             && !breaks_by_shape(a, b, body)
         {
-            held_images.extend(i..end);
-            if let Flow::Text(p) = &mut flow[end] {
+            held_images.extend(i..resume);
+            if let Flow::Text(p) = &mut flow[resume] {
                 p.joined = true;
             }
         }
-        i = end;
+        i = resume;
     }
 
     let mut out: Vec<Flow> = Vec::with_capacity(flow.len());
@@ -981,6 +1170,7 @@ pub(crate) fn line_runs(line: &PdfLine) -> std::borrow::Cow<'_, [PdfRun]> {
             width: line.width,
             bold: line.bold,
             underline: false,
+            mono: false,
             space_before: false,
         }])
     } else {
@@ -1173,6 +1363,10 @@ enum Block {
         rows: Vec<Vec<TableCell>>,
         page: usize,
     },
+    Code {
+        text: String,
+        page: usize,
+    },
 }
 
 /// A cell of a reflowed table.
@@ -1189,14 +1383,15 @@ impl Block {
             Block::Heading { page, .. }
             | Block::Paragraph { page, .. }
             | Block::Image { page, .. }
-            | Block::Table { page, .. } => *page,
+            | Block::Table { page, .. }
+            | Block::Code { page, .. } => *page,
         }
     }
 
     /// Plain text, as conversion gives it back for the block.
     fn text(&self) -> String {
         match self {
-            Block::Heading { text, .. } => text.clone(),
+            Block::Heading { text, .. } | Block::Code { text, .. } => text.clone(),
             Block::Paragraph { para, .. } => para.text(),
             Block::Image { caption, .. } => caption.clone(),
             Block::Table { rows, .. } => rows
@@ -1213,6 +1408,7 @@ impl Block {
                 format!("<h{level}>{}</h{level}>", escape_html(text))
             }
             Block::Paragraph { para, .. } => format!("<p>{}</p>", para.html()),
+            Block::Code { text, .. } => format!("<pre><code>{}</code></pre>", escape_html(text)),
             Block::Table { rows, .. } => {
                 let mut out = String::from("<table>");
                 for row in rows {
@@ -1343,6 +1539,19 @@ fn assemble(flow: &[Flow<'_>], body: f32, sizes: &[u32]) -> Vec<Block> {
                 text.clear();
                 blocks.push(table_block(table, *page));
             }
+            Flow::Listing { listing, page } => {
+                assemble_text(&text, body, sizes, &mut blocks);
+                text.clear();
+                blocks.push(Block::Code {
+                    text: listing.text.clone(),
+                    page: *page,
+                });
+            }
+            Flow::Group(items) => {
+                assemble_text(&text, body, sizes, &mut blocks);
+                text.clear();
+                blocks.extend(assemble(items, body, sizes));
+            }
         }
     }
     assemble_text(&text, body, sizes, &mut blocks);
@@ -1378,7 +1587,31 @@ fn is_heading(p: &Placed<'_>, body: f32) -> bool {
     p.label.is_some() || heading_size(p.line, body).is_some()
 }
 
+/// Lines set in a typewriter face read as code; the rest as headings and
+/// paragraphs.
 fn assemble_text(placed: &[&Placed<'_>], body: f32, sizes: &[u32], blocks: &mut Vec<Block>) {
+    let code = |p: &Placed| p.label.is_none() && pdf_listing::is_mono(p.line);
+    let mut start = 0;
+    while start < placed.len() {
+        let is_code = code(placed[start]);
+        let end = (start..placed.len())
+            .find(|&k| code(placed[k]) != is_code)
+            .unwrap_or(placed.len());
+        let run = &placed[start..end];
+        if is_code {
+            let lines: Vec<&PdfLine> = run.iter().map(|p| p.line).collect();
+            blocks.push(Block::Code {
+                text: pdf_listing::code_text(&lines),
+                page: run[0].page,
+            });
+        } else {
+            assemble_prose(run, body, sizes, blocks);
+        }
+        start = end;
+    }
+}
+
+fn assemble_prose(placed: &[&Placed<'_>], body: f32, sizes: &[u32], blocks: &mut Vec<Block>) {
     let large = |size: u32| size as f32 / 2.0 >= body * HEADING_SCALE;
     let mut candidates: Vec<Option<u32>> = placed
         .iter()
@@ -1571,7 +1804,23 @@ fn breaks_paragraph(a: &Placed<'_>, b: &Placed<'_>, body: f32) -> bool {
 /// last line.
 fn breaks_by_shape(a: &Placed<'_>, b: &Placed<'_>, body: f32) -> bool {
     let (la, lb) = (a.line, b.line);
+    // Right after it on the same row (the parts of a display equation):
+    // lines of running text never overlap. A label in the margin stands
+    // further off.
+    let overlap = (la.y + la.height).min(lb.y + lb.height) - la.y.max(lb.y);
+    let gap = lb.x - (la.x + la.width);
+    if a.page == b.page && gap >= -1.0 && gap < body * 2.0 && overlap > la.height.min(lb.height) * 0.3 {
+        return false;
+    }
     if (la.font_size - lb.font_size).abs() > 0.5 {
+        return true;
+    }
+    // A contents entry ends at its page number, set off far to the right.
+    let runs = line_runs(la);
+    if let [.., before, last] = runs.as_ref()
+        && is_number(last.text.trim())
+        && last.x - (before.x + before.width) > la.font_size * 2.0
+    {
         return true;
     }
     // Moving between a column and full-width text starts a new block.
@@ -1580,12 +1829,15 @@ fn breaks_by_shape(a: &Placed<'_>, b: &Placed<'_>, body: f32) -> bool {
     }
     let step = lb.x - la.x;
     let numbered_b = enumerator(&lb.text).is_some();
+    // Wrapped text never starts with a bullet.
+    if lb.text.trim_start().starts_with(BULLETS) {
+        return true;
+    }
     // A numbered item starts after a line that ends a sentence, where the
     // item before it did or further left; a sub-item stepped in starts
     // after any line. (A wrapped sentence can start "21. The" too.)
-    let ends_sentence = la.text.trim_end().ends_with(['。', '；', '：', '！', '？', '.', ';', ':', '!', '?']);
     if let Some(e) = enumerator(&lb.text)
-        && (ends_sentence || (e.strong && step > body * 0.8))
+        && (ends_sentence(&la.text) || (e.strong && step > body * 0.8))
         && (step <= body * 0.5 || step > body * 0.8)
     {
         return true;
@@ -1606,6 +1858,12 @@ fn breaks_by_shape(a: &Placed<'_>, b: &Placed<'_>, body: f32) -> bool {
     la.width < a.column_width * SHORT_LINE
 }
 
+const BULLETS: [char; 8] = ['•', '●', '○', '◦', '▪', '■', '◆', '‣'];
+
+fn ends_sentence(text: &str) -> bool {
+    text.trim_end().ends_with(['。', '；', '：', '！', '？', '.', ';', ':', '!', '?'])
+}
+
 /// The number that starts a numbered item or clause.
 #[derive(Debug, PartialEq)]
 struct Enumerator {
@@ -1623,7 +1881,7 @@ fn enumerator(text: &str) -> Option<Enumerator> {
     let mut chars = t.chars().peekable();
     let first = *chars.peek()?;
     let followed_by_text = |c: Option<char>| c.is_some_and(|c| c.is_whitespace() || is_cjk(c));
-    if "•●○◦▪■◆‣".contains(first) {
+    if BULLETS.contains(&first) {
         return Some(Enumerator { depth: 1, strong: true });
     }
     if first == '(' || first == '（' {
@@ -1714,6 +1972,7 @@ fn escape_html(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::import::PdfBox;
     use eddy_model::BlockKind;
 
     const W: f32 = 612.0;
@@ -1753,6 +2012,7 @@ mod tests {
             images: Vec::new(),
             frames: Vec::new(),
             rules: Vec::new(),
+            boxes: Vec::new(),
         }
     }
 
@@ -1794,6 +2054,72 @@ mod tests {
         assert!(!all.contains("\n2\n"), "{all}");
         assert!(all.contains("Only on this page"), "{all}");
         assert!(all.contains("p1 line 0"), "{all}");
+    }
+
+    #[test]
+    fn listings_side_by_side_read_one_after_another_after_the_paragraph() {
+        // The left column's paragraph runs on at the top of the right
+        // column under a figure: two boxed listings, each captioned.
+        let mut lines = column(72.0, 220.0, 700.0, 20, "left");
+        let mut boxes = Vec::new();
+        for (dx, name, sub) in [(0.0, "def a(x):", "(a) First listing"), (112.0, "def b(x):", "(b) Second listing")] {
+            let x = 320.0 + dx;
+            boxes.push(PdfBox {
+                x,
+                y: 640.0,
+                width: 106.0,
+                height: 60.0,
+            });
+            for (text, indent, y) in [
+                (name, 4.0, 688.0),
+                ("y ← 0", 8.0, 679.0),
+                ("for i in x:", 8.0, 670.0),
+                ("y ← y + i", 12.0, 661.0),
+                ("return", 8.0, 652.0),
+            ] {
+                lines.push(line(text, x + indent, y, 7.0));
+            }
+            lines.push(line(sub, x, 625.0, 8.0));
+        }
+        lines.push(wide("Figure 3: Two listings", 330.0, 600.0, 200.0, 10.0));
+        lines.extend(column(320.0, 220.0, 580.0, 15, "right"));
+        let mut p = page(lines);
+        p.boxes = boxes;
+        let doc = document(&[p]);
+        let t = texts(&doc);
+        assert_eq!(t.len(), 6, "{t:?}");
+        assert!(t[0].starts_with("left line 0") && t[0].ends_with("right line 14 of the column text"));
+        assert!(matches!(doc.blocks[1].kind, BlockKind::Code { .. }), "{:?}", doc.blocks[1].kind);
+        assert_eq!(t[1], "def a(x):\n  y ← 0\n  for i in x:\n    y ← y + i\n  return");
+        assert_eq!(t[2], "(a) First listing");
+        assert!(t[3].starts_with("def b(x):"), "{t:?}");
+        assert_eq!(t[4], "(b) Second listing");
+        assert_eq!(t[5], "Figure 3: Two listings");
+    }
+
+    #[test]
+    fn typewriter_lines_read_as_code() {
+        let mono = |text: &str, x: f32, y: f32| {
+            let mut l = line(text, x, y, 10.0);
+            l.runs = vec![PdfRun {
+                text: text.into(),
+                x,
+                width: l.width,
+                mono: true,
+                ..PdfRun::default()
+            }];
+            l
+        };
+        let doc = document(&[page(vec![
+            wide("Run the command below to start it all up again.", 72.0, 700.0, 300.0, 10.0),
+            mono("make build", 72.0, 686.0),
+            mono("make run", 72.0, 674.0),
+            wide("Then the server listens on its port as before.", 72.0, 660.0, 300.0, 10.0),
+        ])]);
+        let t = texts(&doc);
+        assert_eq!(t.len(), 3, "{t:?}");
+        assert!(matches!(doc.blocks[1].kind, BlockKind::Code { .. }));
+        assert_eq!(t[1], "make build\nmake run");
     }
 
     #[test]
@@ -1858,6 +2184,7 @@ mod tests {
                 width: text.chars().count() as f32 * 5.0,
                 bold,
                 underline: false,
+                mono: false,
                 space_before: i > 0,
             })
             .collect();
