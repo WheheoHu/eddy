@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use eddy_model::{
-    Block, BlockKind, Document, EPUB_SCHEME, MediaKind, Run, TableCell, TableRow, ids::sha256_hex,
+    Block, BlockKind, Document, EPUB_SCHEME, MediaKind, PDF_SCHEME, Run, TableCell, TableRow, ids::sha256_hex,
     style,
 };
 use scraper::{ElementRef, Html, Node};
@@ -588,12 +588,13 @@ impl Converter {
             Some(base) => base.join(href).ok()?,
             None => Url::parse(href).ok()?,
         };
-        // Files of an imported book stay addressable inside its archive.
-        let in_archive = url.scheme() == EPUB_SCHEME
+        // Files of an imported book or PDF stay addressable inside it; a
+        // page from elsewhere cannot point into the library this way.
+        let in_archive = matches!(url.scheme(), EPUB_SCHEME | PDF_SCHEME)
             && self
                 .base
                 .as_ref()
-                .is_some_and(|b| b.scheme() == EPUB_SCHEME);
+                .is_some_and(|b| b.scheme() == url.scheme());
         (matches!(url.scheme(), "http" | "https") || in_archive).then(|| url.to_string())
     }
 

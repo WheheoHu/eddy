@@ -11,7 +11,7 @@ use std::sync::Arc;
 use eddy_doc::{ConvertOptions, html_to_document};
 use eddy_epub::{Book, Epub, EpubError};
 use eddy_model::{
-    BlockKind, ContentVersion, Document, EPUB_MIME, EPUB_SCHEME, Entity, Item, ItemKind, PDF_MIME,
+    BlockKind, ContentVersion, Document, EPUB_MIME, EPUB_SCHEME, Entity, Item, ItemKind, PDF_MIME, PDF_SCHEME,
     fields, ids, now_ms,
 };
 use serde_json::json;
@@ -40,6 +40,26 @@ pub struct PdfPage {
     pub height: f32,
     /// Lines in content-stream order, not reading order.
     pub lines: Vec<PdfLine>,
+    /// Raster images placed on the page, in content-stream order.
+    pub images: Vec<PdfImage>,
+}
+
+/// A raster image on a page. Its pixels are read on demand through
+/// `PdfReader::image`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PdfImage {
+    /// Position among the page's objects, stable for a given file.
+    pub index: u32,
+    /// Placement on the page, in the same coordinates as lines.
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub pixel_width: u32,
+    pub pixel_height: u32,
+    /// Identifies the same image data drawn on several pages (a logo, a
+    /// watermark).
+    pub fingerprint: u64,
 }
 
 /// One visual line of text with its bounding box.
@@ -61,6 +81,11 @@ pub struct PdfLine {
 /// PDFs import and open but have no text to search, summarize or reflow.
 pub trait PdfReader: Send + Sync {
     fn read(&self, path: &Path) -> Option<PdfText>;
+
+    /// Encoded bytes and MIME type of image `index` on page `page`.
+    fn image(&self, _path: &Path, _page: u32, _index: u32) -> Option<(Vec<u8>, &'static str)> {
+        None
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -244,7 +269,7 @@ impl Inner {
         let text = self.read_pdf(key)?.unwrap_or_default();
         let title = pdf_title(text.title.as_deref(), file_name);
         let item_id = self.create_imported_item(ItemKind::Saved, &title, text.author.as_deref())?;
-        let document = crate::pdf_layout::document(&text.pages);
+        let document = crate::pdf_layout::document(&text.pages, key);
         let ingested = self.ingest_document(&item_id, document, key, PDF_MIME, None)?;
         self.switch_version(&item_id, &ingested)?;
         self.after_ingest(&item_id, &ingested);
@@ -307,7 +332,7 @@ impl Inner {
 
     /// The text document of a stored PDF, when a PDF reader is available.
     pub(crate) fn pdf_document(&self, key: &str) -> Result<Option<Document>> {
-        Ok(self.read_pdf(key)?.map(|t| crate::pdf_layout::document(&t.pages)))
+        Ok(self.read_pdf(key)?.map(|t| crate::pdf_layout::document(&t.pages, key)))
     }
 
     /// Regenerates an EPUB chapter's document from the stored book.
@@ -372,6 +397,26 @@ impl Inner {
         Ok(bytes.map(|b| (b, mime)))
     }
 
+    /// An image inside a stored PDF, decoded by the PDF reader.
+    pub(crate) async fn pdf_image(&self, url: &str) -> Result<Option<(Vec<u8>, &'static str)>> {
+        let Some((key, page, index)) = parse_pdf_image_url(url) else {
+            return Ok(None);
+        };
+        let reader = self.pdf_reader.read().clone();
+        let Some(reader) = reader else {
+            return Ok(None);
+        };
+        let Some(file) = self.local_blob_file(&key).await? else {
+            return Ok(None);
+        };
+        Ok(
+            tokio::task::spawn_blocking(move || reader.image(&file, page, index))
+                .await
+                .ok()
+                .flatten(),
+        )
+    }
+
     /// Path of a blob, downloading it from the sync server when missing here.
     pub(crate) async fn local_blob_file(&self, key: &str) -> Result<Option<PathBuf>> {
         if let Some(path) = self.store.blob_file(key)? {
@@ -407,6 +452,19 @@ pub(crate) fn parse_archive_url(url: &str) -> Option<(String, String)> {
     let key = url.host_str()?.to_string();
     let path = eddy_epub::decode_path(url.path());
     (!path.is_empty()).then_some((key, path))
+}
+
+/// The PDF blob, page and object index of a `pdf://` image URL.
+pub(crate) fn parse_pdf_image_url(url: &str) -> Option<(String, u32, u32)> {
+    let url = url::Url::parse(url).ok()?;
+    if url.scheme() != PDF_SCHEME {
+        return None;
+    }
+    let key = url.host_str()?.to_string();
+    let mut parts = url.path().trim_start_matches('/').split('/');
+    let page = parts.next()?.parse().ok()?;
+    let index = parts.next()?.parse().ok()?;
+    parts.next().is_none().then_some((key, page, index))
 }
 
 /// Converts a chapter. Untitled chapters take their opening heading as the

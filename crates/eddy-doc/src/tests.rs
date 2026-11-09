@@ -82,6 +82,38 @@ fn archive_references_resolve_only_inside_an_archive() {
 }
 
 #[test]
+fn pdf_images_resolve_only_inside_their_pdf() {
+    let d = html_to_document(
+        r#"<figure><img src="2/7" width="900" height="600"><figcaption>Figure 1</figcaption></figure>"#,
+        &ConvertOptions {
+            base_url: Some("pdf://abc/"),
+            title: None,
+        },
+    );
+    assert!(
+        matches!(&d.blocks[0].kind, BlockKind::Image { src, .. } if src == "pdf://abc/2/7"),
+        "{:?}",
+        d.blocks
+    );
+    assert_eq!(d.blocks[0].plain_text(), "Figure 1");
+    let web = doc(r#"<p>x</p><img src="pdf://abc/2/7">"#);
+    assert!(
+        web.blocks
+            .iter()
+            .all(|b| !matches!(b.kind, BlockKind::Image { .. }))
+    );
+    // Nor can a book reach into a PDF.
+    let book = html_to_document(
+        r#"<img src="pdf://abc/2/7">"#,
+        &ConvertOptions {
+            base_url: Some("epub://book/ch1.xhtml"),
+            title: None,
+        },
+    );
+    assert!(book.blocks.is_empty());
+}
+
+#[test]
 fn nested_lists_quotes_and_continuations() {
     let d = doc(
         "<ol start=3><li>one</li><li>two<ul><li>inner</li></ul><p>more</p></li></ol><blockquote><p>q</p><blockquote>qq</blockquote></blockquote>",

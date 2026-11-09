@@ -16,7 +16,7 @@ use eddy_model::{BlockKind, Document, runs_plain_text};
 /// Version of the document model produced by this crate. Bump it whenever the
 /// conversion output changes so stored documents are regenerated from their
 /// raw source.
-pub const SCHEMA_VERSION: u32 = 6;
+pub const SCHEMA_VERSION: u32 = 7;
 
 /// A unit of text sent for translation, keyed so results map back to blocks.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]

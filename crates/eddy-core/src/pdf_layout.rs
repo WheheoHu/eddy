@@ -1,20 +1,26 @@
-//! Reflows the lines of a PDF into a document using their geometry.
+//! Reflows the lines and images of a PDF into a document using their
+//! geometry.
 //!
 //! Running headers and footers (the same text in the page margins on
 //! several pages) and bare page numbers are dropped. Columns are found
-//! from gutters no line crosses and read one after another; a line that
-//! spans the gutter (a title, a wide caption) splits the page into bands.
-//! Headings are lines set larger than the body text, or short bold lines.
-//! Paragraphs break at vertical gaps, first-line indents and short last
-//! lines; hyphenation at line ends is undone and CJK lines join without
+//! from gutters no line crosses and read one after another; a line or image
+//! that spans the gutter (a title, a wide figure) splits the page into
+//! bands. Headings are lines set larger than the body text, or short bold
+//! lines. Paragraphs break at vertical gaps, first-line indents and short
+//! last lines; hyphenation at line ends is undone and CJK lines join without
 //! spaces.
+//!
+//! Images become figures where they sit in the reading order, moved to the
+//! end of a paragraph they interrupt, with a "Figure N" line below as their
+//! caption. Covers, full-page backgrounds, watermarks, logos repeated on
+//! many pages, and small decorations are left out.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use eddy_doc::{ConvertOptions, html_to_document};
-use eddy_model::Document;
+use eddy_model::{Document, PDF_SCHEME};
 
-use crate::import::{PdfLine, PdfPage};
+use crate::import::{PdfImage, PdfLine, PdfPage};
 
 /// Fraction of the page height at top and bottom that counts as margin.
 const MARGIN: f32 = 0.1;
@@ -25,25 +31,47 @@ const BOLD_HEADING_CHARS: usize = 120;
 /// A line this much narrower than its column ends a paragraph.
 const SHORT_LINE: f32 = 0.75;
 
-pub(crate) fn document(pages: &[PdfPage]) -> Document {
+/// The document of a PDF stored as blob `key`; images address it as
+/// `pdf://<key>/<page>/<object>`.
+pub(crate) fn document(pages: &[PdfPage], key: &str) -> Document {
     let html = reflow_html(pages);
-    html_to_document(&html, &ConvertOptions::default())
+    let base = format!("{PDF_SCHEME}://{key}/");
+    html_to_document(
+        &html,
+        &ConvertOptions {
+            base_url: Some(&base),
+            title: None,
+        },
+    )
 }
 
 fn reflow_html(pages: &[PdfPage]) -> String {
     let body = body_size(pages);
     let repeated = repeated_margin_text(pages);
-    let mut placed = Vec::new();
-    for page in pages {
-        let kept: Vec<&PdfLine> = page
+    let repeated_images = repeated_images(pages);
+    let mut flow = Vec::new();
+    for (n, page) in pages.iter().enumerate() {
+        let lines: Vec<&PdfLine> = page
             .lines
             .iter()
             .filter(|l| !l.text.trim().is_empty())
             .filter(|l| !is_margin_junk(l, page, &repeated))
             .collect();
-        placed.extend(order_page(&kept, page, body));
+        let images: Vec<&PdfImage> = page
+            .images
+            .iter()
+            .filter(|i| keeps_image(i, n, page, &lines, body, &repeated_images))
+            .collect();
+        // Labels drawn as text over a kept figure belong to the figure.
+        let lines: Vec<&PdfLine> = lines
+            .into_iter()
+            .filter(|l| !images.iter().any(|i| is_label_of(l, i)))
+            .collect();
+        flow.extend(order_page(&lines, &images, n, page, body));
     }
-    let blocks = assemble(&placed, body);
+    let flow = keep_paragraphs_whole(flow, body);
+    let sizes = heading_sizes(&flow, body);
+    let blocks = attach_captions(assemble(&flow, body, &sizes));
     blocks.iter().map(Block::html).collect()
 }
 
@@ -157,6 +185,110 @@ fn is_number(s: &str) -> bool {
             || s.chars().all(|c| matches!(c, 'i' | 'v' | 'x' | 'l' | 'c' | 'd' | 'm')))
 }
 
+/// Images drawn on three or more pages, or on most of them: logos,
+/// watermarks, page decorations.
+fn repeated_images(pages: &[PdfPage]) -> HashSet<u64> {
+    if pages.len() < 2 {
+        return HashSet::new();
+    }
+    let mut counts: HashMap<u64, usize> = HashMap::new();
+    for page in pages {
+        let seen: HashSet<u64> = page.images.iter().map(|i| i.fingerprint).collect();
+        for f in seen {
+            *counts.entry(f).or_default() += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .filter(|&(_, n)| n >= 3 || n * 2 > pages.len())
+        .map(|(f, _)| f)
+        .collect()
+}
+
+/// Whether an image is content worth showing rather than a cover,
+/// background, watermark or decoration.
+fn keeps_image(
+    image: &PdfImage,
+    page_index: usize,
+    page: &PdfPage,
+    lines: &[&PdfLine],
+    body: f32,
+    repeated: &HashSet<u64>,
+) -> bool {
+    let page_area = (page.width * page.height).max(1.0);
+    // Only the part on the page counts; bleeds hang off the edges.
+    let left = image.x.max(0.0);
+    let right = (image.x + image.width).min(page.width);
+    let bottom = image.y.max(0.0);
+    let top = (image.y + image.height).min(page.height);
+    let (width, height) = (right - left, top - bottom);
+    if width <= 0.0 || height <= 0.0 {
+        return false;
+    }
+    let area = width * height;
+    // Icons, bullets, spacers: tiny on the page or in pixels.
+    if area < 36.0 * 36.0 || image.pixel_width * image.pixel_height < 64 * 64 {
+        return false;
+    }
+    // Rules and bars.
+    if width.max(height) > width.min(height) * 15.0 {
+        return false;
+    }
+    if area >= page_area * 0.85 || repeated.contains(&image.fingerprint) {
+        return false;
+    }
+    if top < page.height * MARGIN || bottom > page.height * (1.0 - MARGIN) {
+        return false;
+    }
+    // A cover or title page: pictures on a first page with little text.
+    if page_index == 0 && lines.len() < 12 {
+        return false;
+    }
+    // A background or watermark under running text.
+    let text_over = lines
+        .iter()
+        .filter(|l| {
+            center_inside(l, image)
+                && l.width >= width * 0.5
+                && (l.font_size - body).abs() <= body * 0.15
+        })
+        .count();
+    text_over < 3
+}
+
+fn center_inside(line: &PdfLine, image: &PdfImage) -> bool {
+    let cx = line.x + line.width / 2.0;
+    let cy = line.y + line.height / 2.0;
+    cx > image.x && cx < image.x + image.width && cy > image.y && cy < image.y + image.height
+}
+
+/// A line drawn wholly on a figure: an axis label, a callout. A caption
+/// placed over the picture's edge is still the caption.
+fn is_label_of(line: &PdfLine, image: &PdfImage) -> bool {
+    line.x >= image.x
+        && line.x + line.width <= image.x + image.width
+        && line.y >= image.y
+        && line.y + line.height <= image.y + image.height
+        && !is_caption(&line.text)
+}
+
+/// "Figure 3", "Fig. 3", "[Figure 2.1.A]", "图 3": the caption of the
+/// figure above.
+fn is_caption(text: &str) -> bool {
+    let text = text.trim_start().trim_start_matches(['[', '(']);
+    ["figure", "fig.", "fig ", "plate", "chart", "图", "圖"]
+        .iter()
+        .any(|prefix| {
+            let Some(head) = text.get(..prefix.len()) else {
+                return false;
+            };
+            head.to_lowercase() == *prefix
+                && text[prefix.len()..].trim_start().chars().next().is_some_and(|c| {
+                    c.is_ascii_digit() || c.is_ascii_uppercase() || "一二三四五六七八九十".contains(c)
+                })
+        })
+}
+
 /// A line in reading order with the shape of the column it sits in.
 struct Placed<'a> {
     line: &'a PdfLine,
@@ -164,6 +296,40 @@ struct Placed<'a> {
     /// Where most lines of the column start; a line to the right of it is
     /// indented, one to the left is outdented (a hanging indent).
     column_x: f32,
+    /// The paragraph continues into this line across a figure, so the
+    /// vertical gap before it is not a paragraph space.
+    joined: bool,
+}
+
+/// What reads next: a line of text or a figure.
+enum Flow<'a> {
+    Text(Placed<'a>),
+    Image { image: &'a PdfImage, page: usize },
+}
+
+impl<'a> Flow<'a> {
+    fn text(&self) -> Option<&Placed<'a>> {
+        match self {
+            Flow::Text(p) => Some(p),
+            Flow::Image { .. } => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Piece<'a> {
+    Line(&'a PdfLine),
+    Image(&'a PdfImage),
+}
+
+impl Piece<'_> {
+    /// Left, bottom, width, height.
+    fn rect(&self) -> (f32, f32, f32, f32) {
+        match self {
+            Piece::Line(l) => (l.x, l.y, l.width, l.height),
+            Piece::Image(i) => (i.x, i.y, i.width, i.height),
+        }
+    }
 }
 
 /// The left edge most lines share, to the point.
@@ -180,59 +346,92 @@ fn dominant_x(lines: &[&PdfLine]) -> f32 {
 }
 
 /// Reading order for one page: columns between gutters, read one after
-/// another within each band that spanning lines delimit.
-fn order_page<'a>(lines: &[&'a PdfLine], page: &PdfPage, body: f32) -> Vec<Placed<'a>> {
-    let gutters = find_gutters(lines, page, body);
-    let column_of = |line: &PdfLine| -> Option<usize> {
-        let left = line.x;
-        let right = line.x + line.width;
-        let tolerance = body;
-        // A line spans when it reaches past a gutter on both sides.
+/// another within each band that spanning lines and images delimit.
+fn order_page<'a>(
+    lines: &[&'a PdfLine],
+    images: &[&'a PdfImage],
+    page_index: usize,
+    page: &PdfPage,
+    body: f32,
+) -> Vec<Flow<'a>> {
+    let gutters = find_gutters(lines, images, page, body);
+    let column_of = |piece: &Piece| -> Option<usize> {
+        let (x, _, width, _) = piece.rect();
+        let right = x + width;
+        // A piece spans when it reaches past a gutter on both sides.
         if gutters
             .iter()
-            .any(|&(gl, gr)| left < gl - tolerance && right > gr + tolerance)
+            .any(|&(gl, gr)| x < gl - body && right > gr + body)
         {
             return None;
         }
-        let center = line.x + line.width / 2.0;
+        let center = x + width / 2.0;
         Some(gutters.iter().filter(|&&(_, gr)| center > gr).count())
     };
 
-    let mut sorted: Vec<&PdfLine> = lines.to_vec();
-    sorted.sort_by(|a, b| {
-        let ta = a.y + a.height;
-        let tb = b.y + b.height;
-        tb.partial_cmp(&ta)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
+    let mut pieces: Vec<Piece<'a>> = lines
+        .iter()
+        .map(|l| Piece::Line(l))
+        .chain(images.iter().map(|i| Piece::Image(i)))
+        .collect();
+    // Top-down by 2-point rows; within a row, a title set flush with the
+    // top of a figure reads before it, then left to right.
+    pieces.sort_by_key(|piece| {
+        let (x, y, _, height) = piece.rect();
+        (
+            -((y + height) / 2.0).round() as i32,
+            matches!(piece, Piece::Image(_)),
+            x.round() as i32,
+        )
     });
 
     let columns = gutters.len() + 1;
     let mut out = Vec::new();
-    let mut band: Vec<Vec<&PdfLine>> = vec![Vec::new(); columns];
-    let flush_band = |band: &mut Vec<Vec<&'a PdfLine>>, out: &mut Vec<Placed<'a>>| {
+    let mut band: Vec<Vec<Piece<'a>>> = vec![Vec::new(); columns];
+    let flush_band = |band: &mut Vec<Vec<Piece<'a>>>, out: &mut Vec<Flow<'a>>| {
         for col in band.iter_mut() {
-            let width = col.iter().map(|l| l.width).fold(0.0, f32::max);
-            let x = dominant_x(col);
-            // Lines in a column are already top-down; same-row ties are by x.
-            for line in col.drain(..) {
-                out.push(Placed {
-                    line,
-                    column_width: width,
-                    column_x: x,
+            let col_lines: Vec<&PdfLine> = col
+                .iter()
+                .filter_map(|p| match p {
+                    Piece::Line(l) => Some(*l),
+                    Piece::Image(_) => None,
+                })
+                .collect();
+            let width = col_lines.iter().map(|l| l.width).fold(0.0, f32::max);
+            let x = dominant_x(&col_lines);
+            // Pieces in a column are already top-down; same-row ties are by x.
+            for piece in col.drain(..) {
+                out.push(match piece {
+                    Piece::Line(line) => Flow::Text(Placed {
+                        line,
+                        column_width: width,
+                        column_x: x,
+                        joined: false,
+                    }),
+                    Piece::Image(image) => Flow::Image {
+                        image,
+                        page: page_index,
+                    },
                 });
             }
         }
     };
-    for line in sorted {
-        match column_of(line) {
-            Some(col) => band[col].push(line),
+    for piece in pieces {
+        match column_of(&piece) {
+            Some(col) => band[col].push(piece),
             None => {
                 flush_band(&mut band, &mut out);
-                out.push(Placed {
-                    line,
-                    column_width: page.width,
-                    column_x: line.x,
+                out.push(match piece {
+                    Piece::Line(line) => Flow::Text(Placed {
+                        line,
+                        column_width: page.width,
+                        column_x: line.x,
+                        joined: false,
+                    }),
+                    Piece::Image(image) => Flow::Image {
+                        image,
+                        page: page_index,
+                    },
                 });
             }
         }
@@ -244,29 +443,98 @@ fn order_page<'a>(lines: &[&'a PdfLine], page: &PdfPage, body: f32) -> Vec<Place
 /// Small text at the foot of the page (footnotes) reads after the body
 /// text of the page, not in the middle of the column it sits under. A
 /// page that is mostly small text (references) is left alone.
-fn defer_footnotes<'a>(placed: Vec<Placed<'a>>, page: &PdfPage, body: f32) -> Vec<Placed<'a>> {
-    let is_note = |l: &PdfLine| l.font_size < body * 0.85 && l.y + l.height < page.height * 0.3;
-    let chars = |p: &Placed| p.line.text.chars().count();
-    let note_chars: usize = placed.iter().filter(|p| is_note(p.line)).map(chars).sum();
-    let total: usize = placed.iter().map(chars).sum();
+fn defer_footnotes<'a>(flow: Vec<Flow<'a>>, page: &PdfPage, body: f32) -> Vec<Flow<'a>> {
+    let is_note = |f: &Flow| {
+        f.text().is_some_and(|p| {
+            p.line.font_size < body * 0.85 && p.line.y + p.line.height < page.height * 0.3
+        })
+    };
+    let chars = |f: &Flow| f.text().map_or(0, |p| p.line.text.chars().count());
+    let note_chars: usize = flow.iter().filter(|f| is_note(f)).map(chars).sum();
+    let total: usize = flow.iter().map(chars).sum();
     if note_chars == 0 || note_chars * 5 >= total * 2 {
-        return placed;
+        return flow;
     }
-    let (notes, mut main): (Vec<_>, Vec<_>) = placed.into_iter().partition(|p| is_note(p.line));
+    let (notes, mut main): (Vec<_>, Vec<_>) = flow.into_iter().partition(|f| is_note(f));
     main.extend(notes);
     main
 }
 
+/// Figures that sit in the middle of a paragraph (at the top of the next
+/// column or page) move to where the paragraph ends, so it reads whole.
+/// A figure followed by its caption stays put.
+fn keep_paragraphs_whole(mut flow: Vec<Flow<'_>>, body: f32) -> Vec<Flow<'_>> {
+    let mut held_images: HashSet<usize> = HashSet::new();
+    let mut i = 0;
+    while i < flow.len() {
+        if flow[i].text().is_some() {
+            i += 1;
+            continue;
+        }
+        let end = (i..flow.len())
+            .find(|&k| flow[k].text().is_some())
+            .unwrap_or(flow.len());
+        let before = i.checked_sub(1).and_then(|k| flow[k].text());
+        let after = flow.get(end).and_then(Flow::text);
+        if let (Some(a), Some(b)) = (before, after)
+            && !is_caption(&b.line.text)
+            && heading_size(b.line, body).is_none()
+            && !breaks_by_shape(a, b, body)
+        {
+            held_images.extend(i..end);
+            if let Flow::Text(p) = &mut flow[end] {
+                p.joined = true;
+            }
+        }
+        i = end;
+    }
+
+    let mut out: Vec<Flow> = Vec::with_capacity(flow.len());
+    let mut held: Vec<Flow> = Vec::new();
+    for (k, item) in flow.into_iter().enumerate() {
+        if held_images.contains(&k) {
+            held.push(item);
+            continue;
+        }
+        if let Flow::Text(p) = &item
+            && !held.is_empty()
+        {
+            let prev = out.iter().rev().find_map(Flow::text);
+            let ends = heading_size(p.line, body).is_some()
+                || prev.is_none_or(|a| breaks_paragraph(a, p, body));
+            if ends {
+                out.append(&mut held);
+            }
+        } else {
+            out.append(&mut held);
+        }
+        out.push(item);
+    }
+    out.append(&mut held);
+    out
+}
+
 /// Horizontal ranges in the middle of the page that (almost) no narrow
-/// line crosses, separating columns with enough text on each side.
-fn find_gutters(lines: &[&PdfLine], page: &PdfPage, body: f32) -> Vec<(f32, f32)> {
+/// line crosses, separating columns with enough text on each side. Figures
+/// count toward how much of the page a column fills.
+fn find_gutters(
+    lines: &[&PdfLine],
+    images: &[&PdfImage],
+    page: &PdfPage,
+    body: f32,
+) -> Vec<(f32, f32)> {
     let width = page.width.max(1.0);
-    // Headings and titles are often centred across columns; only body-sized
-    // lines narrower than the page say where the columns are.
+    // Headings and titles are often centred across columns, and small type
+    // (labels, notes) sits anywhere; only body-sized lines narrower than the
+    // page say where the columns are.
     let narrow: Vec<&PdfLine> = lines
         .iter()
         .copied()
-        .filter(|l| l.width < width * 0.6 && l.font_size < body * HEADING_SCALE)
+        .filter(|l| {
+            l.width < width * 0.6
+                && l.font_size < body * HEADING_SCALE
+                && l.font_size >= body * 0.8
+        })
         .collect();
     if narrow.len() < 6 {
         return Vec::new();
@@ -324,8 +592,17 @@ fn find_gutters(lines: &[&PdfLine], page: &PdfPage, body: f32) -> Vec<(f32, f32)
         if in_col.len() < 3 {
             return Vec::new();
         }
-        let top = in_col.iter().map(|l| l.y + l.height).fold(f32::MIN, f32::max);
-        let bottom = in_col.iter().map(|l| l.y).fold(f32::MAX, f32::min);
+        let figures = images.iter().filter(|i| {
+            let c = i.x + i.width / 2.0;
+            c >= left && c < right && i.width < width * 0.6
+        });
+        let boxes = in_col
+            .iter()
+            .map(|l| (l.y, l.y + l.height))
+            .chain(figures.map(|i| (i.y, i.y + i.height)));
+        let (bottom, top) = boxes.fold((f32::MAX, f32::MIN), |(b, t), (lo, hi)| {
+            (b.min(lo), t.max(hi))
+        });
         if top - bottom < span_needed {
             return Vec::new();
         }
@@ -334,8 +611,18 @@ fn find_gutters(lines: &[&PdfLine], page: &PdfPage, body: f32) -> Vec<(f32, f32)
 }
 
 enum Block {
-    Heading { level: u8, text: String },
+    Heading {
+        level: u8,
+        text: String,
+    },
     Paragraph(String),
+    Image {
+        page: usize,
+        index: u32,
+        width: u32,
+        height: u32,
+        caption: String,
+    },
 }
 
 impl Block {
@@ -345,8 +632,41 @@ impl Block {
                 format!("<h{level}>{}</h{level}>", escape_html(text))
             }
             Block::Paragraph(text) => format!("<p>{}</p>", escape_html(text)),
+            Block::Image {
+                page,
+                index,
+                width,
+                height,
+                caption,
+            } => {
+                let caption = if caption.is_empty() {
+                    String::new()
+                } else {
+                    format!("<figcaption>{}</figcaption>", escape_html(caption))
+                };
+                format!(
+                    "<figure><img src=\"{page}/{index}\" width=\"{width}\" height=\"{height}\" alt=\"\">{caption}</figure>"
+                )
+            }
         }
     }
+}
+
+/// A "Figure N" paragraph right after a figure becomes its caption.
+fn attach_captions(blocks: Vec<Block>) -> Vec<Block> {
+    let mut out: Vec<Block> = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        if let Block::Paragraph(text) = &block
+            && is_caption(text)
+            && let Some(Block::Image { caption, .. }) = out.last_mut()
+            && caption.is_empty()
+        {
+            *caption = text.clone();
+            continue;
+        }
+        out.push(block);
+    }
+    out
 }
 
 /// Whether a line is set as a heading: larger than the body, or bold at
@@ -355,6 +675,21 @@ fn heading_size(line: &PdfLine, body: f32) -> Option<u32> {
     let larger = line.font_size >= body * HEADING_SCALE;
     let bold = line.bold && line.font_size >= body * 0.9;
     (larger || bold).then(|| (line.font_size * 2.0).round() as u32)
+}
+
+/// Sizes of the larger-than-body headings in the whole document, largest
+/// first; they rank into heading levels.
+fn heading_sizes(flow: &[Flow<'_>], body: f32) -> Vec<u32> {
+    let mut sizes: Vec<u32> = flow
+        .iter()
+        .filter_map(Flow::text)
+        .filter(|p| p.line.text.chars().any(char::is_alphabetic))
+        .filter_map(|p| heading_size(p.line, body))
+        .filter(|&size| size as f32 / 2.0 >= body * HEADING_SCALE)
+        .collect();
+    sizes.sort_unstable_by(|a, b| b.cmp(a));
+    sizes.dedup();
+    sizes
 }
 
 /// Consecutive lines that read together: a heading of one size and
@@ -372,10 +707,35 @@ fn push_body<'a>(runs: &mut Vec<Run<'a>>, lines: impl IntoIterator<Item = &'a Pl
     }
 }
 
-fn assemble(placed: &[Placed<'_>], body: f32) -> Vec<Block> {
+/// Blocks for the whole flow: text between figures assembles into headings
+/// and paragraphs, figures become image blocks.
+fn assemble(flow: &[Flow<'_>], body: f32, sizes: &[u32]) -> Vec<Block> {
+    let mut blocks = Vec::new();
+    let mut text: Vec<&Placed> = Vec::new();
+    for item in flow {
+        match item {
+            Flow::Text(p) => text.push(p),
+            Flow::Image { image, page } => {
+                assemble_text(&text, body, sizes, &mut blocks);
+                text.clear();
+                blocks.push(Block::Image {
+                    page: *page,
+                    index: image.index,
+                    width: image.pixel_width,
+                    height: image.pixel_height,
+                    caption: String::new(),
+                });
+            }
+        }
+    }
+    assemble_text(&text, body, sizes, &mut blocks);
+    blocks
+}
+
+fn assemble_text(placed: &[&Placed<'_>], body: f32, sizes: &[u32], blocks: &mut Vec<Block>) {
     let large = |size: u32| size as f32 / 2.0 >= body * HEADING_SCALE;
     let mut runs: Vec<Run> = Vec::new();
-    for (i, p) in placed.iter().enumerate() {
+    for (i, &p) in placed.iter().enumerate() {
         let mut candidate = heading_size(p.line, body);
         if let Some(size) = candidate
             && !large(size)
@@ -386,7 +746,7 @@ fn assemble(placed: &[Placed<'_>], body: f32) -> Vec<Block> {
             // next line continues.
             let continues_previous = i > 0
                 && heading_size(placed[i - 1].line, body).is_none()
-                && !breaks_paragraph(&placed[i - 1], p, body);
+                && !breaks_paragraph(placed[i - 1], p, body);
             let runs_into_next = placed.get(i + 1).is_some_and(|next| {
                 heading_size(next.line, body).is_none() && !breaks_paragraph(p, next, body)
             });
@@ -418,7 +778,6 @@ fn assemble(placed: &[Placed<'_>], body: f32) -> Vec<Block> {
 
     // Bold text at body size is a heading only when short; otherwise it is
     // a bold paragraph and reads as body text.
-    let body_key = (body * 2.0).round() as u32;
     let mut flat: Vec<Run> = Vec::new();
     for run in runs {
         match run {
@@ -435,26 +794,17 @@ fn assemble(placed: &[Placed<'_>], body: f32) -> Vec<Block> {
         }
     }
 
-    // Rank heading sizes: largest is h2, then h3, everything else h4.
-    let mut sizes: Vec<u32> = flat
-        .iter()
-        .filter_map(|r| match r {
-            Run::Heading { size, .. } => Some(*size),
-            _ => None,
-        })
-        .collect();
-    sizes.sort_unstable_by(|a, b| b.cmp(a));
-    sizes.dedup();
+    // Rank heading sizes: largest is h2, then h3, everything else h4;
+    // bold headings at body size rank below every larger one.
     let level_of = |size: u32| -> u8 {
-        let rank = if size <= body_key {
-            sizes.iter().filter(|&&s| s > body_key).count()
+        let rank = if large(size) {
+            sizes.iter().position(|&s| s == size).unwrap_or(sizes.len())
         } else {
-            sizes.iter().position(|&s| s == size).unwrap_or(0)
+            sizes.len()
         };
         (2 + rank.min(2)) as u8
     };
 
-    let mut blocks = Vec::new();
     for run in &flat {
         match run {
             Run::Heading { size, lines } => {
@@ -467,10 +817,9 @@ fn assemble(placed: &[Placed<'_>], body: f32) -> Vec<Block> {
                     text,
                 });
             }
-            Run::Body(lines) => paragraphs(lines, body, &mut blocks),
+            Run::Body(lines) => paragraphs(lines, body, blocks),
         }
     }
-    blocks
 }
 
 fn paragraphs(lines: &[&Placed<'_>], body: f32, blocks: &mut Vec<Block>) {
@@ -491,16 +840,23 @@ fn paragraphs(lines: &[&Placed<'_>], body: f32, blocks: &mut Vec<Block>) {
 /// Whether `b` starts a new paragraph after `a`.
 fn breaks_paragraph(a: &Placed<'_>, b: &Placed<'_>, body: f32) -> bool {
     let (la, lb) = (a.line, b.line);
+    let line_height = la.height.max(lb.height).max(body);
+    // Same page and column, further down: a wide gap is a paragraph space.
+    if !b.joined && lb.y < la.y && la.y - lb.y > line_height * 1.5 {
+        return true;
+    }
+    breaks_by_shape(a, b, body)
+}
+
+/// Paragraph breaks that the lines themselves show, wherever they sit:
+/// a change of size or measure, an indent, a short last line.
+fn breaks_by_shape(a: &Placed<'_>, b: &Placed<'_>, body: f32) -> bool {
+    let (la, lb) = (a.line, b.line);
     if (la.font_size - lb.font_size).abs() > 0.5 {
         return true;
     }
     // Moving between a column and full-width text starts a new block.
     if (a.column_width - b.column_width).abs() > body {
-        return true;
-    }
-    let line_height = la.height.max(lb.height).max(body);
-    // Same page and column, further down: a wide gap is a paragraph space.
-    if lb.y < la.y && la.y - lb.y > line_height * 1.5 {
         return true;
     }
     // A first-line indent: `b` steps in from where the column's lines
@@ -591,7 +947,12 @@ mod tests {
             width: W,
             height: H,
             lines,
+            images: Vec::new(),
         }
+    }
+
+    fn document(pages: &[PdfPage]) -> Document {
+        super::document(pages, "key")
     }
 
     /// Fills a column: `n` full-width lines of 10 pt text from `top` down.
@@ -834,6 +1195,100 @@ mod tests {
             texts(&doc),
             ["第二页的内容比较长一些，这一行写满了整个版面的宽度所以继续到下一页，然后结束。"]
         );
+    }
+
+    fn image(index: u32, x: f32, y: f32, width: f32, height: f32, fingerprint: u64) -> PdfImage {
+        PdfImage {
+            index,
+            x,
+            y,
+            width,
+            height,
+            pixel_width: (width * 3.0) as u32,
+            pixel_height: (height * 3.0) as u32,
+            fingerprint,
+        }
+    }
+
+    fn images(doc: &Document) -> Vec<(String, String)> {
+        doc.blocks
+            .iter()
+            .filter_map(|b| match &b.kind {
+                BlockKind::Image { src, .. } => Some((src.clone(), b.plain_text())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_figure_sits_between_paragraphs_with_its_caption() {
+        let mut p = page(vec![
+            line("Text before the figure ends here.", 72.0, 700.0, 10.0),
+            line("Figure 1: Sampling error by method.", 72.0, 470.0, 9.0),
+            line("Text after the figure starts here.", 72.0, 440.0, 10.0),
+            line("16 GB", 100.0, 550.0, 8.0),
+        ]);
+        p.lines.extend(column(72.0, 468.0, 400.0, 10, "pad"));
+        p.images.push(image(5, 72.0, 490.0, 300.0, 190.0, 1));
+        let doc = document(&[p]);
+        let t = texts(&doc);
+        assert_eq!(t[0], "Text before the figure ends here.");
+        assert!(matches!(doc.blocks[1].kind, BlockKind::Image { .. }), "{t:?}");
+        assert_eq!(
+            images(&doc),
+            [("pdf://key/0/5".to_string(), "Figure 1: Sampling error by method.".to_string())]
+        );
+        assert_eq!(t[2], "Text after the figure starts here.");
+        assert!(!t.iter().any(|s| s.contains("16 GB")), "labels on the figure go: {t:?}");
+    }
+
+    #[test]
+    fn covers_backgrounds_watermarks_logos_and_decorations_are_left_out() {
+        let body = |label: &str| column(72.0, 468.0, 650.0, 14, label);
+        let mut cover = page(vec![line("A Title", 72.0, 700.0, 24.0)]);
+        cover.images.push(image(1, 50.0, 200.0, 500.0, 400.0, 10));
+        cover.images.push(image(2, 500.0, 740.0, 60.0, 30.0, 99));
+        let mut second = page(body("second"));
+        second.images.push(image(1, 0.0, 0.0, W, H, 11));
+        second.images.push(image(2, 500.0, 740.0, 60.0, 30.0, 99));
+        second.images.push(image(3, 72.0, 450.0, 400.0, 200.0, 12));
+        second.images.push(image(4, 72.0, 300.0, 20.0, 20.0, 13));
+        second.images.push(image(5, 72.0, 20.0, 200.0, 40.0, 14));
+        second.images.push(image(6, 72.0, 380.0, 468.0, 2.0, 15));
+        let mut third = page(body("third"));
+        third.images.push(image(2, 500.0, 740.0, 60.0, 30.0, 99));
+        third.images.push(image(7, 100.0, 100.0, 300.0, 200.0, 16));
+        let doc = document(&[cover, second, third]);
+        let kept: Vec<String> = images(&doc).into_iter().map(|(src, _)| src).collect();
+        // The watermark under the body text of page 2, the cover picture,
+        // the full-page background, the logo on every page, the icon, the
+        // footer strip and the rule all go; the figure on page 3 stays.
+        assert_eq!(kept, ["pdf://key/2/7"]);
+    }
+
+    #[test]
+    fn a_figure_at_the_top_of_a_column_waits_for_the_paragraph_to_end() {
+        let mut lines = column(72.0, 220.0, 700.0, 20, "left");
+        lines.extend(column(320.0, 220.0, 520.0, 5, "right"));
+        let mut p = page(lines);
+        p.images.push(image(3, 320.0, 540.0, 220.0, 170.0, 1));
+        let doc = document(&[p]);
+        let t = texts(&doc);
+        assert!(
+            t[0].contains("left line 19 of the column text right line 0"),
+            "the paragraph runs on past the figure: {t:?}"
+        );
+        assert!(matches!(doc.blocks[1].kind, BlockKind::Image { .. }), "{t:?}");
+    }
+
+    #[test]
+    fn caption_shapes() {
+        for s in ["Figure 3: x", "Fig. 3", "FIGURE 2.", "Figure A1", "[Figure 2.2.4.1.A] Evals", "图 3 示意", "图3"] {
+            assert!(is_caption(s), "{s}");
+        }
+        for s in ["Figures show", "Figure out how", "Fig tree", "图书馆"] {
+            assert!(!is_caption(s), "{s}");
+        }
     }
 
     #[test]

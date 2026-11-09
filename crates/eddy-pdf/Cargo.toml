@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 eddy-core = { workspace = true }
 pdfium-render = { version = "0.9", default-features = false, features = ["pdfium_7881", "thread_safe", "static"] }
+png = "0.18"
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 pdfium-render = { version = "0.9", default-features = false, features = ["libc++", "core_graphics"] }

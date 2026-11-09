@@ -1,4 +1,4 @@
-use eddy_model::EPUB_SCHEME;
+use eddy_model::{EPUB_SCHEME, PDF_SCHEME};
 use eddy_model::ids::sha256_hex;
 
 use crate::engine::Inner;
@@ -13,7 +13,7 @@ impl Inner {
     pub(crate) async fn image(&self, url: &str) -> Result<(Vec<u8>, String)> {
         let parsed =
             url::Url::parse(url).map_err(|_| EngineError::Invalid("图片地址无效。".into()))?;
-        if !matches!(parsed.scheme(), "http" | "https" | EPUB_SCHEME) {
+        if !matches!(parsed.scheme(), "http" | "https" | EPUB_SCHEME | PDF_SCHEME) {
             return Err(EngineError::Invalid("图片地址无效。".into()));
         }
         let key = format!("img{}", &sha256_hex(url.as_bytes())[..40]);
@@ -24,9 +24,14 @@ impl Inner {
                 .unwrap_or_else(|| "image/*".into());
             return Ok((bytes, mime));
         }
-        if parsed.scheme() == EPUB_SCHEME {
-            // Not pinned: it can be read from the book again.
-            let (bytes, mime) = self.archive_file(url).await?.ok_or(EngineError::NotFound)?;
+        if matches!(parsed.scheme(), EPUB_SCHEME | PDF_SCHEME) {
+            // Not pinned: it can be read from the book or PDF again.
+            let found = if parsed.scheme() == EPUB_SCHEME {
+                self.archive_file(url).await?
+            } else {
+                self.pdf_image(url).await?
+            };
+            let (bytes, mime) = found.ok_or(EngineError::NotFound)?;
             if bytes.len() > MAX_IMAGE_BYTES {
                 return Err(EngineError::Invalid("图片太大。".into()));
             }

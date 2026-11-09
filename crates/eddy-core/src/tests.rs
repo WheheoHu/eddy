@@ -2052,6 +2052,7 @@ impl PdfReader for FakePdfReader {
             width: 612.0,
             height: 792.0,
             lines,
+            images: Vec::new(),
         };
         let bytes = std::fs::read(path).ok()?;
         bytes.starts_with(b"%PDF-").then(|| {
@@ -2081,13 +2082,28 @@ impl PdfReader for FakePdfReader {
                 font_size: 10.0,
                 bold: false,
             });
-            let second = lines(&["第二页的内容比较长一些", "继续"], 700.0);
+            let mut second = page(lines(&["第二页的内容比较长一些", "继续"], 700.0));
+            second.images.push(crate::PdfImage {
+                index: 4,
+                x: 72.0,
+                y: 300.0,
+                width: 300.0,
+                height: 200.0,
+                pixel_width: 900,
+                pixel_height: 600,
+                fingerprint: 1,
+            });
             PdfText {
                 title: Some("Microsoft Word - draft.docx".into()),
                 author: Some("Ada".into()),
-                pages: vec![page(first), page(second)],
+                pages: vec![page(first), second],
             }
         })
+    }
+
+    fn image(&self, path: &std::path::Path, page: u32, index: u32) -> Option<(Vec<u8>, &'static str)> {
+        std::fs::read(path).ok()?.starts_with(b"%PDF-").then_some(())?;
+        (page == 1 && index == 4).then(|| (b"\x89PNG figure".to_vec(), "image/png"))
     }
 }
 
@@ -2130,8 +2146,21 @@ async fn pdf_import_reads_text_through_the_platform_and_tracks_pages() {
             "A Short Heading",
             "Next paragraph.",
             "第二页的内容比较长一些继续",
+            "",
         ]
     );
+    let figure = doc
+        .blocks
+        .iter()
+        .find_map(|b| match &b.kind {
+            eddy_model::BlockKind::Image { src, .. } => Some(src.clone()),
+            _ => None,
+        })
+        .expect("the figure on page 2");
+    assert!(figure.starts_with("pdf://") && figure.ends_with("/1/4"), "{figure}");
+    let (bytes, mime) = engine.image(&figure).await.unwrap();
+    assert_eq!((bytes.as_slice(), mime.as_str()), (&b"\x89PNG figure"[..], "image/png"));
+    assert!(engine.image(&figure.replace("/1/4", "/1/5")).await.is_err());
     assert_eq!(
         engine.search("integrand", 5).unwrap()[0].item.item.id,
         imported.item_id

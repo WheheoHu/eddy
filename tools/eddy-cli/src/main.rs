@@ -131,6 +131,7 @@ async fn main() {
                 for b in &d.document.blocks {
                     let tag = match &b.kind {
                         BlockKind::Heading { level, .. } => format!("h{level}"),
+                        BlockKind::Image { src, .. } => format!("image {src}"),
                         other => other.tag().to_string(),
                     };
                     println!("[{tag}] {}", b.plain_text());

@@ -1,13 +1,15 @@
-//! Reads PDF text with pdfium, statically linked (see
+//! Reads PDF text and images with pdfium, statically linked (see
 //! `scripts/fetch-pdfium.sh`). Characters are grouped into visual lines with
-//! their boxes and font sizes; `eddy_core` turns those into a reflowed
-//! document. Nothing here knows about columns, headers or headings.
+//! their boxes and font sizes, and raster images are listed with where they
+//! sit; `eddy_core` turns those into a reflowed document. Nothing here knows
+//! about columns, headers or which images are worth keeping.
 
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::OnceLock;
 
-use eddy_core::{PdfLine, PdfReader, PdfText};
+use eddy_core::{PdfImage, PdfLine, PdfReader, PdfText};
 use pdfium_render::prelude::*;
 
 /// `PdfReader` backed by pdfium. Cheap to construct; the library is
@@ -26,11 +28,36 @@ impl PdfiumReader {
         let document = pdfium.load_pdf_from_file(path, None).ok()?;
         Some(read_document(&document))
     }
+
+    /// Image `index` on page `page` of the PDF at `path`, encoded: JPEG data
+    /// as stored when a browser can show it unchanged, otherwise PNG.
+    pub fn read_image(&self, path: &Path, page: u32, index: u32) -> Option<(Vec<u8>, &'static str)> {
+        let pdfium = pdfium()?;
+        let document = pdfium.load_pdf_from_file(path, None).ok()?;
+        let page = document.pages().get(i32::try_from(page).ok()?).ok()?;
+        let object = page.objects().get(index as usize).ok()?;
+        if let Some(form) = object.as_x_object_form_object() {
+            let lines = page_lines(&page);
+            let bounds = figure_bounds(form, &page, &lines)?;
+            return render_region(&page, bounds).map(|png| (png, "image/png"));
+        }
+        let image = object.as_image_object()?;
+        if let Some(jpeg) = plain_jpeg(image) {
+            return Some((jpeg, "image/jpeg"));
+        }
+        let bitmap = image.get_processed_bitmap(&document).ok()?;
+        let (width, height) = (bitmap.width(), bitmap.height());
+        encode_png(&bitmap, (0, 0, width, height)).map(|png| (png, "image/png"))
+    }
 }
 
 impl PdfReader for PdfiumReader {
     fn read(&self, path: &Path) -> Option<PdfText> {
         self.read_file(path)
+    }
+
+    fn image(&self, path: &Path, page: u32, index: u32) -> Option<(Vec<u8>, &'static str)> {
+        self.read_image(path, page, index)
     }
 }
 
@@ -68,15 +95,407 @@ fn read_document(document: &PdfDocument<'_>) -> PdfText {
 fn read_page(page: &PdfPage<'_>) -> eddy_core::PdfPage {
     let width = page.width().value;
     let height = page.height().value;
-    let lines = match page.text() {
-        Ok(text) => LineBuilder::default().run(&text),
-        Err(_) => Vec::new(),
-    };
+    let lines = page_lines(page);
+    let images = read_images(page, &lines);
     eddy_core::PdfPage {
         width,
         height,
         lines,
+        images,
     }
+}
+
+fn page_lines(page: &PdfPage<'_>) -> Vec<PdfLine> {
+    match page.text() {
+        Ok(text) => LineBuilder::default().run(&text),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Raster images drawn directly on the page, and included graphics (form
+/// XObjects holding images or vector drawings, as pdflatex embeds figures),
+/// which are shown by rendering their area of the page.
+fn read_images(page: &PdfPage<'_>, lines: &[PdfLine]) -> Vec<PdfImage> {
+    let upright = matches!(page.rotation(), Ok(PdfPageRenderRotation::None));
+    let mut images = Vec::new();
+    for (index, object) in page.objects().iter().enumerate() {
+        if let Some(form) = object.as_x_object_form_object() {
+            if !upright {
+                continue;
+            }
+            let mut contents = FormContents::default();
+            contents.add(form);
+            if !contents.is_graphic() {
+                continue;
+            }
+            let Some(bounds) = figure_bounds(form, page, lines) else {
+                continue;
+            };
+            let (width, height) = (bounds.width(), bounds.height());
+            let scale = render_scale(width);
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            (width.round() as i32, height.round() as i32).hash(&mut hasher);
+            contents.hash(&mut hasher);
+            images.push(PdfImage {
+                index: index as u32,
+                x: bounds.left,
+                y: bounds.bottom,
+                width,
+                height,
+                pixel_width: (width * scale) as u32,
+                pixel_height: (height * scale) as u32,
+                fingerprint: hasher.finish(),
+            });
+            continue;
+        }
+        let Some(image) = object.as_image_object() else {
+            continue;
+        };
+        let Ok(bounds) = object.bounds() else { continue };
+        let (Ok(pixel_width), Ok(pixel_height)) = (image.width(), image.height()) else {
+            continue;
+        };
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (pixel_width, pixel_height).hash(&mut hasher);
+        image.get_raw_image_data().unwrap_or_default().hash(&mut hasher);
+        images.push(PdfImage {
+            index: index as u32,
+            x: bounds.left().value,
+            y: bounds.bottom().value,
+            width: bounds.width().value,
+            height: bounds.height().value,
+            pixel_width: pixel_width.max(0) as u32,
+            pixel_height: pixel_height.max(0) as u32,
+            fingerprint: hasher.finish(),
+        });
+    }
+    images
+}
+
+/// What a form XObject draws, counted through nested forms.
+#[derive(Default, Hash)]
+struct FormContents {
+    images: usize,
+    paths: usize,
+    texts: usize,
+    /// Size of the first image's data, to tell apart forms of equal shape.
+    first_image_bytes: usize,
+}
+
+impl FormContents {
+    fn add(&mut self, form: &PdfPageXObjectFormObject<'_>) {
+        for object in form.iter() {
+            match object.object_type() {
+                PdfPageObjectType::Image => {
+                    if self.images == 0
+                        && let Some(image) = object.as_image_object()
+                    {
+                        self.first_image_bytes =
+                            image.get_raw_image_data().map_or(0, |d| d.len());
+                    }
+                    self.images += 1;
+                }
+                PdfPageObjectType::Path => self.paths += 1,
+                PdfPageObjectType::Text => self.texts += 1,
+                PdfPageObjectType::XObjectForm => {
+                    if let Some(inner) = object.as_x_object_form_object() {
+                        self.add(inner);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// A picture or a drawing rather than a block of text or a few rules.
+    fn is_graphic(&self) -> bool {
+        self.images > 0 || self.paths >= 10
+    }
+}
+
+/// The font size most characters on the page are set in.
+fn body_size(lines: &[PdfLine]) -> f32 {
+    let mut counts: HashMap<u32, usize> = HashMap::new();
+    for line in lines {
+        *counts.entry((line.font_size * 2.0).round() as u32).or_default() +=
+            line.text.chars().count();
+    }
+    counts
+        .into_iter()
+        .max_by_key(|&(size, n)| (n, size))
+        .map_or(0.0, |(size, _)| size as f32 / 2.0)
+}
+
+/// A rectangle on the page, in points.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Rect {
+    left: f32,
+    bottom: f32,
+    right: f32,
+    top: f32,
+}
+
+impl Rect {
+    fn width(&self) -> f32 {
+        self.right - self.left
+    }
+
+    fn height(&self) -> f32 {
+        self.top - self.bottom
+    }
+
+    fn area(&self) -> f32 {
+        self.width().max(0.0) * self.height().max(0.0)
+    }
+
+    fn union(self, other: Rect) -> Rect {
+        Rect {
+            left: self.left.min(other.left),
+            bottom: self.bottom.min(other.bottom),
+            right: self.right.max(other.right),
+            top: self.top.max(other.top),
+        }
+    }
+
+    fn intersection(self, other: Rect) -> Rect {
+        Rect {
+            left: self.left.max(other.left),
+            bottom: self.bottom.max(other.bottom),
+            right: self.right.min(other.right),
+            top: self.top.min(other.top),
+        }
+    }
+}
+
+/// An affine transform `[a b c d e f]` as in a PDF `cm` operator.
+#[derive(Clone, Copy)]
+struct Affine([f32; 6]);
+
+impl Affine {
+    fn of(m: &PdfMatrix) -> Affine {
+        Affine([m.a(), m.b(), m.c(), m.d(), m.e(), m.f()])
+    }
+
+    /// `inner` first, then `self`.
+    fn then_inside(self, inner: Affine) -> Affine {
+        let [a, b, c, d, e, f] = inner.0;
+        let [a2, b2, c2, d2, e2, f2] = self.0;
+        Affine([
+            a * a2 + b * c2,
+            a * b2 + b * d2,
+            c * a2 + d * c2,
+            c * b2 + d * d2,
+            e * a2 + f * c2 + e2,
+            e * b2 + f * d2 + f2,
+        ])
+    }
+
+    fn apply(&self, x: f32, y: f32) -> (f32, f32) {
+        let [a, b, c, d, e, f] = self.0;
+        (a * x + c * y + e, b * x + d * y + f)
+    }
+
+    fn rect(&self, left: f32, bottom: f32, right: f32, top: f32) -> Rect {
+        let corners = [
+            self.apply(left, bottom),
+            self.apply(right, bottom),
+            self.apply(left, top),
+            self.apply(right, top),
+        ];
+        let xs = corners.map(|c| c.0);
+        let ys = corners.map(|c| c.1);
+        Rect {
+            left: xs.iter().copied().fold(f32::MAX, f32::min),
+            bottom: ys.iter().copied().fold(f32::MAX, f32::min),
+            right: xs.iter().copied().fold(f32::MIN, f32::max),
+            top: ys.iter().copied().fold(f32::MIN, f32::max),
+        }
+    }
+}
+
+/// Where an included graphic actually draws on the page. A form's own
+/// bounds often take in an invisible canvas larger than the figure, or
+/// stray marks far off the page, so this unions what it draws instead:
+/// everything on the page except rectangles spanning the whole canvas.
+/// Page text the form did not draw (the caption, the body above) trims
+/// the edges; a form mostly under page text is a background, not a figure.
+fn figure_bounds(
+    form: &PdfPageXObjectFormObject<'_>,
+    page: &PdfPage<'_>,
+    lines: &[PdfLine],
+) -> Option<Rect> {
+    let page_rect = Rect {
+        left: 0.0,
+        bottom: 0.0,
+        right: page.width().value,
+        top: page.height().value,
+    };
+    let to_page = Affine::of(&form.matrix().ok()?);
+    let mut marks = Vec::new();
+    collect_marks(form, to_page, page_rect, &mut marks);
+    let extent = marks.iter().map(|m| m.0).reduce(Rect::union)?;
+    let bounds = marks
+        .iter()
+        .filter(|(rect, is_path)| !(*is_path && rect.area() >= extent.area() * 0.8))
+        .map(|m| m.0)
+        .reduce(Rect::union)?;
+    // Glyph boxes run tight; a little room keeps label edges whole.
+    let pad = 3.0;
+    let bounds = Rect {
+        left: bounds.left - pad,
+        bottom: bounds.bottom - pad,
+        right: bounds.right + pad,
+        top: bounds.top + pad,
+    }
+    .intersection(page_rect);
+    let drawn = bounds;
+    let mut bounds = bounds;
+    // Small type over a figure (labels laid on it as page text) is part of
+    // the picture; text at about body size is not.
+    let body = body_size(lines);
+    for line in lines.iter().filter(|l| l.font_size >= body * 0.8) {
+        let rect = Rect {
+            left: line.x,
+            bottom: line.y,
+            right: line.x + line.width,
+            top: line.y + line.height,
+        };
+        if rect.intersection(bounds).area() <= 0.0 {
+            continue;
+        }
+        let (cx, cy) = (line.x + line.width / 2.0, line.y + line.height / 2.0);
+        let own = marks.iter().any(|(m, is_path)| {
+            !is_path && cx >= m.left && cx <= m.right && cy >= m.bottom && cy <= m.top
+        });
+        if own {
+            continue;
+        }
+        if cy < (bounds.bottom + bounds.top) / 2.0 {
+            bounds.bottom = bounds.bottom.max(rect.top);
+        } else {
+            bounds.top = bounds.top.min(rect.bottom);
+        }
+    }
+    (bounds.width() > 0.0 && bounds.height() > 0.0 && bounds.area() >= drawn.area() * 0.3)
+        .then_some(bounds)
+}
+
+/// Page rectangles of what a form draws (and whether each is a path),
+/// leaving out marks mostly off the page.
+fn collect_marks(
+    form: &PdfPageXObjectFormObject<'_>,
+    to_page: Affine,
+    page_rect: Rect,
+    marks: &mut Vec<(Rect, bool)>,
+) {
+    for object in form.iter() {
+        if let Some(inner) = object.as_x_object_form_object() {
+            if let Ok(m) = inner.matrix() {
+                collect_marks(inner, to_page.then_inside(Affine::of(&m)), page_rect, marks);
+            }
+            continue;
+        }
+        let Ok(b) = object.bounds() else { continue };
+        let rect = to_page.rect(b.left().value, b.bottom().value, b.right().value, b.top().value);
+        let on_page = rect.intersection(page_rect).area();
+        if rect.area() <= 0.0 || on_page < rect.area() * 0.5 {
+            continue;
+        }
+        marks.push((rect, object.object_type() == PdfPageObjectType::Path));
+    }
+}
+
+/// Pixels per point for rendering a region `width` points wide: sharp on a
+/// Retina screen without making large figures huge.
+fn render_scale(width: f32) -> f32 {
+    (1600.0 / width.max(1.0)).clamp(2.0, 4.0)
+}
+
+/// The area `bounds` of an upright page, rendered and encoded as PNG.
+fn render_region(page: &PdfPage<'_>, bounds: Rect) -> Option<Vec<u8>> {
+    let scale = render_scale(bounds.width());
+    // Pixels stay in pdfium's native BGRA, as image bitmaps come.
+    let config = PdfRenderConfig::new()
+        .scale_page_by_factor(scale)
+        .render_form_data(false)
+        .set_reverse_byte_order(false);
+    let bitmap = page.render_with_config(&config).ok()?;
+    let page_height = page.height().value;
+    let px = |v: f32| (v * scale).round() as i32;
+    let left = px(bounds.left).clamp(0, bitmap.width());
+    let top = px(page_height - bounds.top).clamp(0, bitmap.height());
+    let right = px(bounds.right).clamp(0, bitmap.width());
+    let bottom = px(page_height - bounds.bottom).clamp(0, bitmap.height());
+    encode_png(&bitmap, (left, top, right - left, bottom - top))
+}
+
+/// The stored bytes when the image is a plain RGB or grayscale JPEG.
+fn plain_jpeg(image: &PdfPageImageObject<'_>) -> Option<Vec<u8>> {
+    let filters: Vec<String> = image.filters().iter().map(|f| f.name().to_string()).collect();
+    if filters != ["DCTDecode"] {
+        return None;
+    }
+    // CMYK JPEGs from print workflows come out inverted in most viewers;
+    // an ICC-based one is RGB or gray only at 24 or 8 bits per pixel.
+    let rgb_or_gray = match image.color_space().ok()? {
+        PdfColorSpace::DeviceRGB | PdfColorSpace::DeviceGray => true,
+        PdfColorSpace::CalibratedICCProfile => {
+            matches!(image.bits_per_pixel().ok()?, 8 | 24)
+        }
+        _ => false,
+    };
+    if !rgb_or_gray {
+        return None;
+    }
+    let data = image.get_raw_image_data().ok()?;
+    data.starts_with(&[0xFF, 0xD8, 0xFF]).then_some(data)
+}
+
+/// The `(left, top, width, height)` part of `bitmap` as PNG.
+fn encode_png(bitmap: &PdfBitmap<'_>, crop: (i32, i32, i32, i32)) -> Option<Vec<u8>> {
+    let (left, top) = (usize::try_from(crop.0).ok()?, usize::try_from(crop.1).ok()?);
+    let width = usize::try_from(crop.2).ok()?;
+    let height = usize::try_from(crop.3).ok()?;
+    let full_height = usize::try_from(bitmap.height()).ok()?;
+    if width == 0 || height == 0 || full_height == 0 {
+        return None;
+    }
+    let raw = bitmap.as_raw_bytes();
+    let stride = raw.len() / full_height;
+    let (channels, color) = match bitmap.format().ok()? {
+        PdfBitmapFormat::Gray => (1, png::ColorType::Grayscale),
+        PdfBitmapFormat::BGR => (3, png::ColorType::Rgb),
+        PdfBitmapFormat::BGRx => (3, png::ColorType::Rgb),
+        PdfBitmapFormat::BGRA => (4, png::ColorType::Rgba),
+    };
+    let source_channels = match bitmap.format().ok()? {
+        PdfBitmapFormat::Gray => 1,
+        PdfBitmapFormat::BGR => 3,
+        _ => 4,
+    };
+    if stride < (left + width) * source_channels || full_height < top + height {
+        return None;
+    }
+    let mut pixels = Vec::with_capacity(width * height * channels);
+    for row in raw.chunks(stride).skip(top).take(height) {
+        let row = &row[left * source_channels..(left + width) * source_channels];
+        for px in row.chunks(source_channels) {
+            match channels {
+                1 => pixels.push(px[0]),
+                3 => pixels.extend_from_slice(&[px[2], px[1], px[0]]),
+                _ => pixels.extend_from_slice(&[px[2], px[1], px[0], px[3]]),
+            }
+        }
+    }
+    let mut out = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut out, width as u32, height as u32);
+        encoder.set_color(color);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().ok()?;
+        writer.write_image_data(&pixels).ok()?;
+    }
+    Some(out)
 }
 
 /// One character with what the line grouping needs.
@@ -116,6 +535,9 @@ impl LineBuilder {
                 } else {
                     continue;
                 }
+            }
+            if is_diagonal(&c) {
+                continue;
             }
             let Ok(bounds) = c.loose_bounds() else { continue };
             let Ok((_, baseline)) = c.origin() else { continue };
@@ -222,6 +644,16 @@ fn dominant_size(glyphs: &[&Glyph]) -> f32 {
         .unwrap_or(0.0)
 }
 
+/// Text set at a slant ("DRAFT", "CONFIDENTIAL" across the page) is a
+/// watermark. Upright and vertical text (rotated by a right angle) stays.
+fn is_diagonal(c: &PdfPageTextChar<'_>) -> bool {
+    let Ok(angle) = c.angle_degrees() else {
+        return false;
+    };
+    let off_axis = angle.rem_euclid(90.0);
+    off_axis > 10.0 && off_axis < 80.0
+}
+
 /// Whether a character is set in a bold face. The font name is trusted
 /// first: pdfium's weight for fonts without a descriptor (the standard
 /// 14, as troff and old tools emit them) is a guess that is often wrong.
@@ -256,11 +688,29 @@ mod tests {
         let objects = [
             "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
             "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>".to_string(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> /XObject << /Im1 8 0 R /Fm1 9 0 R >> >> /Contents 6 0 R >>".to_string(),
             "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
             "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>".to_string(),
             format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len() + 1),
             "<< /Title (Paper) /Author (Ada) >>".to_string(),
+            // A 4x4 RGB image: red top half, blue bottom half.
+            {
+                let red = "FF0000".repeat(8);
+                let blue = "0000FF".repeat(8);
+                let data = format!("{red}{blue}>");
+                format!(
+                    "<< /Type /XObject /Subtype /Image /Width 4 /Height 4 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /ASCIIHexDecode /Length {} >>\nstream\n{data}\nendstream",
+                    data.len() + 1
+                )
+            },
+            // An included graphic: the image above, drawn in a unit box.
+            {
+                let draw = "/Im1 Do";
+                format!(
+                    "<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << /XObject << /Im1 8 0 R >> >> /Length {} >>\nstream\n{draw}\nendstream",
+                    draw.len() + 1
+                )
+            },
         ];
         let mut out = b"%PDF-1.4\n".to_vec();
         let mut offsets = Vec::new();
@@ -328,6 +778,87 @@ BT /F1 9 Tf 300 40 Td (1) Tj ET";
         assert!(page.lines[2].height > 8.0 && page.lines[2].height < 16.0);
         assert!(page.lines[2].width > 60.0);
 
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn images_are_listed_where_they_sit_and_decode_to_png() {
+        let content = "\
+BT /F1 10 Tf 72 700 Td (Body text) Tj ET
+q 200 0 0 100 72 400 cm /Im1 Do Q
+q 50 0 0 50 300 100 cm /Im1 Do Q
+BT /F1 40 Tf 0.7071 0.7071 -0.7071 0.7071 150 300 Tm (DRAFT) Tj ET";
+        let dir = tempdir();
+        let path = dir.join("images.pdf");
+        std::fs::write(&path, pdf(content)).unwrap();
+
+        let text = PdfiumReader::new().read(&path).unwrap();
+        let page = &text.pages[0];
+        let texts: Vec<&str> = page.lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, ["Body text"], "the slanted watermark is dropped");
+        assert_eq!(page.images.len(), 2);
+        let first = &page.images[0];
+        assert!((first.x - 72.0).abs() < 0.5 && (first.y - 400.0).abs() < 0.5);
+        assert!((first.width - 200.0).abs() < 0.5 && (first.height - 100.0).abs() < 0.5);
+        assert_eq!((first.pixel_width, first.pixel_height), (4, 4));
+        assert_eq!(
+            first.fingerprint, page.images[1].fingerprint,
+            "the same image drawn twice is recognisable"
+        );
+
+        let (bytes, mime) = PdfiumReader::new()
+            .image(&path, 0, first.index)
+            .expect("the image decodes");
+        assert_eq!(mime, "image/png");
+        let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+        let mut reader = decoder.read_info().unwrap();
+        let mut buf = vec![0; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut buf).unwrap();
+        assert!(info.width >= 4 && info.height >= 4);
+        let px = |x: u32, y: u32| {
+            let channels = info.line_size / info.width as usize;
+            let at = y as usize * info.line_size + x as usize * channels;
+            (buf[at], buf[at + 1], buf[at + 2])
+        };
+        assert_eq!(px(0, 0), (255, 0, 0), "top is red");
+        assert_eq!(px(0, info.height - 1), (0, 0, 255), "bottom is blue");
+
+        assert!(PdfiumReader::new().image(&path, 0, 0).is_none(), "object 0 is text");
+        assert!(PdfiumReader::new().image(&path, 3, 1).is_none(), "no page 3");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn included_graphics_are_figures_rendered_from_the_page() {
+        let content = "\
+BT /F1 10 Tf 72 700 Td (Body text) Tj ET
+q 100 0 0 80 300 500 cm /Fm1 Do Q";
+        let dir = tempdir();
+        let path = dir.join("form.pdf");
+        std::fs::write(&path, pdf(content)).unwrap();
+
+        let text = PdfiumReader::new().read(&path).unwrap();
+        let figures = &text.pages[0].images;
+        assert_eq!(figures.len(), 1, "{figures:?}");
+        let figure = &figures[0];
+        // The drawn area, padded by 3 points.
+        assert!((figure.x - 297.0).abs() < 0.5 && (figure.y - 497.0).abs() < 0.5);
+        assert!((figure.width - 106.0).abs() < 0.5 && (figure.height - 86.0).abs() < 0.5);
+
+        let (bytes, mime) = PdfiumReader::new().image(&path, 0, figure.index).unwrap();
+        assert_eq!(mime, "image/png");
+        let mut reader = png::Decoder::new(std::io::Cursor::new(bytes)).read_info().unwrap();
+        let mut buf = vec![0; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut buf).unwrap();
+        assert_eq!((info.width, info.height), (424, 344), "106x86 pt at 4 px/pt");
+        let channels = info.line_size / info.width as usize;
+        let px = |x: usize, y: usize| {
+            let at = y * info.line_size + x * channels;
+            (buf[at], buf[at + 1], buf[at + 2])
+        };
+        assert_eq!(px(212, 52), (255, 0, 0), "the top of the figure is the red half");
+        assert_eq!(px(212, 292), (0, 0, 255), "the bottom is the blue half");
+        assert_eq!(px(4, 4), (255, 255, 255), "the padding is the white page");
         let _ = std::fs::remove_dir_all(dir);
     }
 
