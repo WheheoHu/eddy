@@ -10,7 +10,7 @@ use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::OnceLock;
 
-use eddy_core::{PdfImage, PdfLine, PdfReader, PdfRule, PdfRun, PdfText};
+use eddy_core::{PdfBox, PdfImage, PdfLine, PdfReader, PdfRule, PdfRun, PdfText};
 use pdfium_render::prelude::*;
 
 /// `PdfReader` backed by pdfium. Cheap to construct; the library is
@@ -223,6 +223,7 @@ fn read_page(page: &PdfPage<'_>) -> eddy_core::PdfPage {
     };
     let images = read_images(page, &lines);
     let frames = read_frames(page);
+    let boxes = read_boxes(page);
     eddy_core::PdfPage {
         width,
         height,
@@ -230,7 +231,36 @@ fn read_page(page: &PdfPage<'_>) -> eddy_core::PdfPage {
         images,
         frames,
         rules,
+        boxes,
     }
+}
+
+/// Outlined or shaded rectangles (plain or with rounded corners) that
+/// could frame text: a listing, a callout. Thin rules, small marks and
+/// shapes covering most of the page are not boxes.
+fn read_boxes(page: &PdfPage<'_>) -> Vec<PdfBox> {
+    let page_area = page.width().value * page.height().value;
+    page.objects()
+        .iter()
+        .filter_map(|o| {
+            let path = o.as_path_object()?;
+            // A rectangle is 5 segments; rounded corners add a curve each.
+            if path.segments().len() > 24 {
+                return None;
+            }
+            let b = o.bounds().ok()?;
+            let (width, height) = (b.width().value, b.height().value);
+            if width < 24.0 || height < 16.0 || width * height > page_area * 0.5 {
+                return None;
+            }
+            Some(PdfBox {
+                x: b.left().value,
+                y: b.bottom().value,
+                width,
+                height,
+            })
+        })
+        .collect()
 }
 
 /// Thin paths on the page, horizontal or vertical: table borders,
@@ -796,6 +826,7 @@ struct Glyph {
     font_size: f32,
     bold: bool,
     underline: bool,
+    mono: bool,
 }
 
 struct LineBuilder<'r> {
@@ -803,6 +834,8 @@ struct LineBuilder<'r> {
     current: Vec<Glyph>,
     /// Horizontal rules, which underline the glyphs just above them.
     underlines: Vec<&'r PdfRule>,
+    /// pdfium inferred a line break before the next glyph.
+    broken: bool,
 }
 
 impl<'r> LineBuilder<'r> {
@@ -811,6 +844,7 @@ impl<'r> LineBuilder<'r> {
             lines: Vec::new(),
             current: Vec::new(),
             underlines: rules.iter().filter(|r| r.height <= r.width).collect(),
+            broken: false,
         }
     }
 
@@ -831,9 +865,10 @@ impl<'r> LineBuilder<'r> {
         for c in chars.iter() {
             let Some(mut ch) = c.unicode_char() else { continue };
             if ch == '\r' || ch == '\n' {
-                // pdfium marks line breaks it inferred; geometry decides
-                // for us, but a break is still a hard boundary.
-                self.flush();
+                // pdfium infers a line break wherever the baseline moves,
+                // including at every sub- and superscript; only text that
+                // carries on right where the line stopped bridges it.
+                self.broken = true;
                 continue;
             }
             if ch.is_control() {
@@ -867,10 +902,12 @@ impl<'r> LineBuilder<'r> {
                 font_size,
                 bold: is_bold(&c),
                 underline,
+                mono: is_mono(&c),
             };
             if !self.continues(&glyph) {
                 self.flush();
             }
+            self.broken = false;
             self.current.push(glyph);
         }
         self.flush();
@@ -888,6 +925,9 @@ impl<'r> LineBuilder<'r> {
             return false;
         }
         let gap = glyph.left - last.right;
+        if self.broken {
+            return gap > -size * 0.2 && gap < size;
+        }
         gap > -size && gap < size * 3.0
     }
 
@@ -899,7 +939,26 @@ impl<'r> LineBuilder<'r> {
     }
 }
 
-fn build_line(glyphs: Vec<Glyph>) -> Option<PdfLine> {
+fn build_line(mut glyphs: Vec<Glyph>) -> Option<PdfLine> {
+    // Small digits raised off the line (footnote marks, exponents) become
+    // superscript digits, so "4.6" with note 4 does not read "4.64".
+    let main = {
+        let visible: Vec<&Glyph> = glyphs.iter().filter(|g| !g.ch.is_whitespace()).collect();
+        main_baseline(&visible).map(|b| (b, dominant_size(&visible)))
+    };
+    if let Some((baseline, size)) = main {
+        for g in glyphs.iter_mut() {
+            if g.font_size >= size * 0.85 || g.baseline - baseline <= size * 0.2 {
+                continue;
+            }
+            g.ch = match g.ch {
+                '0'..='9' => ['⁰', '¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹'][g.ch as usize - '0' as usize],
+                '-' | '−' => '⁻',
+                '+' => '⁺',
+                c => c,
+            };
+        }
+    }
     // Words are separated by what is visible: a space glyph counts only if
     // the next glyph does not sit back on top of it (troff kerns that way),
     // and a clear gap counts even without one.
@@ -922,11 +981,20 @@ fn build_line(glyphs: Vec<Glyph>) -> Option<PdfLine> {
         }
         let same = runs
             .last()
-            .is_some_and(|r| r.bold == g.bold && r.underline == g.underline);
+            .is_some_and(|r| r.bold == g.bold && r.underline == g.underline && r.mono == g.mono);
         match runs.last_mut() {
             Some(run) if same && !wide => {
                 if space {
-                    run.text.push(' ');
+                    // Typewriter text keeps its alignment: one space per
+                    // character cell of the gap.
+                    let cell = prev.map_or(0.0, |p| p.right - p.left);
+                    let gap = prev.map_or(0.0, |p| g.left - p.right);
+                    let n = if g.mono && cell > 0.0 {
+                        ((gap / cell).round() as usize).max(1)
+                    } else {
+                        1
+                    };
+                    run.text.extend(std::iter::repeat_n(' ', n));
                 }
             }
             _ => runs.push(PdfRun {
@@ -935,6 +1003,7 @@ fn build_line(glyphs: Vec<Glyph>) -> Option<PdfLine> {
                 width: 0.0,
                 bold: g.bold,
                 underline: g.underline,
+                mono: g.mono,
                 space_before: space,
             }),
         }
@@ -976,7 +1045,19 @@ fn build_line(glyphs: Vec<Glyph>) -> Option<PdfLine> {
 }
 
 /// The font size most characters are set in, to a tenth of a point.
+/// Only characters on the line's main baseline (the one most of them sit
+/// on) count: not sub- and superscripts, nor a big operator (∑) set
+/// lower.
 fn dominant_size(glyphs: &[&Glyph]) -> f32 {
+    let kept: Vec<&Glyph> = match main_baseline(glyphs) {
+        Some(baseline) => glyphs
+            .iter()
+            .copied()
+            .filter(|g| (g.baseline - baseline).abs() <= (g.font_size * 0.15).max(0.5))
+            .collect(),
+        None => glyphs.to_vec(),
+    };
+    let glyphs = if kept.is_empty() { glyphs } else { &kept };
     let mut counts: HashMap<u32, usize> = HashMap::new();
     for g in glyphs {
         *counts.entry((g.font_size * 10.0).round() as u32).or_default() += 1;
@@ -986,6 +1067,21 @@ fn dominant_size(glyphs: &[&Glyph]) -> f32 {
         .max_by_key(|&(size, n)| (n, size))
         .map(|(size, _)| size as f32 / 10.0)
         .unwrap_or(0.0)
+}
+
+/// The baseline most characters sit on, to half a point; ties go to the
+/// one with larger type.
+fn main_baseline(glyphs: &[&Glyph]) -> Option<f32> {
+    let mut baselines: HashMap<i32, (usize, f32)> = HashMap::new();
+    for g in glyphs {
+        let entry = baselines.entry((g.baseline * 2.0).round() as i32).or_default();
+        entry.0 += 1;
+        entry.1 = entry.1.max(g.font_size);
+    }
+    baselines
+        .iter()
+        .max_by(|a, b| a.1.0.cmp(&b.1.0).then(a.1.1.total_cmp(&b.1.1)))
+        .map(|(&key, _)| key as f32 / 2.0)
 }
 
 /// Text set at a slant ("DRAFT", "CONFIDENTIAL" across the page) is a
@@ -1028,6 +1124,25 @@ fn is_bold(c: &PdfPageTextChar<'_>) -> bool {
         Some(PdfFontWeight::Custom(w)) => w >= 600,
         _ => false,
     }
+}
+
+/// Whether a character is set in a monospaced (typewriter) face. CJK fonts
+/// often claim a fixed pitch for their half-width Latin, so for them only
+/// the name counts.
+fn is_mono(c: &PdfPageTextChar<'_>) -> bool {
+    let name = c.font_name().to_ascii_lowercase();
+    let named = [
+        "mono", "courier", "consol", "menlo", "typewriter", "cmtt", "inconsolata", "sourcecode", "firacode",
+        "jetbrains", "lucidaconsole", "andale",
+    ];
+    if named.iter().any(|w| name.contains(w)) {
+        return true;
+    }
+    let cjk = [
+        "song", "sun", "hei", "kai", "fang", "ming", "gothic", "mincho", "batang", "gulim", "dotum", "yahei",
+        "pingfang", "cjk",
+    ];
+    c.font_is_fixed_pitch() && !cjk.iter().any(|w| name.contains(w))
 }
 
 #[cfg(test)]
@@ -1168,6 +1283,30 @@ q 0 0 0 rg 60 640 0.5 30 re f Q";
         assert!((line.runs[1].x - 112.0).abs() < 1.5, "{:?}", line.runs[1]);
         let cell = &page.lines[1];
         assert!(cell.runs.iter().all(|r| !r.underline), "{cell:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn sub_and_superscripts_stay_on_their_line() {
+        // pdfium breaks the text at each change of baseline; the pieces
+        // still read as one line set in the body size.
+        let content = "\
+BT /F1 10 Tf 72 700 Td (as in [SDS) Tj ET
+BT /F1 6 Tf 121.5 704 Td (*) Tj ET
+BT /F1 10 Tf 124.5 700 Td (93] and T) Tj ET
+BT /F1 6 Tf 169 698 Td (j+1) Tj ET
+BT /F1 10 Tf 177.5 700 Td (more 4.6) Tj ET
+BT /F1 6 Tf 216.5 704 Td (4) Tj ET
+BT /F1 10 Tf 72 686 Td (next line) Tj ET
+BT /F1 10 Tf 320 700 Td (other column) Tj ET";
+        let dir = tempdir();
+        let path = dir.join("scripts.pdf");
+        std::fs::write(&path, pdf(content)).unwrap();
+
+        let page = PdfiumReader::new().read(&path).unwrap().pages.remove(0);
+        let texts: Vec<String> = page.lines.iter().map(|l| l.text.replace(' ', "")).collect();
+        assert_eq!(texts, ["asin[SDS*93]andTj+1more4.6⁴", "nextline", "othercolumn"]);
+        assert!((page.lines[0].font_size - 10.0).abs() < 0.1, "{:?}", page.lines[0]);
         let _ = std::fs::remove_dir_all(dir);
     }
 
