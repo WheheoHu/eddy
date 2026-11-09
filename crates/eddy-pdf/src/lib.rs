@@ -10,7 +10,7 @@ use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::OnceLock;
 
-use eddy_core::{PdfImage, PdfLine, PdfReader, PdfText};
+use eddy_core::{PdfImage, PdfLine, PdfReader, PdfRule, PdfRun, PdfText};
 use pdfium_render::prelude::*;
 
 /// `PdfReader` backed by pdfium. Cheap to construct; the library is
@@ -216,7 +216,11 @@ fn read_document(document: &PdfDocument<'_>) -> PdfText {
 fn read_page(page: &PdfPage<'_>) -> eddy_core::PdfPage {
     let width = page.width().value;
     let height = page.height().value;
-    let lines = page_lines(page);
+    let rules = read_rules(page);
+    let lines = match page.text() {
+        Ok(text) => LineBuilder::new(&rules).run(&text),
+        Err(_) => Vec::new(),
+    };
     let images = read_images(page, &lines);
     let frames = read_frames(page);
     eddy_core::PdfPage {
@@ -225,7 +229,30 @@ fn read_page(page: &PdfPage<'_>) -> eddy_core::PdfPage {
         lines,
         images,
         frames,
+        rules,
     }
+}
+
+/// Thin paths on the page, horizontal or vertical: table borders,
+/// underlines, separators. Drawings inside included graphics are left
+/// to the figure they belong to.
+fn read_rules(page: &PdfPage<'_>) -> Vec<PdfRule> {
+    const THIN: f32 = 1.5;
+    page.objects()
+        .iter()
+        .filter(|o| o.object_type() == PdfPageObjectType::Path)
+        .filter_map(|o| {
+            let b = o.bounds().ok()?;
+            let (width, height) = (b.width().value, b.height().value);
+            let thin = (height <= THIN && width >= 2.0) || (width <= THIN && height >= 2.0);
+            thin.then(|| PdfRule {
+                x: b.left().value,
+                y: b.bottom().value,
+                width,
+                height,
+            })
+        })
+        .collect()
 }
 
 /// Paths on an upright page covering a tenth of it or more, which can be
@@ -262,7 +289,7 @@ fn read_frames(page: &PdfPage<'_>) -> Vec<PdfImage> {
 
 fn page_lines(page: &PdfPage<'_>) -> Vec<PdfLine> {
     match page.text() {
-        Ok(text) => LineBuilder::default().run(&text),
+        Ok(text) => LineBuilder::new(&[]).run(&text),
         Err(_) => Vec::new(),
     }
 }
@@ -768,15 +795,37 @@ struct Glyph {
     baseline: f32,
     font_size: f32,
     bold: bool,
+    underline: bool,
 }
 
-#[derive(Default)]
-struct LineBuilder {
+struct LineBuilder<'r> {
     lines: Vec<PdfLine>,
     current: Vec<Glyph>,
+    /// Horizontal rules, which underline the glyphs just above them.
+    underlines: Vec<&'r PdfRule>,
 }
 
-impl LineBuilder {
+impl<'r> LineBuilder<'r> {
+    fn new(rules: &'r [PdfRule]) -> Self {
+        Self {
+            lines: Vec::new(),
+            current: Vec::new(),
+            underlines: rules.iter().filter(|r| r.height <= r.width).collect(),
+        }
+    }
+
+    /// A rule just under the baseline across the glyph's middle. Table
+    /// borders sit further below the text of their cells.
+    fn underlined(&self, center: f32, baseline: f32, size: f32) -> bool {
+        self.underlines.iter().any(|r| {
+            let top = r.y + r.height;
+            center >= r.x
+                && center <= r.x + r.width
+                && top <= baseline + size * 0.05
+                && top >= baseline - size * 0.22
+        })
+    }
+
     fn run(mut self, text: &PdfPageText<'_>) -> Vec<PdfLine> {
         let chars = text.chars();
         for c in chars.iter() {
@@ -805,15 +854,19 @@ impl LineBuilder {
             if font_size <= 0.0 {
                 continue;
             }
+            let (left, right) = (bounds.left().value, bounds.right().value);
+            let underline = !ch.is_whitespace()
+                && self.underlined((left + right) / 2.0, baseline.value, font_size);
             let glyph = Glyph {
                 ch,
-                left: bounds.left().value,
-                right: bounds.right().value,
+                left,
+                right,
                 bottom: bounds.bottom().value,
                 top: bounds.top().value,
                 baseline: baseline.value,
                 font_size,
                 bold: is_bold(&c),
+                underline,
             };
             if !self.continues(&glyph) {
                 self.flush();
@@ -850,7 +903,9 @@ fn build_line(glyphs: Vec<Glyph>) -> Option<PdfLine> {
     // Words are separated by what is visible: a space glyph counts only if
     // the next glyph does not sit back on top of it (troff kerns that way),
     // and a clear gap counts even without one.
-    let mut text = String::new();
+    // A run ends where the style changes or a gap of more than half an em
+    // opens (between a label and its text, or two cells of a table).
+    let mut runs: Vec<PdfRun> = Vec::new();
     let mut prev: Option<&Glyph> = None;
     let mut space_glyph = false;
     for g in &glyphs {
@@ -858,20 +913,48 @@ fn build_line(glyphs: Vec<Glyph>) -> Option<PdfLine> {
             space_glyph = true;
             continue;
         }
+        let (mut space, mut wide) = (false, false);
         if let Some(p) = prev {
             let gap = g.left - p.right;
             let size = g.font_size.min(p.font_size);
-            if (space_glyph && gap > size * 0.1) || gap > size * 0.25 {
-                text.push(' ');
-            }
+            space = (space_glyph && gap > size * 0.1) || gap > size * 0.25;
+            wide = gap > size * 0.6;
         }
-        text.push(g.ch);
+        let same = runs
+            .last()
+            .is_some_and(|r| r.bold == g.bold && r.underline == g.underline);
+        match runs.last_mut() {
+            Some(run) if same && !wide => {
+                if space {
+                    run.text.push(' ');
+                }
+            }
+            _ => runs.push(PdfRun {
+                text: String::new(),
+                x: g.left,
+                width: 0.0,
+                bold: g.bold,
+                underline: g.underline,
+                space_before: space,
+            }),
+        }
+        let run = runs.last_mut().expect("a run was just ensured");
+        run.text.push(g.ch);
+        let right = (run.x + run.width).max(g.right);
+        run.x = run.x.min(g.left);
+        run.width = right - run.x;
         prev = Some(g);
         space_glyph = false;
     }
-    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if text.is_empty() {
+    if runs.is_empty() {
         return None;
+    }
+    let mut text = String::new();
+    for run in &runs {
+        if run.space_before {
+            text.push(' ');
+        }
+        text.push_str(&run.text);
     }
     let visible: Vec<&Glyph> = glyphs.iter().filter(|g| !g.ch.is_whitespace()).collect();
     let left = visible.iter().map(|g| g.left).fold(f32::MAX, f32::min);
@@ -888,6 +971,7 @@ fn build_line(glyphs: Vec<Glyph>) -> Option<PdfLine> {
         height: top - bottom,
         font_size,
         bold: bold_count * 2 > visible.len(),
+        runs,
     })
 }
 
@@ -918,6 +1002,14 @@ fn is_diagonal(c: &PdfPageTextChar<'_>) -> bool {
 /// first: pdfium's weight for fonts without a descriptor (the standard
 /// 14, as troff and old tools emit them) is a guess that is often wrong.
 fn is_bold(c: &PdfPageTextChar<'_>) -> bool {
+    // Fonts without a bold face (SimSun and most CJK fonts) are made bold
+    // by stroking the glyph outline over its fill, as Word exports do.
+    if matches!(
+        c.render_mode(),
+        Ok(PdfPageTextRenderMode::FilledThenStroked | PdfPageTextRenderMode::FilledThenStrokedClipping)
+    ) {
+        return true;
+    }
     let name = c.font_name().to_ascii_lowercase();
     if ["bold", "black", "heavy", "semibold"].iter().any(|w| name.contains(w)) {
         return true;
@@ -1038,6 +1130,44 @@ BT /F1 9 Tf 300 40 Td (1) Tj ET";
         assert!(page.lines[2].height > 8.0 && page.lines[2].height < 16.0);
         assert!(page.lines[2].width > 60.0);
 
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stroked_text_is_bold_and_rules_underline_the_text_above_them() {
+        // A label set bold by stroking (render mode 2) and, a wide gap
+        // later on the same baseline, plain text whose second word is
+        // underlined. A table border further below is not an underline.
+        let content = "\
+BT /F1 10 Tf 2 Tr 72 700 Td (Label) Tj 0 Tr 40 0 Td (plain) Tj 30 0 Td (marked) Tj ET
+q 0 0 0 rg 142 698.2 32 0.6 re f Q
+BT /F1 10 Tf 72 650 Td (cell) Tj ET
+q 0 0 0 rg 60 646.4 200 0.5 re f Q
+q 0 0 0 rg 60 640 0.5 30 re f Q";
+        let dir = tempdir();
+        let path = dir.join("styles.pdf");
+        std::fs::write(&path, pdf(content)).unwrap();
+
+        let page = PdfiumReader::new().read(&path).unwrap().pages.remove(0);
+        assert_eq!(page.rules.len(), 3, "{:?}", page.rules);
+        let line = &page.lines[0];
+        assert_eq!(line.text, "Label plain marked");
+        let runs: Vec<(&str, bool, bool, bool)> = line
+            .runs
+            .iter()
+            .map(|r| (r.text.as_str(), r.bold, r.underline, r.space_before))
+            .collect();
+        assert_eq!(
+            runs,
+            [
+                ("Label", true, false, false),
+                ("plain", false, false, true),
+                ("marked", false, true, true),
+            ]
+        );
+        assert!((line.runs[1].x - 112.0).abs() < 1.5, "{:?}", line.runs[1]);
+        let cell = &page.lines[1];
+        assert!(cell.runs.iter().all(|r| !r.underline), "{cell:?}");
         let _ = std::fs::remove_dir_all(dir);
     }
 

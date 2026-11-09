@@ -12,6 +12,7 @@ mod import;
 mod media;
 mod native_host;
 mod pdf_layout;
+mod pdf_table;
 mod platform;
 mod progress;
 mod rules;
@@ -35,7 +36,7 @@ pub use engine::{
     Engine, EngineOptions, EngineStatus, Mode, RefreshSummary, SourceInfo, SourceStats,
 };
 pub use hub::{ServerStatus, plausible_hlc};
-pub use import::{Imported, MAX_IMPORT_BYTES, PdfImage, PdfLine, PdfPage, PdfReader, PdfText};
+pub use import::{Imported, MAX_IMPORT_BYTES, PdfImage, PdfLine, PdfPage, PdfReader, PdfRule, PdfRun, PdfText};
 pub use media::{GalleryEntry, GalleryScope};
 pub use native_host::{CHROME_EXTENSION_ID, NATIVE_HOST_NAME, install_native_host};
 pub use platform::{LogLevel, MemoryPlatform, Platform};

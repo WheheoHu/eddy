@@ -2045,6 +2045,7 @@ impl PdfReader for FakePdfReader {
                     height: 11.5,
                     font_size: 10.0,
                     bold: false,
+                    runs: Vec::new(),
                 })
                 .collect()
         };
@@ -2054,6 +2055,7 @@ impl PdfReader for FakePdfReader {
             lines,
             images: Vec::new(),
             frames: Vec::new(),
+            rules: Vec::new(),
         };
         let bytes = std::fs::read(path).ok()?;
         bytes.starts_with(b"%PDF-").then(|| {
@@ -2073,6 +2075,7 @@ impl PdfReader for FakePdfReader {
                 height: 16.0,
                 font_size: 14.0,
                 bold: true,
+                runs: Vec::new(),
             });
             first.push(PdfLine {
                 text: "Next paragraph.".into(),
@@ -2082,6 +2085,7 @@ impl PdfReader for FakePdfReader {
                 height: 11.5,
                 font_size: 10.0,
                 bold: false,
+                runs: Vec::new(),
             });
             let mut second = page(lines(&["第二页的内容比较长一些", "继续"], 700.0));
             second.images.push(crate::PdfImage {
