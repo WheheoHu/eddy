@@ -74,7 +74,11 @@ struct SettingsView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 760, idealWidth: 820, minHeight: 520, idealHeight: 600)
-        .background(SettingsWindowStyler())
+        // SwiftUI rebuilds the window's title bar from these whenever the
+        // page changes, so they have to say "none" too, not just AppKit.
+        .toolbar(removing: .title)
+        .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+        .background(SettingsWindowStyler(tab: tab))
     }
 
     @ViewBuilder private var detail: some View {
@@ -91,8 +95,16 @@ struct SettingsView: View {
 /// Takes the title bar off the settings window: the content runs to the
 /// top, the window buttons float over the sidebar, like System Settings.
 private struct SettingsWindowStyler: NSViewRepresentable {
+    /// Only so a page change reaches `updateNSView`.
+    let tab: SettingsTab
+
     func makeNSView(context: Context) -> NSView { Probe() }
-    func updateNSView(_ view: NSView, context: Context) {}
+
+    func updateNSView(_ view: NSView, context: Context) {
+        DispatchQueue.main.async {
+            if let window = view.window { Probe.style(window) }
+        }
+    }
 
     private final class Probe: NSView {
         private var observer: Any?
