@@ -130,7 +130,7 @@ enum ArticleBuilder {
         style: ReaderStyle
     ) -> BuiltArticle {
         var b = Builder(style: style, translations: mode == .original ? [:] : translations, mode: mode)
-        if let item { b.header(item, translatedTitle: mode == .original ? nil : translations["title"]) }
+        if let item { b.header(item, translatedTitle: mode == .original ? nil : b.translation("title", original: item.title)) }
         for block in doc.blocks { b.block(block) }
         return BuiltArticle(text: b.out, blocks: b.ranges, translations: b.translationRanges, images: b.images)
     }
@@ -149,6 +149,18 @@ private struct Builder {
         self.style = style
         self.translations = translations
         self.mode = mode
+    }
+
+    /// The translation of a segment, unless it is the source again: a
+    /// paragraph already in the target language has nothing to show.
+    func translation(_ id: String, original: String) -> String? {
+        guard let text = translations[id] else { return nil }
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t == original.trimmingCharacters(in: .whitespacesAndNewlines) ? nil : text
+    }
+
+    func translation(_ id: String, original runs: [RunView]) -> String? {
+        translation(id, original: runs.map(\.text).joined())
     }
 
     // MARK: Paragraph styles
@@ -229,7 +241,9 @@ private struct Builder {
                 let captionFont = style.font(size: style.fontSize * 0.8)
                 out.append(inline(caption, font: captionFont, color: .secondaryLabelColor, p: paragraph(spacing: style.fontSize, align: .center)))
                 out.append(NSAttributedString(string: "\n"))
-                translation(for: "\(block.id)#caption", font: captionFont, p: paragraph(spacing: style.fontSize, align: .center))
+                if let text = translation("\(block.id)#caption", original: caption) {
+                    translation(text, for: "\(block.id)#caption", font: captionFont, p: paragraph(spacing: style.fontSize, align: .center))
+                }
             }
         case let .table(rows):
             let start = out.length
@@ -278,7 +292,7 @@ private struct Builder {
     }
 
     mutating func textBlock(_ id: String, _ runs: [RunView], font: NSFont, p: NSParagraphStyle, quote: Int) {
-        let translated = translations[id]
+        let translated = translation(id, original: runs)
         let start = out.length
         if mode == .translation, let translated {
             out.append(NSAttributedString(string: translated, attributes: base(font, p)))
@@ -289,13 +303,13 @@ private struct Builder {
         if quote > 0 { out.addAttribute(.eddyQuote, value: quote, range: range) }
         ranges.append((id, range))
         out.append(NSAttributedString(string: "\n", attributes: [.paragraphStyle: p]))
-        if mode == .bilingual, translated != nil {
-            translation(for: id, font: font, p: p)
+        if mode == .bilingual, let translated {
+            translation(translated, for: id, font: font, p: p)
         }
     }
 
-    mutating func translation(for id: String, font: NSFont, p: NSParagraphStyle) {
-        guard mode == .bilingual, let text = translations[id] else { return }
+    mutating func translation(_ text: String, for id: String, font: NSFont, p: NSParagraphStyle) {
+        guard mode == .bilingual else { return }
         translationRanges.append((id, NSRange(location: out.length, length: text.utf16.count)))
         out.append(NSAttributedString(string: text + "\n", attributes: base(font, p, color: .secondaryLabelColor)))
     }

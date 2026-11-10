@@ -24,6 +24,76 @@ const AUTO_CONCURRENCY: usize = 2;
 
 pub type BatchCallback = Arc<dyn Fn(&HashMap<String, String>) + Send + Sync>;
 
+/// Whether `text` is already written in the target language, so translating
+/// it would only echo it back. `target_code` is the ISO 639-3 code from
+/// `lang_code_for`; an unknown target skips nothing.
+///
+/// For Chinese, Japanese and Korean the script decides: when at least 80% of
+/// the letters are in the target's script the paragraph is left alone, which
+/// works for a paragraph of any length. For other languages statistical
+/// detection is only trusted on paragraphs of 40+ characters that it reports
+/// as reliable; anything doubtful is translated as before.
+pub(crate) fn in_target_language(text: &str, target_code: Option<&str>) -> bool {
+    let Some(code) = target_code else {
+        return false;
+    };
+    let script_check: Option<fn(char) -> bool> = match code {
+        "cmn" => Some(is_han),
+        "jpn" => Some(|c| is_kana(c) || is_han(c)),
+        "kor" => Some(is_hangul),
+        _ => None,
+    };
+    if let Some(in_script) = script_check {
+        let (mut letters, mut matched) = (0usize, 0usize);
+        for c in text.chars().filter(|c| c.is_alphabetic()) {
+            letters += 1;
+            if in_script(c) {
+                matched += 1;
+            }
+        }
+        return letters > 0 && matched * 5 >= letters * 4;
+    }
+    if text.chars().count() < 40 {
+        return false;
+    }
+    whatlang::detect(text).is_some_and(|info| info.is_reliable() && info.lang().code() == code)
+}
+
+fn is_han(c: char) -> bool {
+    matches!(c,
+        '\u{3400}'..='\u{4DBF}' | '\u{4E00}'..='\u{9FFF}' | '\u{F900}'..='\u{FAFF}' | '\u{20000}'..='\u{2FA1F}')
+}
+
+fn is_kana(c: char) -> bool {
+    matches!(c, '\u{3040}'..='\u{30FF}' | '\u{31F0}'..='\u{31FF}' | '\u{FF66}'..='\u{FF9F}')
+}
+
+fn is_hangul(c: char) -> bool {
+    matches!(c,
+        '\u{1100}'..='\u{11FF}' | '\u{3130}'..='\u{318F}' | '\u{A960}'..='\u{A97F}' | '\u{AC00}'..='\u{D7FF}')
+}
+
+/// Splits off the segments already in the target language. They come back
+/// as their own translation without a request, so every segment asked for
+/// still gets an answer; the reader hides a translation equal to its
+/// source.
+fn needing_translation(
+    segments: Vec<Segment>,
+    target: &str,
+) -> (Vec<Segment>, HashMap<String, String>) {
+    let code = lang_code_for(target);
+    let mut keep = Vec::with_capacity(segments.len());
+    let mut skipped = HashMap::new();
+    for s in segments {
+        if in_target_language(&s.text, code) {
+            skipped.insert(s.id, s.text);
+        } else {
+            keep.push(s);
+        }
+    }
+    (keep, skipped)
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct TranslationResult {
     pub content_hash: String,
@@ -271,6 +341,8 @@ impl Inner {
                 text: title,
             },
         );
+        // Paragraphs already in the target language never go to the model.
+        let (segments, skipped) = needing_translation(segments, &target);
         // Batches stay in document order so their cache keys don't depend on
         // where the reader is; only the order they are requested in does.
         let batches = batches(&segments);
@@ -286,6 +358,12 @@ impl Inner {
             ]));
         }
         let mut all = HashMap::new();
+        if !skipped.is_empty() {
+            if let Some(cb) = &on_batch {
+                cb(&skipped);
+            }
+            all.extend(skipped);
+        }
         let mut pending = Vec::new();
         for (i, key) in keys.iter().enumerate() {
             let cached = if force {
@@ -428,6 +506,7 @@ impl Inner {
         let provider = self.provider(&settings)?;
         let target = settings.target_language.clone();
         self.translation_cancels.lock().remove(key);
+        let (segments, skipped) = needing_translation(segments, &target);
         let batches = batches(&segments);
         let limit = settings
             .provider
@@ -436,6 +515,12 @@ impl Inner {
         let mut pending: Vec<usize> = (0..batches.len()).collect();
         let mut in_flight = FuturesUnordered::new();
         let mut all = HashMap::new();
+        if !skipped.is_empty() {
+            if let Some(cb) = &on_batch {
+                cb(&skipped);
+            }
+            all.extend(skipped);
+        }
         let mut stopped = false;
         let mut failure = None;
         loop {
