@@ -52,6 +52,8 @@ struct SettingsView: View {
     var body: some View {
         HStack(spacing: 0) {
             List(selection: $tab) {
+                // Room for the window buttons, which sit over the sidebar.
+                Color.clear.frame(height: 28).listRowInsets(EdgeInsets()).listRowBackground(Color.clear)
                 ForEach(SettingsGroup.allCases) { group in
                     Section(group.rawValue) {
                         ForEach(group.tabs) { tab in
@@ -68,8 +70,10 @@ struct SettingsView: View {
             detail
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .ignoresSafeArea()
         .frame(minWidth: 760, idealWidth: 820, minHeight: 520, idealHeight: 600)
         .navigationTitle(tab.rawValue)
+        .background(SettingsWindowStyler())
     }
 
     @ViewBuilder private var detail: some View {
@@ -79,6 +83,25 @@ struct SettingsView: View {
         case .reading: ReadingSettings()
         case .saving: SavingSettings()
         case .storage: StorageSettings()
+        }
+    }
+}
+
+/// Takes the title bar off the settings window: the content runs to the
+/// top, the window buttons float over the sidebar, like System Settings.
+private struct SettingsWindowStyler: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { Probe() }
+    func updateNSView(_ view: NSView, context: Context) {}
+
+    private final class Probe: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard let window else { return }
+            window.titleVisibility = .hidden
+            window.titlebarAppearsTransparent = true
+            window.styleMask.insert(.fullSizeContentView)
+            window.isMovableByWindowBackground = true
+            window.toolbar = nil
         }
     }
 }
