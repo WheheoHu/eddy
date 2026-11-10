@@ -34,9 +34,9 @@ pub enum ItemFilter {
 pub struct ItemQuery {
     pub filter: ItemFilter,
     pub unread_only: bool,
-    /// Listed by `unread_only` even when read, so the article being read
-    /// stays in place until another one is opened.
-    pub keep: Option<String>,
+    /// Listed by `unread_only` even when read: the article being read, and
+    /// the ones read since the list was last reset, so rows stay in place.
+    pub keep: Vec<String>,
     pub limit: u32,
     pub offset: u32,
 }
@@ -46,7 +46,7 @@ impl Default for ItemQuery {
         ItemQuery {
             filter: ItemFilter::All,
             unread_only: false,
-            keep: None,
+            keep: Vec::new(),
             limit: 200,
             offset: 0,
         }
@@ -64,7 +64,7 @@ pub struct ItemRow {
 const ITEM_COLUMNS: &str =
     "i.id, i.source_id, i.account_id, i.upstream_id, i.kind, i.url, i.title, i.author,
     i.published_at, i.added_at, i.read, i.starred, i.series_id, i.chapter_index, i.current_version,
-    i.excerpt, i.lang, i.text_len, i.progress, i.finished, i.last_read_at, s.title, cv.raw_mime";
+    i.excerpt, i.lang, i.text_len, i.progress, i.finished, i.last_read_at, s.title, cv.raw_mime, i.chapter_level";
 
 const ITEM_JOINS: &str = "items i LEFT JOIN sources s ON s.id=i.source_id
     LEFT JOIN content_versions cv ON cv.hash=i.current_version";
@@ -96,6 +96,7 @@ fn item_row(r: &Row) -> rusqlite::Result<ItemRow> {
             progress: r.get(18)?,
             finished: r.get(19)?,
             last_read_at: r.get(20)?,
+            chapter_level: r.get(23)?,
         },
         source_title: r.get(21)?,
     })
@@ -421,12 +422,14 @@ fn conditions(q: &ItemQuery) -> Option<Conditions> {
         }
     }
     if q.unread_only {
-        match &q.keep {
-            Some(id) => {
-                clauses.push("(i.read=0 OR i.id=?)".into());
-                values.push(Value::Text(id.clone()));
-            }
-            None => clauses.push("i.read=0".into()),
+        if q.keep.is_empty() {
+            clauses.push("i.read=0".into());
+        } else {
+            clauses.push(format!(
+                "(i.read=0 OR i.id IN ({}))",
+                vec!["?"; q.keep.len()].join(",")
+            ));
+            values.extend(q.keep.iter().map(|k| Value::Text(k.clone())));
         }
     }
     Some(Conditions {
@@ -817,12 +820,13 @@ impl Store {
 pub(crate) fn insert_item(c: &rusqlite::Connection, item: &Item) -> rusqlite::Result<usize> {
     c.execute(
         "INSERT OR IGNORE INTO items(id,source_id,account_id,upstream_id,kind,url,title,author,published_at,added_at,
-            read,starred,series_id,chapter_index,current_version,excerpt,lang,text_len,progress,finished,last_read_at)
-         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            read,starred,series_id,chapter_index,current_version,excerpt,lang,text_len,progress,finished,last_read_at,chapter_level)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         params![
             item.id, item.source_id, item.account_id, item.upstream_id, item.kind.as_str(), item.url, item.title,
             item.author, item.published_at, item.added_at, item.read, item.starred, item.series_id, item.chapter_index,
-            item.current_version, item.excerpt, item.lang, item.text_len, item.progress, item.finished, item.last_read_at
+            item.current_version, item.excerpt, item.lang, item.text_len, item.progress, item.finished, item.last_read_at,
+            item.chapter_level
         ],
     )
 }

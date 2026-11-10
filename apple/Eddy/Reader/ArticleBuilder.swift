@@ -304,14 +304,16 @@ private struct Builder {
         let p = NSMutableParagraphStyle()
         p.lineHeightMultiple = 1.15
         p.paragraphSpacing = style.fontSize * 1.1
-        p.paragraphSpacingBefore = 6
+        // Room above the code for the language label.
+        p.paragraphSpacingBefore = CodeBlockMark.stripHeight
         p.headIndent = indent + 14
         p.firstLineHeadIndent = indent + 14
         p.tailIndent = -14
+        let mark = CodeBlockMark(blockID: id, language: language)
         // One paragraph for the whole block, so its background draws as one.
         let joined = text.replacingOccurrences(of: "\n", with: "\u{2028}")
         let s = NSMutableAttributedString(string: joined, attributes: [
-            .font: style.mono(), .foregroundColor: NSColor.labelColor, .paragraphStyle: p, .eddyCode: true,
+            .font: style.mono(), .foregroundColor: NSColor.labelColor, .paragraphStyle: p, .eddyCode: mark,
         ])
         let length = s.length
         for span in highlights where Int(span.end) <= length && span.start < span.end {
@@ -320,7 +322,7 @@ private struct Builder {
         let start = out.length
         out.append(s)
         ranges.append((id, NSRange(location: start, length: length)))
-        out.append(NSAttributedString(string: "\n", attributes: [.paragraphStyle: p, .eddyCode: true]))
+        out.append(NSAttributedString(string: "\n", attributes: [.paragraphStyle: p, .eddyCode: mark]))
     }
 
     func inline(_ runs: [RunView], font: NSFont, color: NSColor, p: NSParagraphStyle) -> NSAttributedString {

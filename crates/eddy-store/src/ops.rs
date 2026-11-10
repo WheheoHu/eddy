@@ -252,9 +252,10 @@ fn effect(tx: &Transaction, op: &Op) -> Result<()> {
         (Entity::Item, fields::SERIES) => {
             let series = v.get("series_id").and_then(Value::as_str);
             let index = v.get("chapter_index").and_then(Value::as_i64);
+            let level = v.get("chapter_level").and_then(Value::as_i64).unwrap_or(0);
             tx.execute(
-                "UPDATE items SET series_id=?, chapter_index=? WHERE id=?",
-                params![series, index, id],
+                "UPDATE items SET series_id=?, chapter_index=?, chapter_level=? WHERE id=?",
+                params![series, index, level, id],
             )?;
         }
         (Entity::Progress, fields::LOCATOR) => {

@@ -155,6 +155,10 @@ pub struct Item {
     pub starred: bool,
     pub series_id: Option<String>,
     pub chapter_index: Option<u32>,
+    /// Depth of the chapter in its series' table of contents: 0 for a
+    /// top-level chapter, 1 for a section of one, and so on.
+    #[serde(default)]
+    pub chapter_level: u32,
     pub current_version: Option<String>,
     pub excerpt: Option<String>,
     pub lang: Option<String>,

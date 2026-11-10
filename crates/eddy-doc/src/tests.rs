@@ -175,6 +175,34 @@ fn code_blocks_keep_whitespace_and_get_highlighted() {
 }
 
 #[test]
+fn code_blocks_without_a_language_are_highlighted_as_the_one_they_look_like() {
+    let d = doc(
+        "<pre>import os\n\ndef main():\n    for name in os.listdir('.'):\n        print(name)\n</pre>
+         <pre><code class=\"language-bento\">fn main(px: Pixel) -> Color {\n    let corner = px.uv.x * px.uv.y;\n    return { f32x4 { px.uv, glow, 1.0 } };\n}</code></pre>
+         <pre>just some words here, nothing more to see</pre>",
+    );
+    let code = |i: usize| match &d.blocks[i].kind {
+        BlockKind::Code {
+            language,
+            highlights,
+            ..
+        } => (language.clone(), highlights.len()),
+        other => panic!("{other:?}"),
+    };
+    // Guessed: the guess becomes the block's language.
+    let (lang, spans) = code(0);
+    assert_eq!(lang.as_deref(), Some("python"));
+    assert!(spans > 0);
+    // Declared but unknown: the declaration stays, the colors come from the
+    // nearest grammar.
+    let (lang, spans) = code(1);
+    assert_eq!(lang.as_deref(), Some("bento"));
+    assert!(spans > 0);
+    // Nothing fits: plain.
+    assert_eq!(code(2), (None, 0));
+}
+
+#[test]
 fn formulas_from_katex_mathjax_and_raw_tex() {
     let katex = r#"<p>Energy <span class="katex"><span class="katex-mathml"><math><semantics><mrow><mi>E</mi></mrow><annotation encoding="application/x-tex">E=mc^2</annotation></semantics></math></span><span class="katex-html" aria-hidden="true">E=mc2</span></span> holds.</p>
         <span class="katex-display"><span class="katex"><span class="katex-mathml"><math><annotation encoding="application/x-tex">\int_0^1 f(x)\,dx</annotation></math></span></span></span>

@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use eddy_model::{
-    Block, BlockKind, Document, EPUB_SCHEME, MediaKind, PDF_SCHEME, Run, TableCell, TableRow, ids::sha256_hex,
-    style,
+    Block, BlockKind, Document, EPUB_SCHEME, HighlightSpan, MediaKind, PDF_SCHEME, Run, TableCell,
+    TableRow, ids::sha256_hex, style,
 };
 use scraper::{ElementRef, Html, Node};
 use url::Url;
@@ -487,10 +487,7 @@ impl Converter {
         if text.trim().is_empty() {
             return;
         }
-        let highlights = language
-            .as_deref()
-            .map(|l| highlight(&text, l))
-            .unwrap_or_default();
+        let (language, highlights) = highlight_code(language, &text);
         self.emit(BlockKind::Code {
             language,
             text,
@@ -708,6 +705,29 @@ fn span(el: ElementRef, name: &str) -> u16 {
         .and_then(|v| v.trim().parse().ok())
         .filter(|v| (1..=50).contains(v))
         .unwrap_or(1)
+}
+
+/// Highlights with the declared language; a block that doesn't say, or
+/// says something there is no grammar for, is highlighted as the language
+/// it looks like. A block without a language takes the guessed one as its
+/// own, so the reader can show and correct it.
+pub(crate) fn highlight_code(
+    declared: Option<String>,
+    text: &str,
+) -> (Option<String>, Vec<HighlightSpan>) {
+    if let Some(lang) = declared.as_deref()
+        && crate::highlight::knows_language(lang)
+    {
+        let highlights = highlight(text, lang);
+        return (declared, highlights);
+    }
+    match crate::guess::guess_language(text) {
+        Some(guess) => {
+            let highlights = highlight(text, guess);
+            (declared.or_else(|| Some(guess.to_string())), highlights)
+        }
+        None => (declared, Vec::new()),
+    }
 }
 
 fn code_language(pre: ElementRef) -> Option<String> {

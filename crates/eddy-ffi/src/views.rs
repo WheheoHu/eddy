@@ -207,6 +207,8 @@ pub struct ItemView {
     pub text_len: u32,
     pub series_id: Option<String>,
     pub chapter_index: Option<u32>,
+    /// Depth in the series' table of contents; 0 at the top.
+    pub chapter_level: u32,
     pub last_read_at: Option<i64>,
 }
 
@@ -236,6 +238,7 @@ impl From<ItemRow> for ItemView {
             text_len: i.text_len,
             series_id: i.series_id,
             chapter_index: i.chapter_index,
+            chapter_level: i.chapter_level,
             last_read_at: i.last_read_at,
         }
     }
@@ -286,8 +289,9 @@ impl From<ItemFilterView> for eddy_core::ItemFilter {
 pub struct ItemQueryView {
     pub filter: ItemFilterView,
     pub unread_only: bool,
-    /// Listed by `unread_only` even when read: the article being read.
-    pub keep: Option<String>,
+    /// Listed by `unread_only` even when read: the article being read and
+    /// the ones read since the list was last reset.
+    pub keep: Vec<String>,
     pub limit: u32,
     pub offset: u32,
 }

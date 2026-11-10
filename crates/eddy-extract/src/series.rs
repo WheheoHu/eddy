@@ -7,6 +7,9 @@ use url::Url;
 pub struct ChapterLink {
     pub title: String,
     pub url: String,
+    /// Depth in the table of contents: 0 for a chapter, 1 for a section of
+    /// one, and so on. From nested lists, else from dotted numbering.
+    pub level: u32,
 }
 
 /// A proposed series built from a table-of-contents page, for the user to
@@ -74,6 +77,7 @@ fn chapters_under(doc: &Html, base: &Url, prefix: &str) -> Option<Vec<ChapterLin
             chapters.push(ChapterLink {
                 title,
                 url: target.to_string(),
+                level: list_depth(*a, el),
             });
             if chapters.len() >= MAX_CHAPTERS {
                 break;
@@ -101,7 +105,82 @@ fn chapters_under(doc: &Html, base: &Url, prefix: &str) -> Option<Vec<ChapterLin
             best = Some((score, chapters));
         }
     }
-    best.map(|(_, chapters)| chapters)
+    best.map(|(_, mut chapters)| {
+        level_chapters(&mut chapters);
+        chapters
+    })
+}
+
+/// How many lists lie between a link and the container it was found in.
+fn list_depth(link: ElementRef, container: ElementRef) -> u32 {
+    let mut depth = 0;
+    let mut node = link.parent().and_then(ElementRef::wrap);
+    while let Some(e) = node {
+        if e.id() == container.id() {
+            break;
+        }
+        if matches!(e.value().name(), "ul" | "ol") {
+            depth += 1;
+        }
+        node = e.parent().and_then(ElementRef::wrap);
+    }
+    depth
+}
+
+/// Levels count from the shallowest link. A flat list numbered "1", "1.1",
+/// "1.1.1" takes its levels from the numbering instead.
+fn level_chapters(chapters: &mut [ChapterLink]) {
+    let min = chapters.iter().map(|c| c.level).min().unwrap_or(0);
+    for c in chapters.iter_mut() {
+        c.level -= min;
+    }
+    if chapters.iter().any(|c| c.level > 0) {
+        return;
+    }
+    let numbered: Vec<Option<u32>> = chapters.iter().map(|c| numbering_depth(&c.title)).collect();
+    // Most chapters carry a number, and some of them have more than one part.
+    let with = numbered.iter().filter(|n| n.is_some()).count();
+    let nested = numbered.iter().any(|n| n.is_some_and(|d| d > 1));
+    if with * 3 < chapters.len() * 2 || !nested {
+        return;
+    }
+    let top = numbered.iter().flatten().min().copied().unwrap_or(1);
+    let mut last = 0;
+    for (c, n) in chapters.iter_mut().zip(numbered) {
+        // An unnumbered title between numbered ones stays with its chapter.
+        last = n.map(|d| d - top).unwrap_or(last);
+        c.level = last;
+    }
+}
+
+/// How many parts the number starting a title has: "3" is 1, "3.2" is 2,
+/// "3.2.1" is 3; `None` without a number.
+fn numbering_depth(title: &str) -> Option<u32> {
+    let mut rest = title.trim_start();
+    for prefix in ["Chapter ", "Section ", "Part ", "Ch. ", "§"] {
+        if let Some(r) = rest.strip_prefix(prefix) {
+            rest = r.trim_start();
+        }
+    }
+    let number: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let number = number.trim_end_matches('.');
+    if number.is_empty() || !number.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    // The number has to end before a word: "2024 in review" isn't a chapter 2024.
+    let after = rest[number.len()..].trim_start_matches('.');
+    if !after.is_empty()
+        && !after.starts_with(|c: char| c.is_whitespace() || c == ':' || c == ')' || c == '-')
+    {
+        return None;
+    }
+    if number.split('.').any(|p| p.is_empty()) {
+        return None;
+    }
+    Some(number.split('.').count() as u32)
 }
 
 /// Candidate path prefixes chapter links live under: the page's directory,

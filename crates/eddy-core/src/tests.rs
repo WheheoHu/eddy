@@ -9,6 +9,14 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::*;
 
+fn chapter(title: &str, url: String) -> ChapterLink {
+    ChapterLink {
+        title: title.into(),
+        url,
+        level: 0,
+    }
+}
+
 pub(crate) async fn mock_freshrss() -> MockServer {
     mock_freshrss_linking("https://blog.example").await
 }
@@ -519,7 +527,9 @@ async fn full_text_rules_pick_the_mode_with_the_top_rule_winning() {
     engine
         .set_full_text_rules(vec![
             FullTextRule {
-                scope: S::Category { name: "Tech".into() },
+                scope: S::Category {
+                    name: "Tech".into(),
+                },
                 mode: M::Never,
             },
             FullTextRule {
@@ -592,7 +602,10 @@ async fn full_text_rules_pick_the_mode_with_the_top_rule_winning() {
             other.inner.store.apply_remote(&op.op).unwrap();
         }
     }
-    assert_eq!(other.full_text_rules().unwrap(), engine.full_text_rules().unwrap());
+    assert_eq!(
+        other.full_text_rules().unwrap(),
+        engine.full_text_rules().unwrap()
+    );
     assert_eq!(other.effective_full_text(&source.id).unwrap(), M::Always);
 }
 
@@ -786,7 +799,8 @@ async fn removed_media_is_dropped_and_empty_items_leave_the_gallery() {
     // Imgur-style: a removed file redirects to a stand-in picture.
     Mock::given(path("/moved.jpg"))
         .respond_with(
-            ResponseTemplate::new(302).insert_header("location", format!("{}/removed.png", files.uri())),
+            ResponseTemplate::new(302)
+                .insert_header("location", format!("{}/removed.png", files.uri())),
         )
         .mount(&files)
         .await;
@@ -844,7 +858,13 @@ async fn removed_media_is_dropped_and_empty_items_leave_the_gallery() {
     let a_set = engine.verify_media(a).await.unwrap().unwrap();
     assert_eq!(a_set.status, MediaStatus::Ready);
     let srcs: Vec<&str> = a_set.items.iter().map(|m| m.src.as_str()).collect();
-    assert_eq!(srcs, [url("/kept.jpg").as_str(), "http://127.0.0.1:9/unreachable.jpg"]);
+    assert_eq!(
+        srcs,
+        [
+            url("/kept.jpg").as_str(),
+            "http://127.0.0.1:9/unreachable.jpg"
+        ]
+    );
     assert_eq!(a_set.thumbnail, Some(url("/kept.jpg")));
 
     let b_set = engine.verify_media(b).await.unwrap().unwrap();
@@ -1151,7 +1171,9 @@ impl wiremock::Respond for SlowTranslator {
             .fetch_max(open, std::sync::atomic::Ordering::SeqCst);
         ResponseTemplate::new(200)
             .set_delay(std::time::Duration::from_millis(self.delay_ms))
-            .set_body_json(json!({"choices": [{"message": {"content": echo_translation(&segments)}}]}))
+            .set_body_json(
+                json!({"choices": [{"message": {"content": echo_translation(&segments)}}]}),
+            )
     }
 }
 
@@ -1577,7 +1599,13 @@ async fn rules_added_later_apply_to_items_as_they_are_opened() {
     let full = applied.document.unwrap();
     assert_eq!(full.version.origin, ContentOrigin::Extracted);
     assert_eq!(
-        engine.document(&new_post).await.unwrap().unwrap().version.hash,
+        engine
+            .document(&new_post)
+            .await
+            .unwrap()
+            .unwrap()
+            .version
+            .hash,
         full.version.hash
     );
     // The summary is the reader's to show; tags come in the background.
@@ -1615,9 +1643,22 @@ async fn rules_added_later_apply_to_items_as_they_are_opened() {
     engine.set_full_text(&old_post, true).await.unwrap();
     engine.set_full_text(&old_post, false).await.unwrap();
     assert!(!engine.full_text_on_open(&old_post).unwrap());
-    assert!(engine.apply_rules(&old_post).await.unwrap().document.is_none());
+    assert!(
+        engine
+            .apply_rules(&old_post)
+            .await
+            .unwrap()
+            .document
+            .is_none()
+    );
     assert_eq!(
-        engine.document(&old_post).await.unwrap().unwrap().version.origin,
+        engine
+            .document(&old_post)
+            .await
+            .unwrap()
+            .unwrap()
+            .version
+            .origin,
         ContentOrigin::Feed
     );
 }
@@ -1945,13 +1986,8 @@ async fn series_from_a_table_of_contents() {
         .unwrap();
     assert_eq!(proposal.title, "Ray Tracing Book");
     assert_eq!(proposal.chapters.len(), 4);
-    let chapters: Vec<(String, String)> = proposal
-        .chapters
-        .iter()
-        .map(|c| (c.title.clone(), c.url.clone()))
-        .collect();
     let series_id = engine
-        .create_series(&proposal.title, Some(&proposal.toc_url), &chapters)
+        .create_series(&proposal.title, Some(&proposal.toc_url), &proposal.chapters)
         .unwrap();
 
     let info = engine.series_info(&series_id).unwrap().unwrap();
@@ -2283,8 +2319,16 @@ impl PdfReader for FakePdfReader {
         })
     }
 
-    fn image(&self, path: &std::path::Path, page: u32, index: u32) -> Option<(Vec<u8>, &'static str)> {
-        std::fs::read(path).ok()?.starts_with(b"%PDF-").then_some(())?;
+    fn image(
+        &self,
+        path: &std::path::Path,
+        page: u32,
+        index: u32,
+    ) -> Option<(Vec<u8>, &'static str)> {
+        std::fs::read(path)
+            .ok()?
+            .starts_with(b"%PDF-")
+            .then_some(())?;
         (page == 1 && index == 4).then(|| (b"\x89PNG figure".to_vec(), "image/png"))
     }
 }
@@ -2339,7 +2383,10 @@ async fn pdf_import_reads_text_through_the_platform_and_tracks_pages() {
             _ => None,
         })
         .expect("the figure on page 2");
-    assert!(figure.starts_with("pdf://") && figure.ends_with("/1/4"), "{figure}");
+    assert!(
+        figure.starts_with("pdf://") && figure.ends_with("/1/4"),
+        "{figure}"
+    );
     // Importing started rendering the figure into the image cache.
     let cached = crate::images::image_blob_key(&figure);
     for _ in 0..200 {
@@ -2348,9 +2395,15 @@ async fn pdf_import_reads_text_through_the_platform_and_tracks_pages() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    assert!(engine.inner.store.has_blob(&cached).unwrap(), "figure warmed on import");
+    assert!(
+        engine.inner.store.has_blob(&cached).unwrap(),
+        "figure warmed on import"
+    );
     let (bytes, mime) = engine.image(&figure).await.unwrap();
-    assert_eq!((bytes.as_slice(), mime.as_str()), (&b"\x89PNG figure"[..], "image/png"));
+    assert_eq!(
+        (bytes.as_slice(), mime.as_str()),
+        (&b"\x89PNG figure"[..], "image/png")
+    );
     assert!(engine.image(&figure.replace("/1/4", "/1/5")).await.is_err());
     assert_eq!(
         engine.search("integrand", 5).unwrap()[0].item.item.id,
@@ -2485,8 +2538,8 @@ async fn the_collection_holds_books_pdfs_pages_and_series_and_deletes_them() {
             "Notes",
             Some(&format!("{}/3", pages.uri())),
             &[
-                ("One".into(), format!("{}/1", pages.uri())),
-                ("Two".into(), format!("{}/2", pages.uri())),
+                chapter("One", format!("{}/1", pages.uri())),
+                chapter("Two", format!("{}/2", pages.uri())),
             ],
         )
         .unwrap();
@@ -2620,4 +2673,76 @@ async fn subscription_articles_cannot_be_deleted() {
         Err(EngineError::Invalid(_))
     ));
     assert!(engine.collection().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_code_block_keeps_the_language_picked_for_it() {
+    let pages = MockServer::start().await;
+    let code = "<pre><code class=\"language-rust\">let x = 1;\nlet y = x + 2;</code></pre>";
+    let body: String = (0..20)
+        .map(|i| {
+            format!("<p>Paragraph {i} of a post about numbers and how the compiler sees them.</p>")
+        })
+        .collect();
+    Mock::given(method("GET"))
+        .and(path("/post"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/html")
+                .set_body_string(format!(
+                    "<html><head><title>Post</title></head><body><article><h1>Post</h1>{body}{code}</article></body></html>"
+                )),
+        )
+        .mount(&pages)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let saved = engine
+        .save_url(&format!("{}/post", pages.uri()))
+        .await
+        .unwrap();
+    let id = saved.item.id.clone();
+
+    let code_block = |doc: &eddy_model::Document| {
+        doc.blocks
+            .iter()
+            .find_map(|b| match &b.kind {
+                BlockKind::Code {
+                    language,
+                    highlights,
+                    ..
+                } => Some((b.id.to_string(), language.clone(), highlights.len())),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let doc = engine.document(&id).await.unwrap().unwrap().document;
+    let (block, language, spans) = code_block(&doc);
+    assert_eq!(language.as_deref(), Some("rust"));
+    assert!(spans > 0);
+
+    // Plain text: the label changes and the colors go.
+    engine
+        .set_code_language(&id, &block, Some("plaintext"))
+        .unwrap();
+    let doc = engine.document(&id).await.unwrap().unwrap().document;
+    assert_eq!(
+        code_block(&doc),
+        (block.clone(), Some("plaintext".into()), 0)
+    );
+
+    // Another grammar.
+    engine
+        .set_code_language(&id, &block, Some("JavaScript"))
+        .unwrap();
+    let doc = engine.document(&id).await.unwrap().unwrap().document;
+    let (_, language, spans) = code_block(&doc);
+    assert_eq!(language.as_deref(), Some("javascript"));
+    assert!(spans > 0);
+
+    // Back to what the page said.
+    engine.set_code_language(&id, &block, None).unwrap();
+    let doc = engine.document(&id).await.unwrap().unwrap().document;
+    assert_eq!(code_block(&doc).1.as_deref(), Some("rust"));
+    assert!(engine.inner.code_languages(&id).unwrap().is_empty());
 }

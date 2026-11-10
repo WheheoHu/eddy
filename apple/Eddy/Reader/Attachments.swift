@@ -296,10 +296,61 @@ private struct TableGrid: View {
     }
 }
 
+/// What a code block is, for the label in its corner and the menu behind
+/// it. The value of the `.eddyCode` attribute on the block's paragraph.
+final class CodeBlockMark: NSObject {
+    let blockID: String
+    /// As declared, guessed or picked; nil for plain text.
+    let language: String?
+
+    init(blockID: String, language: String?) {
+        self.blockID = blockID
+        self.language = language
+    }
+
+    /// Height of the strip above the code holding the label.
+    static let stripHeight: CGFloat = 22
+
+    /// How the label shows a language token: "cpp" as "C++".
+    static func displayName(_ language: String?) -> String {
+        guard let language = language?.lowercased(), !language.isEmpty else { return "Text" }
+        let names: [String: String] = [
+            "plaintext": "Text", "plain": "Text", "text": "Text", "txt": "Text", "none": "Text", "nohighlight": "Text",
+            "c": "C", "cpp": "C++", "c++": "C++", "cc": "C++", "cxx": "C++", "h": "C", "hpp": "C++",
+            "csharp": "C#", "cs": "C#", "c#": "C#", "objc": "Objective-C", "m": "Objective-C",
+            "js": "JavaScript", "javascript": "JavaScript", "jsx": "JSX", "mjs": "JavaScript",
+            "ts": "TypeScript", "typescript": "TypeScript", "tsx": "TSX",
+            "py": "Python", "python": "Python", "python3": "Python", "rb": "Ruby", "ruby": "Ruby",
+            "rs": "Rust", "rust": "Rust", "go": "Go", "golang": "Go", "java": "Java", "kt": "Kotlin", "kotlin": "Kotlin",
+            "swift": "Swift", "php": "PHP", "lua": "Lua", "scala": "Scala", "dart": "Dart", "zig": "Zig",
+            "sh": "Shell", "shell": "Shell", "bash": "Bash", "zsh": "Zsh", "console": "Console", "fish": "Fish", "powershell": "PowerShell",
+            "sql": "SQL", "html": "HTML", "xml": "XML", "svg": "SVG", "css": "CSS", "scss": "SCSS", "json": "JSON",
+            "yaml": "YAML", "yml": "YAML", "toml": "TOML", "ini": "INI", "md": "Markdown", "markdown": "Markdown",
+            "tex": "TeX", "latex": "LaTeX", "diff": "Diff", "patch": "Diff", "makefile": "Makefile", "make": "Makefile",
+            "dockerfile": "Dockerfile", "glsl": "GLSL", "hlsl": "HLSL", "wgsl": "WGSL", "metal": "Metal", "cuda": "CUDA",
+            "hs": "Haskell", "haskell": "Haskell", "ml": "OCaml", "ocaml": "OCaml", "ex": "Elixir", "elixir": "Elixir",
+            "clj": "Clojure", "clojure": "Clojure", "erl": "Erlang", "erlang": "Erlang", "r": "R", "matlab": "MATLAB",
+            "perl": "Perl", "pl": "Perl",
+        ]
+        if let name = names[language] { return name }
+        return language.prefix(1).uppercased() + language.dropFirst()
+    }
+
+    /// Whether the token means no highlighting.
+    static func isPlain(_ language: String?) -> Bool {
+        guard let language = language?.lowercased() else { return true }
+        return ["plaintext", "plain", "text", "txt", "none", "nohighlight"].contains(language)
+    }
+}
+
 /// Draws code block backgrounds and quote bars behind TextKit 2 paragraphs.
+/// A code block gets its language in the corner of a strip above the code;
+/// `labelRect` (in the fragment's own coordinates) is where that is, for
+/// clicks on it.
 final class DecoratedFragment: NSTextLayoutFragment {
-    enum Kind { case code, quote(Int) }
-    var kind: Kind = .code
+    enum Kind { case code(CodeBlockMark?), quote(Int) }
+    var kind: Kind = .code(nil)
+    private(set) var labelRect: CGRect = .zero
 
     override var renderingSurfaceBounds: CGRect {
         super.renderingSurfaceBounds.union(layoutFragmentFrame.offsetBy(dx: -layoutFragmentFrame.minX, dy: -layoutFragmentFrame.minY).insetBy(dx: -8, dy: -6))
@@ -308,13 +359,14 @@ final class DecoratedFragment: NSTextLayoutFragment {
     override func draw(at point: CGPoint, in context: CGContext) {
         let frame = CGRect(origin: point, size: layoutFragmentFrame.size)
         switch kind {
-        case .code:
+        case let .code(mark):
             let rect = CGRect(x: frame.minX, y: frame.minY - 2, width: frame.width, height: frame.height - paragraphSpacingBelow() + 4)
             context.saveGState()
             context.setFillColor(NSColor.quaternaryLabelColor.withAlphaComponent(0.18).cgColor)
             context.addPath(CGPath(roundedRect: rect, cornerWidth: 8, cornerHeight: 8, transform: nil))
             context.fillPath()
             context.restoreGState()
+            drawLabel(mark, in: rect, context: context)
         case let .quote(depth):
             context.saveGState()
             context.setFillColor(NSColor.controlAccentColor.withAlphaComponent(0.55).cgColor)
@@ -324,6 +376,30 @@ final class DecoratedFragment: NSTextLayoutFragment {
             context.restoreGState()
         }
         super.draw(at: point, in: context)
+    }
+
+    /// The language, top right, with a mark that it opens a menu.
+    private func drawLabel(_ mark: CodeBlockMark?, in rect: CGRect, context: CGContext) {
+        let text = CodeBlockMark.displayName(mark?.language) + " ▾"
+        let label = NSAttributedString(string: text, attributes: [
+            .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ])
+        let size = label.size()
+        let origin = CGPoint(x: rect.maxX - 12 - size.width, y: rect.minY + (CodeBlockMark.stripHeight - size.height) / 2 + 2)
+        // Generous, for clicking: the whole corner of the strip.
+        labelRect = CGRect(x: origin.x - 10, y: rect.minY, width: size.width + 22, height: CodeBlockMark.stripHeight + 2)
+            .offsetBy(dx: -rect.minX, dy: -(rect.minY + 2))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
+        label.draw(at: origin)
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    /// The code block's mark, when this is one.
+    var codeMark: CodeBlockMark? {
+        if case let .code(mark) = kind { return mark }
+        return nil
     }
 
     private func paragraphSpacingBelow() -> CGFloat {

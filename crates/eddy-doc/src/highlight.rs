@@ -8,6 +8,44 @@ static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_ne
 
 const MAX_HIGHLIGHT_BYTES: usize = 64 * 1024;
 
+/// Languages a reader can pick for a code block, as tokens `highlight`
+/// takes; the common ones, in display order.
+pub fn highlight_languages() -> &'static [&'static str] {
+    &[
+        "c",
+        "cpp",
+        "csharp",
+        "css",
+        "diff",
+        "go",
+        "html",
+        "java",
+        "javascript",
+        "json",
+        "kotlin",
+        "lua",
+        "makefile",
+        "markdown",
+        "objc",
+        "php",
+        "python",
+        "ruby",
+        "rust",
+        "scala",
+        "shell",
+        "sql",
+        "swift",
+        "typescript",
+        "xml",
+        "yaml",
+    ]
+}
+
+/// Whether a declared language names a grammar that can be highlighted.
+pub fn knows_language(language: &str) -> bool {
+    find_syntax(language).is_some()
+}
+
 /// Classifies tokens of `code` written in `language`. Unknown languages and
 /// oversized blocks get no highlighting.
 pub fn highlight(code: &str, language: &str) -> Vec<HighlightSpan> {
@@ -56,8 +94,19 @@ fn find_syntax(language: &str) -> Option<&'static SyntaxReference> {
         "yml" => "yaml",
         "md" => "markdown",
         "golang" => "go",
-        "kt" | "kotlin" | "swift" => "java",
-        "html" | "xml" | "svg" => "html",
+        // Grammars the default set lacks borrow the nearest one.
+        "kt" | "kotlin" | "kts" => "scala",
+        "swift" | "zig" => "rs",
+        "dart" => "java",
+        "elixir" | "ex" | "exs" | "crystal" => "rb",
+        "html" | "xml" | "svg" | "vue" | "svelte" => "html",
+        "csharp" | "c#" | "cs" => "cs",
+        "toml" | "ini" | "cfg" | "conf" | "properties" | "env" | "dotenv" => "properties",
+        "dockerfile" | "docker" | "fish" | "powershell" | "ps1" => "sh",
+        "makefile" | "make" | "mk" => "makefile",
+        "diff" | "patch" => "diff",
+        "tex" | "latex" => "tex",
+        "plaintext" | "plain" | "text" | "txt" | "none" | "nohighlight" => return None,
         other => other,
     };
     SYNTAXES
@@ -130,4 +179,34 @@ fn class_of(scope: Scope) -> Option<TokenClass> {
     } else {
         return None;
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{find_syntax, highlight};
+    use eddy_model::TokenClass;
+
+    #[test]
+    fn every_guessable_language_has_a_grammar() {
+        for profile in crate::guess::PROFILE_LANGUAGES {
+            assert!(find_syntax(profile).is_some(), "{profile}");
+        }
+    }
+
+    #[test]
+    fn plain_text_is_not_a_grammar() {
+        assert!(find_syntax("plaintext").is_none());
+        assert!(highlight("let x = 1", "text").is_empty());
+    }
+
+    #[test]
+    fn tokens_are_classified() {
+        let spans = highlight("let x = 1;", "rust");
+        assert!(spans.iter().any(|s| s.start == 0 && s.end == 3));
+        assert!(
+            spans
+                .iter()
+                .any(|s| s.class == TokenClass::Number && s.start == 8)
+        );
+    }
 }

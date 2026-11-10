@@ -176,15 +176,33 @@ struct EntryContents: View {
         .padding(.vertical, 4)
     }
 
+    /// Top-level chapters whose sections are shown. Starts with the one
+    /// being read; a series without sections has nothing to fold.
+    @State private var expanded: Set<String> = []
+    @State private var expandedFor: String?
+
     private func chapters(_ seriesID: String) -> some View {
-        let chapters = Array(model.chapters(seriesID).enumerated()).filter { $0.element.title.matches(filter: query) }
+        let all = model.chapters(seriesID)
+        let nested = all.contains { $0.chapterLevel > 0 }
+        let filtering = !query.isEmpty
+        let rows = Self.rows(of: all)
+        let shown = rows.filter { row in
+            if filtering { return row.chapter.title.matches(filter: query) }
+            guard let parent = row.parent else { return true }
+            return expanded.contains(parent)
+        }
         return List(selection: Binding(get: { currentItemID }, set: { if let id = $0 { open(id) } })) {
             Section { header }
             Section("Chapters") {
-                ForEach(chapters, id: \.element.id) { index, chapter in
+                ForEach(shown, id: \.chapter.id) { row in
+                    let chapter = row.chapter
                     HStack(spacing: 8) {
-                        Text("\(index + 1)").font(.caption.monospacedDigit()).foregroundStyle(.secondary).frame(width: 22, alignment: .trailing)
-                        Text(Self.displayTitle(chapter.title, number: index + 1))
+                        if row.parent == nil {
+                            Text("\(row.index)").font(.caption.monospacedDigit()).foregroundStyle(.secondary).frame(width: 22, alignment: .trailing)
+                        } else {
+                            Color.clear.frame(width: 22 + CGFloat(max(Int(chapter.chapterLevel) - 1, 0)) * 12, height: 1)
+                        }
+                        Text(row.parent == nil ? Self.displayTitle(chapter.title, number: row.index) : chapter.title)
                             .lineLimit(2)
                             .foregroundStyle(chapter.finished ? .secondary : .primary)
                         Spacer()
@@ -193,6 +211,18 @@ struct EntryContents: View {
                         } else if chapter.inProgress {
                             ProgressRing(value: chapter.progress, size: 12)
                         }
+                        if row.hasChildren, !filtering {
+                            let open = expanded.contains(chapter.id)
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .rotationEffect(.degrees(open ? 90 : 0))
+                                .frame(width: 16, height: 16)
+                                .contentShape(Rectangle())
+                                .onTapGesture { toggle(chapter.id) }
+                                .accessibilityLabel(open ? "Hide sections" : "Show sections")
+                                .accessibilityAddTraits(.isButton)
+                        }
                     }
                     .padding(.vertical, 2)
                     .tag(chapter.id)
@@ -200,12 +230,78 @@ struct EntryContents: View {
                         if chapter.hasBeenRead {
                             Button("Mark as Unread") { model.markUnread([chapter.id]) }
                         }
+                        if nested, !filtering {
+                            Divider()
+                            Button("Expand All") { expanded = Set(rows.filter(\.hasChildren).map(\.chapter.id)) }
+                            Button("Collapse All") { expanded = [] }
+                        }
                     }
                 }
             }
         }
         .listStyle(.sidebar)
         .pane(focus, .contents, onReturn: onReturn, onEscape: onEscape)
+        .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in
+            guard !filtering, let current = currentItemID,
+                  let row = rows.first(where: { $0.chapter.id == current })
+            else { return .ignored }
+            let group = row.parent ?? current
+            let open = expanded.contains(group)
+            switch press.key {
+            case .rightArrow where row.hasChildren && !open:
+                expanded.insert(group)
+            case .leftArrow where open:
+                expanded.remove(group)
+                if row.parent != nil { self.open(group) }
+            case .leftArrow where row.parent != nil:
+                self.open(group)
+            default:
+                return .ignored
+            }
+            return .handled
+        }
+        .onChange(of: currentItemID, initial: true) { _, id in
+            // Reading into a folded chapter unfolds it.
+            guard let id, let row = rows.first(where: { $0.chapter.id == id }) else { return }
+            if expandedFor != entry.id {
+                expandedFor = entry.id
+                expanded = []
+            }
+            expanded.insert(row.parent ?? id)
+        }
+    }
+
+    private struct ChapterRow {
+        /// Shown number: the chapter's place among the top-level ones when
+        /// the series has sections, else among all.
+        let index: Int
+        let chapter: ItemView
+        /// The top-level chapter a section belongs to; nil for one itself.
+        let parent: String?
+        let hasChildren: Bool
+    }
+
+    private static func rows(of all: [ItemView]) -> [ChapterRow] {
+        let nested = all.contains { $0.chapterLevel > 0 }
+        var rows: [ChapterRow] = []
+        var parent: String?
+        var number = 0
+        for (i, chapter) in all.enumerated() {
+            let top = chapter.chapterLevel == 0 || parent == nil
+            if top {
+                parent = chapter.id
+                number += 1
+            }
+            let hasChildren = top && i + 1 < all.count && all[i + 1].chapterLevel > 0
+            rows.append(ChapterRow(index: nested ? number : i + 1, chapter: chapter, parent: top ? nil : parent, hasChildren: hasChildren))
+        }
+        return rows
+    }
+
+    private func toggle(_ id: String) {
+        withAnimation(.easeInOut(duration: 0.15)) {
+            if expanded.contains(id) { expanded.remove(id) } else { expanded.insert(id) }
+        }
     }
 
     /// Selecting a heading jumps to it, by click or with the arrow keys.

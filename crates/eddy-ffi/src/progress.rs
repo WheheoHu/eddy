@@ -38,6 +38,8 @@ impl From<core::ResumePoint> for ResumePointView {
 pub struct ChapterLinkView {
     pub title: String,
     pub url: String,
+    /// Depth in the table of contents; 0 at the top.
+    pub level: u32,
 }
 
 #[derive(uniffi::Record, Clone, Debug)]
@@ -58,6 +60,7 @@ impl From<core::SeriesProposal> for SeriesProposalView {
                 .map(|c| ChapterLinkView {
                     title: c.title,
                     url: c.url,
+                    level: c.level,
                 })
                 .collect(),
         }
@@ -266,8 +269,14 @@ impl EddyEngine {
         toc_url: Option<String>,
         chapters: Vec<ChapterLinkView>,
     ) -> R<String> {
-        let chapters: Vec<(String, String)> =
-            chapters.into_iter().map(|c| (c.title, c.url)).collect();
+        let chapters: Vec<core::ChapterLink> = chapters
+            .into_iter()
+            .map(|c| core::ChapterLink {
+                title: c.title,
+                url: c.url,
+                level: c.level,
+            })
+            .collect();
         Ok(self
             .engine
             .create_series(&title, toc_url.as_deref(), &chapters)?)

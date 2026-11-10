@@ -11,8 +11,8 @@ use std::sync::Arc;
 use eddy_doc::{ConvertOptions, html_to_document};
 use eddy_epub::{Book, Epub, EpubError};
 use eddy_model::{
-    BlockKind, ContentVersion, Document, EPUB_MIME, EPUB_SCHEME, Entity, Item, ItemKind, PDF_MIME, PDF_SCHEME,
-    fields, ids, now_ms,
+    BlockKind, ContentVersion, Document, EPUB_MIME, EPUB_SCHEME, Entity, Item, ItemKind, PDF_MIME,
+    PDF_SCHEME, fields, ids, now_ms,
 };
 use serde_json::json;
 
@@ -361,6 +361,7 @@ impl Inner {
             starred: false,
             series_id: None,
             chapter_index: None,
+            chapter_level: 0,
             current_version: None,
             excerpt: None,
             lang: None,
@@ -389,7 +390,9 @@ impl Inner {
 
     /// The text document of a stored PDF, when a PDF reader is available.
     pub(crate) fn pdf_document(&self, key: &str) -> Result<Option<Document>> {
-        Ok(self.read_pdf(key)?.map(|t| crate::pdf_layout::document(&t.pages, key)))
+        Ok(self
+            .read_pdf(key)?
+            .map(|t| crate::pdf_layout::document(&t.pages, key)))
     }
 
     /// Regenerates an EPUB chapter's document from the stored book.

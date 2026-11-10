@@ -63,6 +63,9 @@ struct ReaderPane: View {
     @State private var resumeNote: ResumePointView?
     @State private var lastPosition: (block: String, offset: Int, atEnd: Bool)?
     @State private var cache = ArticleCache()
+    /// Bumped when a code block's language is changed, so the text is
+    /// rebuilt from the re-highlighted document.
+    @State private var codeEdits = 0
     @State private var paneHeight: CGFloat = 600
     @State private var paneWidth: CGFloat = 800
     /// Where the next renderer slides in from.
@@ -200,7 +203,7 @@ struct ReaderPane: View {
                 WebPageView(url: url, gestures: covered ? EdgeGestures() : gestures, onEscape: escape, focused: focused && !covered, onFocus: onFocus, appearance: appearance.nsAppearance, translator: webTranslator, onLink: openLinksInApp ? openLink : nil)
                     .transition(.push(from: rendererArrival))
             } else if let document {
-                let version = "\(document.contentHash)|\(mode.rawValue)|\(translations.count)|\(fontSize)|\(serif)|\(lineHeight)|\(scheme)"
+                let version = "\(document.contentHash)|\(mode.rawValue)|\(translations.count)|\(fontSize)|\(serif)|\(lineHeight)|\(scheme)|\(codeEdits)"
                 let article = cache.article(version) {
                     // Formulas are images drawn now, in the content's colors.
                     var built: BuiltArticle!
@@ -231,7 +234,9 @@ struct ReaderPane: View {
                     onEscape: escape,
                     focused: focused && !covered,
                     onFocus: onFocus,
-                    appearance: appearance.nsAppearance
+                    appearance: appearance.nsAppearance,
+                    codeLanguages: model.codeLanguages,
+                    onCodeLanguage: setCodeLanguage
                 )
                 .id(itemID)
                 .transition(.push(from: rendererArrival))
@@ -584,6 +589,22 @@ struct ReaderPane: View {
     private func reloadDocument() async {
         document = await model.document(itemID)
         loading = false
+    }
+
+    /// Highlights a code block as the language picked from its label, from
+    /// now on; the text keeps its place.
+    private func setCodeLanguage(_ mark: CodeBlockMark, _ language: String?) {
+        Task {
+            do {
+                try model.engine?.setCodeLanguage(itemId: itemID, blockId: mark.blockID, language: language)
+            } catch {
+                model.report(error)
+                return
+            }
+            guard let fresh = await model.document(itemID), !Task.isCancelled else { return }
+            document = fresh
+            codeEdits += 1
+        }
     }
 
     private func flush() {

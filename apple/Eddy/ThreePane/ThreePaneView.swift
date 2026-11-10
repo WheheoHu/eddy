@@ -15,6 +15,11 @@ struct ThreePaneView: View {
     /// The collection entry picked in the middle column.
     @State private var entryID: String?
     @State private var unreadOnly = false
+    /// Articles read while the unread-only list has been on screen. They
+    /// stay listed, so rows don't move under the pointer with each one
+    /// read, until the list starts over: another sidebar selection, the
+    /// filter toggled, or everything marked read.
+    @State private var readHere: Set<String> = []
     @State private var scrollTarget: ScrollTarget?
     @State private var pageTarget: PageTarget?
     /// Back and forward through the articles of the middle column.
@@ -76,8 +81,14 @@ struct ThreePaneView: View {
             pageTarget = nil
             history.opened(new)
             if new != landAtEnd { landAtEnd = nil }
+            if let new, showsUnreadOnly { readHere.insert(new) }
         }
-        .onChange(of: selection) { history.reset(model.currentItemID) }
+        .onChange(of: selection) {
+            history.reset(model.currentItemID)
+            readHere = []
+        }
+        .onChange(of: unreadOnly) { readHere = [] }
+        .onChange(of: model.listsReset) { readHere = [] }
         .onChange(of: focus) { _, new in if new != nil { readerFocused = false } }
         .onChange(of: articleList, initial: true) { _, list in model.currentList = list }
         .onDisappear { model.currentList = nil }
@@ -356,10 +367,21 @@ struct ThreePaneView: View {
         }
     }
 
-    /// Opening an article marks it read; it leaves an unread-only list once
-    /// another article is opened, not while it is being read.
+    /// The middle column lists unread articles only.
+    private var showsUnreadOnly: Bool {
+        switch selection {
+        case .smart(.unread): true
+        case .smart(.continueReading), .saved, .kind, nil: false
+        default: unreadOnly
+        }
+    }
+
+    /// Opening an article marks it read; it stays in an unread-only list,
+    /// with the others read here, until the list starts over.
     private var rowsForSelection: [ItemView] {
-        let keep = model.currentItemID
+        var kept = readHere
+        if let current = model.currentItemID { kept.insert(current) }
+        let keep = Array(kept)
         return switch selection {
         case .smart(.unread): model.items(.all, unreadOnly: true, keep: keep)
         case .smart(.starred): model.items(.starred, unreadOnly: unreadOnly, keep: keep)
