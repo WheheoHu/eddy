@@ -66,13 +66,14 @@ struct SettingsView: View {
             .scrollContentBackground(.hidden)
             .background(.ultraThinMaterial)
             .frame(width: 200)
-            Divider()
+            // Only the sidebar runs under the (transparent) title bar; the
+            // page keeps its top inset so nothing scrolls out of reach.
+            .ignoresSafeArea()
+            Divider().ignoresSafeArea()
             detail
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .ignoresSafeArea()
         .frame(minWidth: 760, idealWidth: 820, minHeight: 520, idealHeight: 600)
-        .navigationTitle(tab.rawValue)
         .background(SettingsWindowStyler())
     }
 
@@ -94,14 +95,29 @@ private struct SettingsWindowStyler: NSViewRepresentable {
     func updateNSView(_ view: NSView, context: Context) {}
 
     private final class Probe: NSView {
+        private var observer: Any?
+
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             guard let window else { return }
+            // SwiftUI finishes setting the window up after the view is in
+            // it, and sets the title again on every page change; style it
+            // after that, and again whenever it comes to the front.
+            DispatchQueue.main.async { Self.style(window) }
+            observer = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { note in
+                if let window = note.object as? NSWindow { Self.style(window) }
+            }
+        }
+
+        deinit {
+            if let observer { NotificationCenter.default.removeObserver(observer) }
+        }
+
+        static func style(_ window: NSWindow) {
             window.titleVisibility = .hidden
             window.titlebarAppearsTransparent = true
             window.styleMask.insert(.fullSizeContentView)
             window.isMovableByWindowBackground = true
-            window.toolbar = nil
         }
     }
 }
