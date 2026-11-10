@@ -185,6 +185,14 @@ impl Inner {
         gate.1.clone()
     }
 
+    /// Held while the request for `key` is out, so the same summary or
+    /// batch asked for twice (a rule and the reader) is paid for once.
+    fn ai_request(&self, key: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut requests = self.ai_requests.lock();
+        requests.retain(|_, lock| Arc::strong_count(lock) > 1);
+        requests.entry(key.to_string()).or_default().clone()
+    }
+
     fn ai_document(&self, item_id: &str) -> Result<(LoadedDocument, String)> {
         let row = self.store.item(item_id)?.ok_or(EngineError::NotFound)?;
         let doc = self
@@ -315,31 +323,51 @@ impl Inner {
                     .and_then(|b| focus_batch(&doc.document, &of_block, b))
                     .unwrap_or(0);
                 let i = pending.remove(nearest(&pending, focus));
-                self.store.add_ai_usage(&today(), 1)?;
-                let (provider, batch, target, glossary) =
-                    (provider.as_ref(), &batches[i], &target, &settings.glossary);
+                let (provider, batch, key, target, glossary, hash) = (
+                    provider.as_ref(),
+                    &batches[i],
+                    &keys[i],
+                    &target,
+                    &settings.glossary,
+                    &doc.version.hash,
+                );
                 in_flight.push(async move {
-                    (
-                        i,
-                        eddy_ai::translate_batch(provider, batch, target, glossary).await,
-                    )
+                    let request = self.ai_request(key);
+                    let _held = request.lock().await;
+                    async {
+                        // Another run may have done it while this one waited.
+                        if !force
+                            && let Some(r) = self
+                                .store
+                                .ai_artifact(key)?
+                                .and_then(|p| serde_json::from_str(&p).ok())
+                        {
+                            return Ok(r);
+                        }
+                        self.store.add_ai_usage(&today(), 1)?;
+                        let r = eddy_ai::translate_batch(provider, batch, target, glossary)
+                            .await
+                            .map_err(|e| EngineError::Invalid(e.to_string()))?;
+                        self.store.put_ai_artifact(
+                            key,
+                            item_id,
+                            "translation_batch",
+                            hash,
+                            Some(target),
+                            Some(provider.model()),
+                            &serde_json::to_string(&r)?,
+                            false,
+                        )?;
+                        Ok::<HashMap<String, String>, EngineError>(r)
+                    }
+                    .await
                 });
             }
-            let Some((i, result)) = in_flight.next().await else {
+            let Some(result) = in_flight.next().await else {
                 break;
             };
             match result {
                 Ok(r) => {
-                    self.store.put_ai_artifact(
-                        &keys[i],
-                        item_id,
-                        "translation_batch",
-                        &doc.version.hash,
-                        Some(&target),
-                        Some(provider.model()),
-                        &serde_json::to_string(&r)?,
-                        false,
-                    )?;
                     if let Some(cb) = &on_batch {
                         cb(&r);
                     }
@@ -354,7 +382,7 @@ impl Inner {
         drop(in_flight);
         if let Some(e) = failure {
             save_partial(&all)?;
-            return Err(EngineError::Invalid(e.to_string()));
+            return Err(e);
         }
         if !pending.is_empty() {
             save_partial(&all)?;
@@ -454,6 +482,8 @@ impl Inner {
             &settings.target_language,
             PROMPT_VERSION,
         ]);
+        let request = self.ai_request(&key);
+        let _held = request.lock().await;
         if !force
             && let Some(summary) = self
                 .store
@@ -551,7 +581,25 @@ impl Inner {
         }
         self.store
             .set_tag_suggestions(item_id, &result.suggestions)?;
+        // Marks the item tagged, for automatic rules, even when no tag fit.
+        self.store.put_ai_artifact(
+            &artifact_key(&["tags", &doc.version.hash, &provider.cache_identity()]),
+            item_id,
+            "tags",
+            &doc.version.hash,
+            None,
+            Some(provider.model()),
+            &serde_json::to_string(&result.tags)?,
+            false,
+        )?;
         self.item_tags(item_id)
+    }
+
+    /// Tagged before, by AI or by hand: automatic rules leave it alone.
+    pub(crate) fn tagged(&self, item_id: &str) -> Result<bool> {
+        Ok(self.store.latest_ai_artifact(item_id, "tags")?.is_some()
+            || !self.store.item_tag_states(item_id)?.is_empty()
+            || !self.store.tag_suggestions(item_id)?.is_empty())
     }
 
     pub(crate) fn item_tags(&self, item_id: &str) -> Result<ItemTagsResult> {
@@ -574,9 +622,10 @@ impl Inner {
         })
     }
 
-    /// Runs automatic AI rules on new items in the background, within the
-    /// daily budget. Results already present (e.g. synced from another
-    /// device) are reused instead of paid for again.
+    /// Runs automatic AI rules on items in the background, within the
+    /// daily budget: new ones, and older ones as they are opened. Results
+    /// already present (done before, or synced from another device) are
+    /// reused instead of paid for again.
     pub(crate) fn auto_ai(self: &Arc<Self>, item_ids: Vec<String>) {
         let Ok(settings) = self.ai_settings() else {
             return;
@@ -609,7 +658,11 @@ impl Inner {
                 let long_enough = row.item.text_len >= rule.min_chars;
                 let foreign = !rule.only_foreign
                     || (row.item.lang.is_some() && row.item.lang.as_deref() != target_code);
-                if in_scope && long_enough && foreign && !jobs.contains(&(id.clone(), rule.action))
+                if in_scope
+                    && long_enough
+                    && foreign
+                    && !jobs.contains(&(id.clone(), rule.action))
+                    && !(rule.action == AutoAction::Tag && self.tagged(&id).unwrap_or(true))
                 {
                     jobs.push((id.clone(), rule.action));
                 }

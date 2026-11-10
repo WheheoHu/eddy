@@ -331,6 +331,12 @@ impl EddyEngine {
         Ok(self.engine.set_full_text(&item_id, on).await?.into())
     }
 
+    /// Applies the full-text and automatic AI rules to an item being
+    /// opened; returns the full text when it was fetched for them.
+    pub async fn apply_rules(&self, item_id: String) -> R<Option<DocumentView>> {
+        Ok(self.engine.apply_rules(&item_id).await?.map(Into::into))
+    }
+
     pub async fn save_url(&self, url: String) -> R<ItemView> {
         Ok(self.engine.save_url(&url).await?.into())
     }

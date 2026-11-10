@@ -587,6 +587,15 @@ final class AppModel {
         }
     }
 
+    /// Applies the full-text and AI rules to an item being opened; the full
+    /// text when they fetched it.
+    func applyRules(_ id: String) async -> DocumentView? {
+        guard let document = (try? await engine?.applyRules(itemId: id)) ?? nil else { return nil }
+        leadImages[id] = nil
+        reload()
+        return document
+    }
+
     private var captureImport: Task<Void, Never>?
 
     /// One import at a time: the spool watcher and a "Show" from the

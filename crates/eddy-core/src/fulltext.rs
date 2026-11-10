@@ -454,6 +454,38 @@ impl Inner {
         );
     }
 
+    /// Whether the rules want the page fetched for this item: an always-on
+    /// source, or an auto one that looks truncated.
+    fn wants_full_text(&self, row: &ItemRow, rules: &[FullTextRule]) -> bool {
+        let Some(source) = row
+            .item
+            .source_id
+            .as_deref()
+            .and_then(|s| self.store.source(s).ok().flatten())
+        else {
+            return false;
+        };
+        let wanted = match resolve_full_text(&source, rules) {
+            FullTextMode::Always => true,
+            FullTextMode::Never => false,
+            FullTextMode::Auto => {
+                source.truncated
+                    || self
+                        .current_document(&row.item.id)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|d| truncation_hint(&d.document))
+            }
+        };
+        // Media links have no article to fetch; the Gallery resolves them.
+        wanted
+            && row
+                .item
+                .url
+                .as_deref()
+                .is_some_and(|u| !eddy_media::is_media_url(u))
+    }
+
     /// Returns the IDs scheduled for fetching.
     pub(crate) fn auto_full_text(self: &Arc<Self>, item_ids: &[String]) -> Vec<String> {
         let rules = self.full_text_rules().unwrap_or_default();
@@ -462,34 +494,7 @@ impl Inner {
             let Ok(Some(row)) = self.store.item(&id) else {
                 continue;
             };
-            let Some(source) = row
-                .item
-                .source_id
-                .as_deref()
-                .and_then(|s| self.store.source(s).ok().flatten())
-            else {
-                continue;
-            };
-            let wanted = match resolve_full_text(&source, &rules) {
-                FullTextMode::Always => true,
-                FullTextMode::Never => false,
-                FullTextMode::Auto => {
-                    source.truncated
-                        || self
-                            .current_document(&id)
-                            .ok()
-                            .flatten()
-                            .is_some_and(|d| truncation_hint(&d.document))
-                }
-            };
-            // Media links have no article to fetch; the Gallery resolves them.
-            if wanted
-                && row
-                    .item
-                    .url
-                    .as_deref()
-                    .is_some_and(|u| !eddy_media::is_media_url(u))
-            {
+            if self.wants_full_text(&row, &rules) {
                 candidates.push(id);
             }
             if candidates.len() >= AUTO_FETCH_CAP {
@@ -499,6 +504,9 @@ impl Inner {
         if candidates.is_empty() {
             return candidates;
         }
+        self.full_text_tried
+            .lock()
+            .extend(candidates.iter().cloned());
         let inner = self.clone();
         let scheduled = candidates.clone();
         tokio::spawn(async move {
@@ -518,6 +526,50 @@ impl Inner {
                 .await;
         });
         scheduled
+    }
+
+    /// The rules as they are now, applied to an item being opened, which
+    /// may have arrived before them: its full text is fetched if they want
+    /// it and it never had one (switched back to the feed's version, it
+    /// stays there), then the automatic AI rules run on it. Returns the
+    /// fetched document. The work goes on if the caller stops waiting.
+    pub(crate) async fn apply_rules(
+        self: &Arc<Self>,
+        item_id: &str,
+    ) -> Result<Option<LoadedDocument>> {
+        if self.options.server_role {
+            return Ok(None);
+        }
+        let row = self.store.item(item_id)?.ok_or(EngineError::NotFound)?;
+        let fetch = row.item.kind == ItemKind::Feed
+            && !self.full_text_tried.lock().contains(item_id)
+            && !self
+                .store
+                .content_versions(item_id)?
+                .iter()
+                .any(|v| v.origin == ContentOrigin::Extracted)
+            && self.wants_full_text(&row, &self.full_text_rules()?)
+            && self.full_text_tried.lock().insert(item_id.to_string());
+        let inner = self.clone();
+        let id = item_id.to_string();
+        let work = tokio::spawn(async move {
+            let fetched = if fetch {
+                inner
+                    .fetch_full_text(&id, true)
+                    .await
+                    .inspect_err(|e| {
+                        inner
+                            .platform
+                            .log(LogLevel::Info, &format!("full text on open skipped: {e}"))
+                    })
+                    .ok()
+            } else {
+                None
+            };
+            inner.auto_ai(vec![id]);
+            fetched
+        });
+        Ok(work.await.unwrap_or(None))
     }
 }
 
@@ -675,6 +727,13 @@ impl Engine {
     /// content, fetching the page only when it never was.
     pub async fn set_full_text(&self, item_id: &str, on: bool) -> Result<LoadedDocument> {
         self.inner.set_full_text(item_id, on).await
+    }
+
+    /// Applies the full-text and automatic AI rules to an item as it is
+    /// opened, so they reach items that arrived before them. Returns the
+    /// full text when it was fetched for them.
+    pub async fn apply_rules(&self, item_id: &str) -> Result<Option<LoadedDocument>> {
+        self.inner.apply_rules(item_id).await
     }
 
     /// Saves a web page for later reading.

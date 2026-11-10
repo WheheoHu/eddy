@@ -531,6 +531,19 @@ struct ReaderPane: View {
             }
         }
         if mode != .original, !translationComplete { startTranslation() }
+        // Rules set after the item arrived: its full text comes in under
+        // what is already shown, unless the version was switched meanwhile.
+        let shown = document?.contentHash
+        if let full = await model.applyRules(itemID), !Task.isCancelled, !switchingFullText, document?.contentHash == shown {
+            document = full
+            if mode != .original {
+                cancelTranslation()
+                let cached = model.cachedTranslation(itemID)
+                translations = cached.segments
+                translationComplete = cached.complete
+                if !translationComplete { startTranslation() }
+            }
+        }
     }
 
     private func reloadDocument() async {
