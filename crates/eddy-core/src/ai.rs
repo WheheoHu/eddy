@@ -622,22 +622,51 @@ impl Inner {
         })
     }
 
-    /// Runs automatic AI rules on items in the background, within the
-    /// daily budget: new ones, and older ones as they are opened. Results
-    /// already present (done before, or synced from another device) are
-    /// reused instead of paid for again.
+    /// Runs automatic AI rules on new items in the background, within the
+    /// daily budget. Results already present (e.g. synced from another
+    /// device) are reused instead of paid for again.
     pub(crate) fn auto_ai(self: &Arc<Self>, item_ids: Vec<String>) {
         let Ok(settings) = self.ai_settings() else {
             return;
         };
+        let jobs = self.auto_jobs(&settings, item_ids);
+        self.run_auto_jobs(jobs, settings.daily_auto_limit);
+    }
+
+    /// The automatic rules for an item being read, within the day's budget:
+    /// the summary and translation they ask for, which the reader shows,
+    /// while the rest (tags) run in the background.
+    pub(crate) fn auto_ai_on_open(self: &Arc<Self>, item_id: &str) -> (bool, bool) {
+        let Ok(settings) = self.ai_settings() else {
+            return (false, false);
+        };
+        let jobs = self.auto_jobs(&settings, vec![item_id.to_string()]);
+        let within_budget =
+            || self.store.ai_usage_today(&today()).unwrap_or(u32::MAX) < settings.daily_auto_limit;
+        let asks = |action| jobs.iter().any(|(_, a)| *a == action);
+        let shown = (
+            asks(AutoAction::Summarize) && within_budget(),
+            asks(AutoAction::Translate) && within_budget(),
+        );
+        let rest = jobs
+            .into_iter()
+            .filter(|(_, a)| !matches!(a, AutoAction::Summarize | AutoAction::Translate))
+            .collect();
+        self.run_auto_jobs(rest, settings.daily_auto_limit);
+        shown
+    }
+
+    /// The (item, action) pairs the rules ask for; none without a provider
+    /// and key.
+    fn auto_jobs(&self, settings: &AiSettings, item_ids: Vec<String>) -> Vec<(String, AutoAction)> {
+        let mut jobs = Vec::new();
         if settings.rules.is_empty()
             || settings.provider.is_none()
             || self.platform.secret_get(AI_KEY).is_none()
         {
-            return;
+            return jobs;
         }
         let target_code = lang_code_for(&settings.target_language);
-        let mut jobs = Vec::new();
         for id in item_ids {
             let Ok(Some(row)) = self.store.item(&id) else {
                 continue;
@@ -671,11 +700,14 @@ impl Inner {
                 break;
             }
         }
+        jobs
+    }
+
+    fn run_auto_jobs(self: &Arc<Self>, jobs: Vec<(String, AutoAction)>, limit: u32) {
         if jobs.is_empty() {
             return;
         }
         let inner = self.clone();
-        let limit = settings.daily_auto_limit;
         tokio::spawn(async move {
             use futures::StreamExt;
             futures::stream::iter(jobs)

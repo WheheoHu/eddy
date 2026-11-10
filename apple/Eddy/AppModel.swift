@@ -587,13 +587,19 @@ final class AppModel {
         }
     }
 
-    /// Applies the full-text and AI rules to an item being opened; the full
-    /// text when they fetched it.
-    func applyRules(_ id: String) async -> DocumentView? {
-        guard let document = (try? await engine?.applyRules(itemId: id)) ?? nil else { return nil }
-        leadImages[id] = nil
-        reload()
-        return document
+    /// Applies the full-text and AI rules to an item being opened: the full
+    /// text they fetched, and what they ask to show.
+    func applyRules(_ id: String) async -> RulesOnOpenView? {
+        guard let applied = try? await engine?.applyRules(itemId: id) else { return nil }
+        if applied.document != nil {
+            leadImages[id] = nil
+            reload()
+        }
+        return applied
+    }
+
+    func fullTextOnOpen(_ id: String) -> Bool {
+        (try? engine?.fullTextOnOpen(itemId: id)) ?? false
     }
 
     private var captureImport: Task<Void, Never>?

@@ -33,6 +33,12 @@ struct ReaderPane: View {
     @State private var lastPage: (page: Int, count: Int)?
     @State private var loading = true
     @State private var switchingFullText = false
+    /// The rules are fetching the full text the item opened without.
+    @State private var fetchingFullText = false
+    /// The summary and translation the rules opened for this item; the
+    /// next one gets its own.
+    @State private var summaryByRule = false
+    @State private var translationByRule = false
     @State private var rendererID = RendererRegistry.article.id
     @State private var mode: ReadingMode = .original
     /// What "Translate" (⌥A) turns on: the way it was last shown.
@@ -361,6 +367,11 @@ struct ReaderPane: View {
     @ViewBuilder
     private var banners: some View {
         VStack(spacing: 8) {
+            if fetchingFullText, rendererID == RendererRegistry.article.id {
+                Banner(icon: "doc.text.magnifyingglass", text: "Fetching the full text…") {
+                    ProgressView().controlSize(.small)
+                }
+            }
             if let item, rendererID == RendererRegistry.article.id, item.url.map(isMediaUrl(url:)) == true {
                 Banner(icon: "play.rectangle", text: "This post is a video or pictures.") {
                     Button("Play") { model.play(item) }
@@ -501,6 +512,10 @@ struct ReaderPane: View {
 
     private func load() async {
         loading = true
+        if summaryByRule { showSummary = false }
+        if translationByRule { mode = .original }
+        summaryByRule = false
+        translationByRule = false
         links.forEach { $0.translator.cancel() }
         links = []
         document = nil
@@ -531,10 +546,20 @@ struct ReaderPane: View {
             }
         }
         if mode != .original, !translationComplete { startTranslation() }
-        // Rules set after the item arrived: its full text comes in under
-        // what is already shown, unless the version was switched meanwhile.
+        await applyRules()
+    }
+
+    /// The full-text and AI rules for the item, whenever it arrived: its
+    /// full text comes in under what is shown (unless the version was
+    /// switched meanwhile), then the summary and translation they ask for
+    /// open, made from it.
+    private func applyRules() async {
         let shown = document?.contentHash
-        if let full = await model.applyRules(itemID), !Task.isCancelled, !switchingFullText, document?.contentHash == shown {
+        fetchingFullText = model.fullTextOnOpen(itemID)
+        let applied = await model.applyRules(itemID)
+        fetchingFullText = false
+        guard let applied, !Task.isCancelled else { return }
+        if let full = applied.document, !switchingFullText, document?.contentHash == shown {
             document = full
             if mode != .original {
                 cancelTranslation()
@@ -543,6 +568,16 @@ struct ReaderPane: View {
                 translationComplete = cached.complete
                 if !translationComplete { startTranslation() }
             }
+        } else if let error = applied.fullTextError {
+            model.message = error
+        }
+        if applied.summarize, !showSummary {
+            toggleSummary(true)
+            summaryByRule = true
+        }
+        if applied.translate, mode == .original, !showingMedia, rendererID != RendererRegistry.pdf.id {
+            translationByRule = true
+            mode = lastTranslationMode
         }
     }
 

@@ -1547,7 +1547,9 @@ async fn rules_added_later_apply_to_items_as_they_are_opened() {
             .id
     };
     let (new_post, old_post) = (id_of("New post"), id_of("Old post"));
-    assert!(engine.apply_rules(&new_post).await.unwrap().is_none());
+    assert!(!engine.full_text_on_open(&new_post).unwrap());
+    let nothing = engine.apply_rules(&new_post).await.unwrap();
+    assert!(nothing.document.is_none() && !nothing.summarize);
 
     // The rules change after the items arrived.
     rule(&engine, M::Always);
@@ -1570,28 +1572,25 @@ async fn rules_added_later_apply_to_items_as_they_are_opened() {
         ],
     );
     engine.create_tag("Rust").unwrap();
-    let full = engine.apply_rules(&new_post).await.unwrap().unwrap();
+    assert!(engine.full_text_on_open(&new_post).unwrap());
+    let applied = engine.apply_rules(&new_post).await.unwrap();
+    let full = applied.document.unwrap();
     assert_eq!(full.version.origin, ContentOrigin::Extracted);
     assert_eq!(
-        engine
-            .document(&new_post)
-            .await
-            .unwrap()
-            .unwrap()
-            .version
-            .hash,
+        engine.document(&new_post).await.unwrap().unwrap().version.hash,
         full.version.hash
     );
-    let mut summary = None;
+    // The summary is the reader's to show; tags come in the background.
+    assert!(applied.summarize && !applied.translate);
+    assert!(engine.cached_summary(&new_post).unwrap().is_none());
     for _ in 0..50 {
-        summary = engine.cached_summary(&new_post).unwrap();
-        if summary.is_some() && engine.inner.tagged(&new_post).unwrap() {
+        if engine.inner.tagged(&new_post).unwrap() {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    // Summarized from the full text, once it arrived.
-    assert!(summary.is_some());
+    assert_eq!(engine.item_tags(&new_post).unwrap().tags.len(), 1);
+    engine.summarize(&new_post, false).await.unwrap();
     let summarized = engine
         .inner
         .store
@@ -1599,14 +1598,15 @@ async fn rules_added_later_apply_to_items_as_they_are_opened() {
         .unwrap()
         .unwrap();
     assert_eq!(summarized.0, full.version.hash);
-    let tags = engine.item_tags(&new_post).unwrap();
-    assert_eq!(tags.tags.len(), 1);
 
-    // Opening again does nothing new: done results are reused, tagging
+    // Opening again: the summary still shows, from the cache; tagging
     // isn't repeated, the page isn't fetched again.
     let requests = llm.received_requests().await.unwrap().len();
     let fetched = pages.received_requests().await.unwrap().len();
-    assert!(engine.apply_rules(&new_post).await.unwrap().is_none());
+    assert!(!engine.full_text_on_open(&new_post).unwrap());
+    let again = engine.apply_rules(&new_post).await.unwrap();
+    assert!(again.document.is_none() && again.summarize);
+    assert!(engine.summarize(&new_post, false).await.unwrap().cached);
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     assert_eq!(llm.received_requests().await.unwrap().len(), requests);
     assert_eq!(pages.received_requests().await.unwrap().len(), fetched);
@@ -1614,15 +1614,10 @@ async fn rules_added_later_apply_to_items_as_they_are_opened() {
     // Switched back to the feed's version, it stays there.
     engine.set_full_text(&old_post, true).await.unwrap();
     engine.set_full_text(&old_post, false).await.unwrap();
-    assert!(engine.apply_rules(&old_post).await.unwrap().is_none());
+    assert!(!engine.full_text_on_open(&old_post).unwrap());
+    assert!(engine.apply_rules(&old_post).await.unwrap().document.is_none());
     assert_eq!(
-        engine
-            .document(&old_post)
-            .await
-            .unwrap()
-            .unwrap()
-            .version
-            .origin,
+        engine.document(&old_post).await.unwrap().unwrap().version.origin,
         ContentOrigin::Feed
     );
 }

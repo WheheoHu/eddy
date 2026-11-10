@@ -528,49 +528,66 @@ impl Inner {
         scheduled
     }
 
-    /// The rules as they are now, applied to an item being opened, which
-    /// may have arrived before them: its full text is fetched if they want
-    /// it and it never had one (switched back to the feed's version, it
-    /// stays there), then the automatic AI rules run on it. Returns the
-    /// fetched document. The work goes on if the caller stops waiting.
-    pub(crate) async fn apply_rules(
-        self: &Arc<Self>,
-        item_id: &str,
-    ) -> Result<Option<LoadedDocument>> {
-        if self.options.server_role {
-            return Ok(None);
+    /// Whether opening the item fetches its full text: the rules want it
+    /// and it never had one (switched back to the feed's version, it stays
+    /// there), and it wasn't tried this session.
+    pub(crate) fn full_text_on_open(&self, item_id: &str) -> Result<bool> {
+        if self.options.server_role || self.full_text_tried.lock().contains(item_id) {
+            return Ok(false);
         }
         let row = self.store.item(item_id)?.ok_or(EngineError::NotFound)?;
-        let fetch = row.item.kind == ItemKind::Feed
-            && !self.full_text_tried.lock().contains(item_id)
+        Ok(row.item.kind == ItemKind::Feed
             && !self
                 .store
                 .content_versions(item_id)?
                 .iter()
                 .any(|v| v.origin == ContentOrigin::Extracted)
-            && self.wants_full_text(&row, &self.full_text_rules()?)
+            && self.wants_full_text(&row, &self.full_text_rules()?))
+    }
+
+    /// The rules as they are now, applied to an item being opened, which
+    /// may have arrived before them: the full text first, then the
+    /// automatic AI rules on what is current. The fetch and the background
+    /// AI work go on if the caller stops waiting.
+    pub(crate) async fn apply_rules(self: &Arc<Self>, item_id: &str) -> Result<RulesOnOpen> {
+        if self.options.server_role {
+            return Ok(RulesOnOpen::default());
+        }
+        let fetch = self.full_text_on_open(item_id)?
             && self.full_text_tried.lock().insert(item_id.to_string());
         let inner = self.clone();
         let id = item_id.to_string();
         let work = tokio::spawn(async move {
-            let fetched = if fetch {
-                inner
-                    .fetch_full_text(&id, true)
-                    .await
-                    .inspect_err(|e| {
+            let mut applied = RulesOnOpen::default();
+            if fetch {
+                match inner.fetch_full_text(&id, true).await {
+                    Ok(doc) => applied.document = Some(doc),
+                    Err(e) => {
                         inner
                             .platform
-                            .log(LogLevel::Info, &format!("full text on open skipped: {e}"))
-                    })
-                    .ok()
-            } else {
-                None
-            };
-            inner.auto_ai(vec![id]);
-            fetched
+                            .log(LogLevel::Info, &format!("full text on open skipped: {e}"));
+                        applied.full_text_error = Some(e.to_string());
+                    }
+                }
+            }
+            (applied.summarize, applied.translate) = inner.auto_ai_on_open(&id);
+            applied
         });
-        Ok(work.await.unwrap_or(None))
+        work.await.map_err(|e| EngineError::Invalid(e.to_string()))
     }
+}
+
+/// What the rules did and ask for as an item is opened.
+#[derive(Clone, Debug, Default)]
+pub struct RulesOnOpen {
+    /// The full text, fetched for them.
+    pub document: Option<LoadedDocument>,
+    /// Why the full text they wanted wasn't fetched.
+    pub full_text_error: Option<String>,
+    /// The summary is to be shown (and made, when it isn't yet).
+    pub summarize: bool,
+    /// The translation is to be shown (and made, when it isn't yet).
+    pub translate: bool,
 }
 
 /// A bot-protection page or a sign-in prompt instead of the article: point
@@ -730,10 +747,14 @@ impl Engine {
     }
 
     /// Applies the full-text and automatic AI rules to an item as it is
-    /// opened, so they reach items that arrived before them. Returns the
-    /// full text when it was fetched for them.
-    pub async fn apply_rules(&self, item_id: &str) -> Result<Option<LoadedDocument>> {
+    /// opened, so they reach items that arrived before them.
+    pub async fn apply_rules(&self, item_id: &str) -> Result<RulesOnOpen> {
         self.inner.apply_rules(item_id).await
+    }
+
+    /// Whether `apply_rules` is about to fetch the item's full text.
+    pub fn full_text_on_open(&self, item_id: &str) -> Result<bool> {
+        self.inner.full_text_on_open(item_id)
     }
 
     /// Saves a web page for later reading.

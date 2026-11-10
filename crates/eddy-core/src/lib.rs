@@ -32,6 +32,7 @@ pub use eddy_ai::{
 };
 pub use eddy_extract::{ChapterLink, SeriesProposal};
 pub use eddy_fetch::WebRenderer;
+pub use fulltext::RulesOnOpen;
 pub use eddy_media::{MediaItem, MediaSet, MediaStatus, MediaType, is_media_url};
 pub use engine::{
     Engine, EngineOptions, EngineStatus, Mode, RefreshSummary, SourceInfo, SourceStats,
