@@ -331,6 +331,17 @@ impl EddyEngine {
         Ok(self.engine.set_full_text(&item_id, on).await?.into())
     }
 
+    /// Applies the full-text and automatic AI rules to an item being
+    /// opened: the full text they fetched, and what they ask to show.
+    pub async fn apply_rules(&self, item_id: String) -> R<RulesOnOpenView> {
+        Ok(self.engine.apply_rules(&item_id).await?.into())
+    }
+
+    /// Whether opening the item is about to fetch its full text.
+    pub fn full_text_on_open(&self, item_id: String) -> R<bool> {
+        Ok(self.engine.full_text_on_open(&item_id)?)
+    }
+
     pub async fn save_url(&self, url: String) -> R<ItemView> {
         Ok(self.engine.save_url(&url).await?.into())
     }

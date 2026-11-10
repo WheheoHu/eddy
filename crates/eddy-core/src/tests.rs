@@ -1513,6 +1513,144 @@ async fn automatic_rules_run_on_new_items() {
     assert_eq!(engine.ai_usage_today().unwrap(), 1);
 }
 
+#[tokio::test]
+async fn rules_added_later_apply_to_items_as_they_are_opened() {
+    use eddy_model::{ContentOrigin, FullTextMode as M, FullTextRule, FullTextScope as S};
+    let pages = mock_pages().await;
+    let server = mock_freshrss_linking(&pages.uri()).await;
+    let llm = mock_llm().await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let rule = |engine: &Engine, mode| {
+        engine
+            .set_full_text_rules(vec![FullTextRule {
+                scope: S::All,
+                mode,
+            }])
+            .unwrap()
+    };
+    rule(&engine, M::Never);
+    configure_ai(&engine, &llm, vec![]);
+    engine
+        .configure_freshrss(&server.uri(), "me", "secret")
+        .await
+        .unwrap();
+    engine.refresh().await.unwrap();
+    let id_of = |title: &str| {
+        engine
+            .items(&ItemQuery::default())
+            .unwrap()
+            .into_iter()
+            .find(|r| r.item.title == title)
+            .unwrap()
+            .item
+            .id
+    };
+    let (new_post, old_post) = (id_of("New post"), id_of("Old post"));
+    assert!(!engine.full_text_on_open(&new_post).unwrap());
+    let nothing = engine.apply_rules(&new_post).await.unwrap();
+    assert!(nothing.document.is_none() && !nothing.summarize);
+
+    // The rules change after the items arrived.
+    rule(&engine, M::Always);
+    configure_ai(
+        &engine,
+        &llm,
+        vec![
+            AutoRule {
+                scope: RuleScope::All,
+                action: AutoAction::Summarize,
+                min_chars: 0,
+                only_foreign: false,
+            },
+            AutoRule {
+                scope: RuleScope::All,
+                action: AutoAction::Tag,
+                min_chars: 0,
+                only_foreign: false,
+            },
+        ],
+    );
+    engine.create_tag("Rust").unwrap();
+    assert!(engine.full_text_on_open(&new_post).unwrap());
+    let applied = engine.apply_rules(&new_post).await.unwrap();
+    let full = applied.document.unwrap();
+    assert_eq!(full.version.origin, ContentOrigin::Extracted);
+    assert_eq!(
+        engine.document(&new_post).await.unwrap().unwrap().version.hash,
+        full.version.hash
+    );
+    // The summary is the reader's to show; tags come in the background.
+    assert!(applied.summarize && !applied.translate);
+    assert!(engine.cached_summary(&new_post).unwrap().is_none());
+    for _ in 0..50 {
+        if engine.inner.tagged(&new_post).unwrap() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(engine.item_tags(&new_post).unwrap().tags.len(), 1);
+    engine.summarize(&new_post, false).await.unwrap();
+    let summarized = engine
+        .inner
+        .store
+        .latest_ai_artifact(&new_post, "summary")
+        .unwrap()
+        .unwrap();
+    assert_eq!(summarized.0, full.version.hash);
+
+    // Opening again: the summary still shows, from the cache; tagging
+    // isn't repeated, the page isn't fetched again.
+    let requests = llm.received_requests().await.unwrap().len();
+    let fetched = pages.received_requests().await.unwrap().len();
+    assert!(!engine.full_text_on_open(&new_post).unwrap());
+    let again = engine.apply_rules(&new_post).await.unwrap();
+    assert!(again.document.is_none() && again.summarize);
+    assert!(engine.summarize(&new_post, false).await.unwrap().cached);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(llm.received_requests().await.unwrap().len(), requests);
+    assert_eq!(pages.received_requests().await.unwrap().len(), fetched);
+
+    // Switched back to the feed's version, it stays there.
+    engine.set_full_text(&old_post, true).await.unwrap();
+    engine.set_full_text(&old_post, false).await.unwrap();
+    assert!(!engine.full_text_on_open(&old_post).unwrap());
+    assert!(engine.apply_rules(&old_post).await.unwrap().document.is_none());
+    assert_eq!(
+        engine.document(&old_post).await.unwrap().unwrap().version.origin,
+        ContentOrigin::Feed
+    );
+}
+
+#[tokio::test]
+async fn the_same_summary_asked_twice_at_once_is_one_request() {
+    let pages = mock_pages().await;
+    let llm = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(150))
+                .set_body_json(json!({"choices": [{"message": {"content":
+                    json!({"tldr": "一句话", "points": []}).to_string()}}]})),
+        )
+        .mount(&llm)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    configure_ai_with(&engine, &llm, vec![], 2);
+    let id = engine
+        .save_url(&format!("{}/essay", pages.uri()))
+        .await
+        .unwrap()
+        .item
+        .id;
+    let (a, b) = tokio::join!(engine.summarize(&id, false), engine.summarize(&id, false));
+    assert!(!a.unwrap().cached);
+    assert!(b.unwrap().cached);
+    assert_eq!(llm.received_requests().await.unwrap().len(), 1);
+}
+
 fn para_ids(doc: &eddy_model::Document) -> Vec<String> {
     doc.blocks
         .iter()

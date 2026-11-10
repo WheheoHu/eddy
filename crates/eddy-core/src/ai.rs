@@ -185,6 +185,14 @@ impl Inner {
         gate.1.clone()
     }
 
+    /// Held while the request for `key` is out, so the same summary or
+    /// batch asked for twice (a rule and the reader) is paid for once.
+    fn ai_request(&self, key: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut requests = self.ai_requests.lock();
+        requests.retain(|_, lock| Arc::strong_count(lock) > 1);
+        requests.entry(key.to_string()).or_default().clone()
+    }
+
     fn ai_document(&self, item_id: &str) -> Result<(LoadedDocument, String)> {
         let row = self.store.item(item_id)?.ok_or(EngineError::NotFound)?;
         let doc = self
@@ -315,31 +323,51 @@ impl Inner {
                     .and_then(|b| focus_batch(&doc.document, &of_block, b))
                     .unwrap_or(0);
                 let i = pending.remove(nearest(&pending, focus));
-                self.store.add_ai_usage(&today(), 1)?;
-                let (provider, batch, target, glossary) =
-                    (provider.as_ref(), &batches[i], &target, &settings.glossary);
+                let (provider, batch, key, target, glossary, hash) = (
+                    provider.as_ref(),
+                    &batches[i],
+                    &keys[i],
+                    &target,
+                    &settings.glossary,
+                    &doc.version.hash,
+                );
                 in_flight.push(async move {
-                    (
-                        i,
-                        eddy_ai::translate_batch(provider, batch, target, glossary).await,
-                    )
+                    let request = self.ai_request(key);
+                    let _held = request.lock().await;
+                    async {
+                        // Another run may have done it while this one waited.
+                        if !force
+                            && let Some(r) = self
+                                .store
+                                .ai_artifact(key)?
+                                .and_then(|p| serde_json::from_str(&p).ok())
+                        {
+                            return Ok(r);
+                        }
+                        self.store.add_ai_usage(&today(), 1)?;
+                        let r = eddy_ai::translate_batch(provider, batch, target, glossary)
+                            .await
+                            .map_err(|e| EngineError::Invalid(e.to_string()))?;
+                        self.store.put_ai_artifact(
+                            key,
+                            item_id,
+                            "translation_batch",
+                            hash,
+                            Some(target),
+                            Some(provider.model()),
+                            &serde_json::to_string(&r)?,
+                            false,
+                        )?;
+                        Ok::<HashMap<String, String>, EngineError>(r)
+                    }
+                    .await
                 });
             }
-            let Some((i, result)) = in_flight.next().await else {
+            let Some(result) = in_flight.next().await else {
                 break;
             };
             match result {
                 Ok(r) => {
-                    self.store.put_ai_artifact(
-                        &keys[i],
-                        item_id,
-                        "translation_batch",
-                        &doc.version.hash,
-                        Some(&target),
-                        Some(provider.model()),
-                        &serde_json::to_string(&r)?,
-                        false,
-                    )?;
                     if let Some(cb) = &on_batch {
                         cb(&r);
                     }
@@ -354,7 +382,7 @@ impl Inner {
         drop(in_flight);
         if let Some(e) = failure {
             save_partial(&all)?;
-            return Err(EngineError::Invalid(e.to_string()));
+            return Err(e);
         }
         if !pending.is_empty() {
             save_partial(&all)?;
@@ -454,6 +482,8 @@ impl Inner {
             &settings.target_language,
             PROMPT_VERSION,
         ]);
+        let request = self.ai_request(&key);
+        let _held = request.lock().await;
         if !force
             && let Some(summary) = self
                 .store
@@ -551,7 +581,25 @@ impl Inner {
         }
         self.store
             .set_tag_suggestions(item_id, &result.suggestions)?;
+        // Marks the item tagged, for automatic rules, even when no tag fit.
+        self.store.put_ai_artifact(
+            &artifact_key(&["tags", &doc.version.hash, &provider.cache_identity()]),
+            item_id,
+            "tags",
+            &doc.version.hash,
+            None,
+            Some(provider.model()),
+            &serde_json::to_string(&result.tags)?,
+            false,
+        )?;
         self.item_tags(item_id)
+    }
+
+    /// Tagged before, by AI or by hand: automatic rules leave it alone.
+    pub(crate) fn tagged(&self, item_id: &str) -> Result<bool> {
+        Ok(self.store.latest_ai_artifact(item_id, "tags")?.is_some()
+            || !self.store.item_tag_states(item_id)?.is_empty()
+            || !self.store.tag_suggestions(item_id)?.is_empty())
     }
 
     pub(crate) fn item_tags(&self, item_id: &str) -> Result<ItemTagsResult> {
@@ -581,14 +629,44 @@ impl Inner {
         let Ok(settings) = self.ai_settings() else {
             return;
         };
+        let jobs = self.auto_jobs(&settings, item_ids);
+        self.run_auto_jobs(jobs, settings.daily_auto_limit);
+    }
+
+    /// The automatic rules for an item being read, within the day's budget:
+    /// the summary and translation they ask for, which the reader shows,
+    /// while the rest (tags) run in the background.
+    pub(crate) fn auto_ai_on_open(self: &Arc<Self>, item_id: &str) -> (bool, bool) {
+        let Ok(settings) = self.ai_settings() else {
+            return (false, false);
+        };
+        let jobs = self.auto_jobs(&settings, vec![item_id.to_string()]);
+        let within_budget =
+            || self.store.ai_usage_today(&today()).unwrap_or(u32::MAX) < settings.daily_auto_limit;
+        let asks = |action| jobs.iter().any(|(_, a)| *a == action);
+        let shown = (
+            asks(AutoAction::Summarize) && within_budget(),
+            asks(AutoAction::Translate) && within_budget(),
+        );
+        let rest = jobs
+            .into_iter()
+            .filter(|(_, a)| !matches!(a, AutoAction::Summarize | AutoAction::Translate))
+            .collect();
+        self.run_auto_jobs(rest, settings.daily_auto_limit);
+        shown
+    }
+
+    /// The (item, action) pairs the rules ask for; none without a provider
+    /// and key.
+    fn auto_jobs(&self, settings: &AiSettings, item_ids: Vec<String>) -> Vec<(String, AutoAction)> {
+        let mut jobs = Vec::new();
         if settings.rules.is_empty()
             || settings.provider.is_none()
             || self.platform.secret_get(AI_KEY).is_none()
         {
-            return;
+            return jobs;
         }
         let target_code = lang_code_for(&settings.target_language);
-        let mut jobs = Vec::new();
         for id in item_ids {
             let Ok(Some(row)) = self.store.item(&id) else {
                 continue;
@@ -609,7 +687,11 @@ impl Inner {
                 let long_enough = row.item.text_len >= rule.min_chars;
                 let foreign = !rule.only_foreign
                     || (row.item.lang.is_some() && row.item.lang.as_deref() != target_code);
-                if in_scope && long_enough && foreign && !jobs.contains(&(id.clone(), rule.action))
+                if in_scope
+                    && long_enough
+                    && foreign
+                    && !jobs.contains(&(id.clone(), rule.action))
+                    && !(rule.action == AutoAction::Tag && self.tagged(&id).unwrap_or(true))
                 {
                     jobs.push((id.clone(), rule.action));
                 }
@@ -618,11 +700,14 @@ impl Inner {
                 break;
             }
         }
+        jobs
+    }
+
+    fn run_auto_jobs(self: &Arc<Self>, jobs: Vec<(String, AutoAction)>, limit: u32) {
         if jobs.is_empty() {
             return;
         }
         let inner = self.clone();
-        let limit = settings.daily_auto_limit;
         tokio::spawn(async move {
             use futures::StreamExt;
             futures::stream::iter(jobs)

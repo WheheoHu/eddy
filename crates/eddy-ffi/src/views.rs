@@ -572,6 +572,30 @@ impl From<eddy_core::LoadedDocument> for DocumentView {
     }
 }
 
+/// What the rules did and ask for as an item is opened.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct RulesOnOpenView {
+    /// The full text, fetched for them.
+    pub document: Option<DocumentView>,
+    /// Why the full text they wanted wasn't fetched.
+    pub full_text_error: Option<String>,
+    /// Show the summary, making it when it isn't yet.
+    pub summarize: bool,
+    /// Show the translation, making it when it isn't yet.
+    pub translate: bool,
+}
+
+impl From<eddy_core::RulesOnOpen> for RulesOnOpenView {
+    fn from(r: eddy_core::RulesOnOpen) -> Self {
+        RulesOnOpenView {
+            document: r.document.map(Into::into),
+            full_text_error: r.full_text_error,
+            summarize: r.summarize,
+            translate: r.translate,
+        }
+    }
+}
+
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct ImageData {
     pub bytes: Vec<u8>,

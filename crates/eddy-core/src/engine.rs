@@ -97,6 +97,12 @@ pub(crate) struct Inner {
     pub translation_focus: parking_lot::Mutex<std::collections::HashMap<String, String>>,
     /// Caps requests to the model service; sized by the provider settings.
     pub ai_gate: parking_lot::Mutex<(usize, Arc<tokio::sync::Semaphore>)>,
+    /// One request per AI cache key at a time; whoever waits finds it cached.
+    pub ai_requests:
+        parking_lot::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Items whose full text was fetched or tried in the background this
+    /// session; opening them doesn't try again.
+    pub full_text_tried: parking_lot::Mutex<std::collections::HashSet<String>>,
     pub search: Option<eddy_search::SearchIndex>,
     pub live: std::sync::atomic::AtomicBool,
     pub backfilling: std::sync::atomic::AtomicBool,
@@ -152,6 +158,8 @@ impl Engine {
             translation_cancels: parking_lot::Mutex::new(Default::default()),
             translation_focus: parking_lot::Mutex::new(Default::default()),
             ai_gate: parking_lot::Mutex::new((1, Arc::new(tokio::sync::Semaphore::new(1)))),
+            ai_requests: parking_lot::Mutex::new(Default::default()),
+            full_text_tried: parking_lot::Mutex::new(Default::default()),
             search: eddy_search::SearchIndex::open(&data_dir.join("index")).ok(),
             live: std::sync::atomic::AtomicBool::new(false),
             backfilling: std::sync::atomic::AtomicBool::new(false),
