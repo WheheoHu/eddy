@@ -258,6 +258,8 @@ final class WebTranslator {
         for (const id in map) {
           const el = document.querySelector('[data-eddy-seg="' + id + '"]');
           if (!el || el.querySelector(':scope > .eddy-tr')) continue;
+          // Already in the target language: the translation is the source.
+          if (String(map[id]).trim() === textOf(el)) continue;
           if (!el.querySelector(':scope > .eddy-src')) {
             const src = document.createElement('span');
             src.className = 'eddy-src';

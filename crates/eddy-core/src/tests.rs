@@ -2746,3 +2746,91 @@ async fn a_code_block_keeps_the_language_picked_for_it() {
     assert_eq!(code_block(&doc).1.as_deref(), Some("rust"));
     assert!(engine.inner.code_languages(&id).unwrap().is_empty());
 }
+
+#[test]
+fn paragraphs_already_in_target_language_are_skipped() {
+    use crate::ai::in_target_language;
+    let zh = Some("cmn");
+    assert!(in_target_language(
+        "这是一段已经是简体中文的文字，不需要再翻译。",
+        zh
+    ));
+    assert!(in_target_language("短句", zh));
+    assert!(!in_target_language(
+        "This paragraph is English and needs translating.",
+        zh
+    ));
+    // Mostly English with a few Chinese words still goes to the model.
+    assert!(!in_target_language(
+        "Rust 的 borrow checker is the compiler's ownership model",
+        zh
+    ));
+    // Chinese with a sprinkling of Latin terms (≥ 80% Han) stays.
+    assert!(in_target_language(
+        "我们用 Rust 重写了内核，性能提升明显，内存占用也下降了很多。",
+        zh
+    ));
+
+    let ja = Some("jpn");
+    assert!(in_target_language(
+        "これは日本語の段落です。翻訳の必要はありません。",
+        ja
+    ));
+    assert!(!in_target_language("这是一段中文。", Some("kor")));
+    assert!(in_target_language("이것은 한국어 문단입니다.", Some("kor")));
+
+    let en = Some("eng");
+    assert!(in_target_language(
+        "This is a reasonably long English paragraph that language detection can identify with confidence.",
+        en
+    ));
+    // Too short to trust statistical detection.
+    assert!(!in_target_language("Hello world again", en));
+    assert!(!in_target_language(
+        "这是一段已经是简体中文的文字，不需要再翻译，所以应该翻译成英文。",
+        en
+    ));
+
+    // Unknown target language: translate everything.
+    assert!(!in_target_language("这是一段中文。", None));
+}
+
+#[tokio::test]
+async fn segments_already_in_target_language_are_not_sent_to_the_model() {
+    let llm = mock_llm().await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    configure_ai(&engine, &llm, vec![]);
+    let seg = |id: &str, text: &str| eddy_doc::Segment {
+        id: id.into(),
+        text: text.into(),
+    };
+    let segments = vec![
+        seg("a", "这一段已经是中文了，不需要翻译。"),
+        seg("b", "This one is English and needs translating."),
+        seg("c", "另一段中文。"),
+    ];
+    let all = engine
+        .translate_text("page", segments, None)
+        .await
+        .unwrap();
+    // Every segment gets an answer; the Chinese ones are their own.
+    assert_eq!(all.len(), 3);
+    assert_eq!(all["a"], "这一段已经是中文了，不需要翻译。");
+    assert_eq!(all["c"], "另一段中文。");
+    assert_eq!(
+        all["b"],
+        "译：This one is English and needs translating."
+    );
+    let sent = requested_segments(&llm.received_requests().await.unwrap()[0]);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].0, "b");
+
+    // Nothing to translate: no request at all.
+    let all = engine
+        .translate_text("page2", vec![seg("x", "全是中文。")], None)
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 1);
+    assert_eq!(llm.received_requests().await.unwrap().len(), 1);
+}
