@@ -12,12 +12,7 @@ enum MathRenderer {
     static func attachment(_ tex: String, size: CGFloat, display: Bool) -> MathAttachment {
         let key = "\(NSAppearance.currentDrawing().name.rawValue)|\(display)|\(size)|\(tex)"
         let rendered: (NSImage, CGFloat)? = cache[key] ?? {
-            var image = MathImage(latex: normalized(tex), fontSize: size * 2, textColor: .labelColor, labelMode: display ? .display : .text)
-            let (_, img, info) = image.asImage()
-            guard let img else { return nil }
-            // Rendered at 2x; sized once here so cached images are reused as is.
-            img.size = NSSize(width: img.size.width / 2, height: img.size.height / 2)
-            let value = (img, (info?.descent ?? 0) / 2)
+            guard let value = render(tex, fontSize: size * 2, display: display) else { return nil }
             cache[key] = value
             return value
         }()
@@ -28,6 +23,96 @@ enum MathRenderer {
         let text = NSAttributedString(string: tex, attributes: [.font: NSFont.monospacedSystemFont(ofSize: size * 0.85, weight: .regular), .foregroundColor: NSColor.secondaryLabelColor])
         let image = NSImage(size: text.size(), flipped: false) { rect in text.draw(in: rect); return true }
         return MathAttachment(image: image, descent: 0, display: display)
+    }
+
+    private static func render(_ tex: String, fontSize: CGFloat, display: Bool) -> (NSImage, CGFloat)? {
+        let label = MTMathUILabel()
+        label.font = MathFont.latinModernFont.mtfont(size: fontSize)
+        label.labelMode = display ? .display : .text
+        label.textAlignment = .center
+        label.textColor = .labelColor
+        label.latex = normalized(tex)
+        guard label.error == nil, let mathList = label.mathList else { return nil }
+        sanitize(mathList)
+
+        let rawSize = label.fittingSize
+        let canvasSize = CGSize(width: ceil(rawSize.width), height: ceil(rawSize.height))
+        guard canvasSize.width > 0, canvasSize.height > 0 else { return nil }
+        label.frame = CGRect(origin: .zero, size: canvasSize)
+        label.layout()
+        guard let displayList = label.displayList else { return nil }
+
+        let img = NSImage(size: canvasSize, flipped: false) { _ in
+            guard let context = NSGraphicsContext.current?.cgContext else { return false }
+            context.saveGState()
+            displayList.draw(context)
+            context.restoreGState()
+            return true
+        }
+        // Rendered at 2x; sized once here so cached images are reused as is.
+        img.size = NSSize(width: canvasSize.width / 2, height: canvasSize.height / 2)
+        return (img, displayList.descent / 2)
+    }
+
+    /// Applies TeX Rules 5 & 6 across `.space` and `.style` atoms. SwiftMath's
+    /// `MTMathList.finalized` resets `prevNode` on explicit spaces (`\;`, `\quad`),
+    /// leaving unary `+`/`-` as `.binaryOperator` and tripping an assertion in
+    /// `MTTypesetter.getInterElementSpace` when typesetter skips `.space` atoms.
+    private static func sanitize(_ list: MTMathList) {
+        for atom in list.atoms {
+            if let sub = atom.subScript { sanitize(sub) }
+            if let sup = atom.superScript { sanitize(sup) }
+            if let frac = atom as? MTFraction {
+                if let num = frac.numerator { sanitize(num) }
+                if let den = frac.denominator { sanitize(den) }
+            } else if let rad = atom as? MTRadical {
+                if let radicand = rad.radicand { sanitize(radicand) }
+                if let degree = rad.degree { sanitize(degree) }
+            } else if let inner = atom as? MTInner {
+                if let sub = inner.innerList { sanitize(sub) }
+            } else if let over = atom as? MTOverLine {
+                if let sub = over.innerList { sanitize(sub) }
+            } else if let under = atom as? MTUnderLine {
+                if let sub = under.innerList { sanitize(sub) }
+            } else if let accent = atom as? MTAccent {
+                if let sub = accent.innerList { sanitize(sub) }
+            } else if let color = atom as? MTMathColor {
+                if let sub = color.innerList { sanitize(sub) }
+            } else if let textColor = atom as? MTMathTextColor {
+                if let sub = textColor.innerList { sanitize(sub) }
+            } else if let box = atom as? MTMathColorbox {
+                if let sub = box.innerList { sanitize(sub) }
+            } else if let table = atom as? MTMathTable {
+                for row in table.cells {
+                    for cell in row { sanitize(cell) }
+                }
+            }
+        }
+
+        let visible = list.atoms.indices.filter {
+            let t = list.atoms[$0].type
+            return t != .space && t != .style
+        }
+        for (offset, idx) in visible.enumerated() where list.atoms[idx].type == .binaryOperator {
+            if offset == 0 {
+                list.atoms[idx].type = .unaryOperator
+            } else {
+                let prev = list.atoms[visible[offset - 1]].type
+                if prev == .binaryOperator || prev == .relation || prev == .open || prev == .punctuation || prev == .largeOperator {
+                    list.atoms[idx].type = .unaryOperator
+                }
+            }
+        }
+        for (offset, idx) in visible.enumerated().reversed() where list.atoms[idx].type == .binaryOperator {
+            if offset == visible.count - 1 {
+                list.atoms[idx].type = .unaryOperator
+            } else {
+                let next = list.atoms[visible[offset + 1]].type
+                if next == .binaryOperator || next == .relation || next == .punctuation || next == .close {
+                    list.atoms[idx].type = .unaryOperator
+                }
+            }
+        }
     }
 
     /// Rewrites what SwiftMath cannot parse (equation tags, manual delimiter
@@ -59,6 +144,8 @@ enum MathRenderer {
         (#"\\widetilde(?![a-zA-Z])"#, #"\\tilde"#),
         (#"\\[lr]Vert(?![a-zA-Z])"#, #"\\Vert"#),
         (#"\\[lr]vert(?![a-zA-Z])"#, #"\\vert"#),
+        // SwiftMath's `textcolor` force-unwraps `MTCTLineDisplay`; `color` renders safely.
+        (#"\\textcolor(?![a-zA-Z])"#, #"\\color"#),
     ]
 }
 
