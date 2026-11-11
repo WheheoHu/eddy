@@ -152,8 +152,9 @@ async fn main() {
         ["series", url] => engine.detect_series_at(url).await.map(|p| match p {
             Some(p) => {
                 println!("{} — {} chapters", p.title, p.chapters.len());
-                for c in p.chapters.iter().take(5) {
-                    println!("  {}  {}", c.title, c.url);
+                for c in &p.chapters {
+                    let indent = "  ".repeat(c.level as usize + 1);
+                    println!("{indent}{}  {}", c.title, c.url);
                 }
             }
             None => println!("no table of contents found"),

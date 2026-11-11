@@ -10,6 +10,7 @@ dom_smoothie = "0.19"
 eddy-doc = { workspace = true }
 eddy-fetch = { path = "../eddy-fetch" }
 eddy-model = { workspace = true }
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 regex = { workspace = true }
 scraper = { workspace = true }
 thiserror = { workspace = true }

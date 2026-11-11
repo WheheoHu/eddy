@@ -382,6 +382,7 @@ impl Inner {
             starred: false,
             series_id: None,
             chapter_index: None,
+            chapter_level: 0,
             current_version: None,
             excerpt: None,
             lang: None,
@@ -406,7 +407,7 @@ impl Inner {
         let saved = self.store.items(&ItemQuery {
             filter: ItemFilter::Saved,
             unread_only: false,
-            keep: None,
+            keep: Vec::new(),
             limit: 10_000,
             offset: 0,
         })?;

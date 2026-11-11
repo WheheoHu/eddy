@@ -210,5 +210,115 @@ fn detects_a_docs_table_of_contents() {
         "https://docs.example/book/ch01.html"
     );
     assert_eq!(series.chapters[7].title, "Chapter 8");
+    assert!(series.chapters.iter().all(|c| c.level == 0));
     assert!(detect_series(&article_page(), "https://blog.example/posts/pt").is_none());
+}
+
+#[test]
+fn nested_lists_give_chapters_their_levels() {
+    let page = r#"<html><head><title>PBR</title></head><body><div class="contents">
+        <ul>
+          <li><a href="Preface.html">Preface</a>
+            <ul><li><a href="Preface/Further_Reading.html">Further Reading</a></li></ul></li>
+          <li><a href="Introduction.html">Introduction</a>
+            <ul>
+              <li><a href="Introduction/Literate_Programming.html">Literate Programming</a></li>
+              <li><a href="Introduction/Overview.html">Overview</a>
+                <ul><li><a href="Introduction/Overview/Phases.html">Phases</a></li></ul></li>
+            </ul></li>
+          <li><a href="Geometry.html">Geometry</a></li>
+        </ul></div></body></html>"#;
+    let series = detect_series(page, "https://pbr.example/3ed/contents").unwrap();
+    let levels: Vec<(&str, u32)> = series
+        .chapters
+        .iter()
+        .map(|c| (c.title.as_str(), c.level))
+        .collect();
+    assert_eq!(
+        levels,
+        vec![
+            ("Preface", 0),
+            ("Further Reading", 1),
+            ("Introduction", 0),
+            ("Literate Programming", 1),
+            ("Overview", 1),
+            ("Phases", 2),
+            ("Geometry", 0),
+        ]
+    );
+}
+
+#[test]
+fn dotted_numbering_gives_a_flat_list_its_levels() {
+    let titles = [
+        "1 Introduction",
+        "1.1 Scope",
+        "1.2 History",
+        "2 Geometry",
+        "2.1 Vectors",
+        "2.1.1 Dot Product",
+        "Appendix",
+    ];
+    let toc: String = titles
+        .iter()
+        .enumerate()
+        .map(|(i, t)| format!("<li><a href=\"/book/{i}.html\">{t}</a></li>"))
+        .collect();
+    let page = format!(
+        "<html><head><title>Book</title></head><body><nav><ol>{toc}</ol></nav></body></html>"
+    );
+    let series = detect_series(&page, "https://docs.example/book/").unwrap();
+    let levels: Vec<u32> = series.chapters.iter().map(|c| c.level).collect();
+    assert_eq!(levels, vec![0, 1, 1, 0, 1, 2, 2]);
+
+    // A year isn't a chapter number; a flat list stays flat.
+    let flat: String = ["2023 in review", "2024 in review", "Plans", "Thanks"]
+        .iter()
+        .enumerate()
+        .map(|(i, t)| format!("<li><a href=\"/blog/{i}.html\">{t}</a></li>"))
+        .collect();
+    let page = format!(
+        "<html><head><title>Blog</title></head><body><nav><ol>{flat}</ol></nav></body></html>"
+    );
+    let series = detect_series(&page, "https://docs.example/blog/").unwrap();
+    assert!(series.chapters.iter().all(|c| c.level == 0));
+}
+
+#[test]
+fn markdown_scripts_render_into_the_page() {
+    let page = r#"<!doctype html><html><head><title>Language Tour · Bento</title></head><body>
+<noscript><p class="wrap">This page is written in Markdown and needs JavaScript to render.</p></noscript>
+<script type="text/markdown">
+# Language tour
+
+## Example
+
+In GLSL the inputs are loose globals. In Bento an entry point receives a struct.
+
+```bento hello.bento
+fn main(px: Pixel) -> Color {
+	let corner = px.uv.x * px.uv.y;
+}
+```
+
+| Kind | Written |
+| --- | --- |
+| Booleans | `b8 b16 b32` |
+</script>
+</body></html>"#;
+    let extracted = extract(page, "https://bento.example/language.html", None).unwrap();
+    assert_eq!(extracted.title.as_deref(), Some("Language tour"));
+    assert!(
+        extracted.content_html.contains("<h2>Example</h2>"),
+        "{}",
+        extracted.content_html
+    );
+    assert!(
+        extracted.content_html.contains("data-lang=\"bento\""),
+        "{}",
+        extracted.content_html
+    );
+    assert!(extracted.content_html.contains("<table>"));
+    assert!(!extracted.content_html.contains("needs JavaScript"));
+    assert!(extracted.text_len > 100);
 }

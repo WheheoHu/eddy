@@ -444,7 +444,7 @@ impl Engine {
         ItemQuery {
             filter: filter.clone(),
             unread_only: true,
-            keep: None,
+            keep: Vec::new(),
             limit: u32::MAX,
             offset: 0,
         }

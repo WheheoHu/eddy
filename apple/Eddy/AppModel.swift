@@ -195,7 +195,7 @@ final class AppModel {
         collection = (try? engine.collection()) ?? []
         tags = (try? engine.tags()) ?? []
         galleryFolders = (try? engine.galleryFolders()) ?? []
-        let started = ItemQueryView(filter: .continueReading, unreadOnly: false, keep: nil, limit: 0, offset: 0)
+        let started = ItemQueryView(filter: .continueReading, unreadOnly: false, keep: [], limit: 0, offset: 0)
         continueReadingCount = Int((try? engine.itemCount(query: started)) ?? 0)
         revision += 1
     }
@@ -219,8 +219,8 @@ final class AppModel {
         }
     }
 
-    /// `keep` stays in an unread-only list after it is read.
-    func items(_ filter: ItemFilterView, unreadOnly: Bool = false, keep: String? = nil, limit: UInt32 = 500) -> [ItemView] {
+    /// `keep` stay in an unread-only list after they are read.
+    func items(_ filter: ItemFilterView, unreadOnly: Bool = false, keep: [String] = [], limit: UInt32 = 500) -> [ItemView] {
         _ = revision
         return (try? engine?.items(query: ItemQueryView(filter: filter, unreadOnly: unreadOnly, keep: keep, limit: limit, offset: 0))) ?? []
     }
@@ -279,6 +279,9 @@ final class AppModel {
     }
 
     // MARK: Content
+
+    /// Languages a code block can be highlighted as, for its menu.
+    @ObservationIgnored lazy var codeLanguages: [String] = engine?.highlightLanguages() ?? []
 
     func document(_ id: String) async -> DocumentView? {
         guard let engine else { return nil }
@@ -375,8 +378,13 @@ final class AppModel {
         } catch {
             report(error)
         }
+        listsReset += 1
         reload()
     }
+
+    /// Bumped when an unread-only list should start over (after "Mark All
+    /// as Read"); articles read in the meantime stay listed until then.
+    var listsReset = 0
 
     /// Back to unread and never started, on every device (and FreshRSS).
     func markUnread(_ itemIDs: [String]) {

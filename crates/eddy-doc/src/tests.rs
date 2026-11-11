@@ -175,6 +175,34 @@ fn code_blocks_keep_whitespace_and_get_highlighted() {
 }
 
 #[test]
+fn code_blocks_without_a_language_are_highlighted_as_the_one_they_look_like() {
+    let d = doc(
+        "<pre>import os\n\ndef main():\n    for name in os.listdir('.'):\n        print(name)\n</pre>
+         <pre><code class=\"language-bento\">fn main(px: Pixel) -> Color {\n    let corner = px.uv.x * px.uv.y;\n    return { f32x4 { px.uv, glow, 1.0 } };\n}</code></pre>
+         <pre>just some words here, nothing more to see</pre>",
+    );
+    let code = |i: usize| match &d.blocks[i].kind {
+        BlockKind::Code {
+            language,
+            highlights,
+            ..
+        } => (language.clone(), highlights.len()),
+        other => panic!("{other:?}"),
+    };
+    // Guessed: the guess becomes the block's language.
+    let (lang, spans) = code(0);
+    assert_eq!(lang.as_deref(), Some("python"));
+    assert!(spans > 0);
+    // Declared but unknown: the declaration stays, the colors come from the
+    // nearest grammar.
+    let (lang, spans) = code(1);
+    assert_eq!(lang.as_deref(), Some("bento"));
+    assert!(spans > 0);
+    // Nothing fits: plain.
+    assert_eq!(code(2), (None, 0));
+}
+
+#[test]
 fn formulas_from_katex_mathjax_and_raw_tex() {
     let katex = r#"<p>Energy <span class="katex"><span class="katex-mathml"><math><semantics><mrow><mi>E</mi></mrow><annotation encoding="application/x-tex">E=mc^2</annotation></semantics></math></span><span class="katex-html" aria-hidden="true">E=mc2</span></span> holds.</p>
         <span class="katex-display"><span class="katex"><span class="katex-mathml"><math><annotation encoding="application/x-tex">\int_0^1 f(x)\,dx</annotation></math></span></span></span>
@@ -412,4 +440,23 @@ fn offsets_are_utf16_and_inline_math_counts_as_one_unit() {
     assert_eq!(eddy_model::utf16_len(&text), 2 + 6 + 1 + 6 + 2);
     let loc = locator_at(&d, "h", &d.blocks[0].id, 9).unwrap();
     assert!(loc.quote.exact.starts_with(" then 中文"));
+}
+
+#[test]
+fn a_translation_keeps_its_formulas_as_math_runs() {
+    let runs = translated_runs(
+        "若 $f(x')$ 在区间 $[a,b]$ 上连续，则 $$E[X] = \\mu$$ 成立；花费 $5 或 $10。",
+    );
+    let maths: Vec<&str> = runs
+        .iter()
+        .filter(|r| r.math)
+        .map(|r| r.text.as_str())
+        .collect();
+    assert_eq!(maths, vec!["f(x')", "[a,b]", "E[X] = \\mu"]);
+    let text: String = runs
+        .iter()
+        .filter(|r| !r.math)
+        .map(|r| r.text.as_str())
+        .collect();
+    assert!(text.contains("花费 $5 或 $10。"), "{text}");
 }

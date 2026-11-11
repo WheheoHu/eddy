@@ -80,7 +80,7 @@ impl Inner {
             .items(&ItemQuery {
                 filter: ItemFilter::Saved,
                 unread_only: false,
-                keep: None,
+                keep: Vec::new(),
                 limit: 100_000,
                 offset: 0,
             })?
@@ -207,10 +207,7 @@ impl Inner {
         } else if let Some(thumbnail) = set.thumbnail.clone()
             && self.gone(&thumbnail).await
         {
-            set.thumbnail = set
-                .items
-                .iter()
-                .find_map(|m| m.preview().map(String::from));
+            set.thumbnail = set.items.iter().find_map(|m| m.preview().map(String::from));
         }
         self.store.put_media_set(
             item_id,
@@ -245,7 +242,7 @@ impl Engine {
         let rows = inner.store.items(&ItemQuery {
             filter: inner.gallery_filter(scope)?,
             unread_only,
-            keep: None,
+            keep: Vec::new(),
             limit,
             offset,
         })?;
@@ -272,7 +269,7 @@ impl Engine {
         Ok(inner.store.count_items(&ItemQuery {
             filter: inner.gallery_filter(scope)?,
             unread_only,
-            keep: None,
+            keep: Vec::new(),
             limit: 0,
             offset: 0,
         })?)

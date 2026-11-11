@@ -102,6 +102,10 @@ const MIGRATIONS: &[&str] = &[
         item_id TEXT PRIMARY KEY, json TEXT NOT NULL, status TEXT NOT NULL,
         resolved_at INTEGER NOT NULL);
     "#,
+    // 6: Chapters know their depth in the series' table of contents.
+    r#"
+    ALTER TABLE items ADD COLUMN chapter_level INTEGER NOT NULL DEFAULT 0;
+    "#,
 ];
 
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {

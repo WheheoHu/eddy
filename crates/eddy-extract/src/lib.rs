@@ -37,8 +37,10 @@ pub struct Extracted {
 
 /// Extracts the article from a full page fetched from `url`.
 pub fn extract(html: &str, url: &str, rule: Option<&SiteRule>) -> Result<Extracted, ExtractError> {
+    let html = render_markdown_scripts(html);
+    let html = preserve_code_languages(&html);
     let has_tex_scripts = html.contains("math/tex");
-    let html = preserve_math(html);
+    let html = preserve_math(&html);
     let mut doc = Html::parse_document(&html);
     if has_tex_scripts {
         // MathJax v2 keeps its rendered output next to the TeX scripts, which
@@ -160,6 +162,91 @@ pub fn extract(html: &str, url: &str, rule: Option<&SiteRule>) -> Result<Extract
             })
         }
     }
+}
+
+static MARKDOWN_SCRIPT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?is)<script[^>]*type\s*=\s*["']text/(?:markdown|x-markdown)["'][^>]*>(.*?)</script>"#,
+    )
+    .unwrap()
+});
+static NOSCRIPT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?is)<noscript\b[^>]*>.*?</noscript>"#).unwrap());
+
+/// Some sites ship a page as Markdown in a `<script type="text/markdown">`
+/// and render it in the browser; without that the page is only its
+/// "needs JavaScript" notice. Renders the Markdown into the page in the
+/// script's place, so extraction sees the article.
+pub fn render_markdown_scripts(html: &str) -> String {
+    if !html.contains("text/markdown") && !html.contains("text/x-markdown") {
+        return html.to_string();
+    }
+    let mut rendered = false;
+    let out = MARKDOWN_SCRIPT
+        .replace_all(html, |c: &regex::Captures| {
+            rendered = true;
+            format!("<article>{}</article>", markdown_to_html(&c[1]))
+        })
+        .into_owned();
+    if rendered {
+        NOSCRIPT.replace_all(&out, "").into_owned()
+    } else {
+        out
+    }
+}
+
+static CODE_TAG: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?is)<(pre|code)\b([^>]*)>"#).unwrap());
+static CLASS_ATTR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?is)\bclass\s*=\s*(?:"([^"]*)"|'([^']*)')"#).unwrap());
+
+/// Readability strips classes, and with them the `language-rust` a code
+/// block declares. Copies the language into a `data-lang` attribute, which
+/// survives, for the document converter.
+pub fn preserve_code_languages(html: &str) -> String {
+    if !html.contains("<pre") && !html.contains("<code") {
+        return html.to_string();
+    }
+    CODE_TAG
+        .replace_all(html, |c: &regex::Captures| {
+            let attrs = &c[2];
+            if attrs.contains("data-lang") {
+                return c[0].to_string();
+            }
+            let classes = CLASS_ATTR
+                .captures(attrs)
+                .and_then(|m| m.get(1).or(m.get(2)))
+                .map(|m| m.as_str())
+                .unwrap_or("");
+            let lang = classes.split_whitespace().find_map(|class| {
+                ["language-", "lang-", "highlight-source-", "brush:"]
+                    .iter()
+                    .find_map(|p| class.strip_prefix(p))
+                    .filter(|l| {
+                        !l.is_empty()
+                            && l.chars()
+                                .all(|ch| ch.is_ascii_alphanumeric() || "+#-_.".contains(ch))
+                    })
+            });
+            match lang {
+                Some(lang) => format!("<{}{} data-lang=\"{}\">", &c[1], attrs, lang),
+                None => c[0].to_string(),
+            }
+        })
+        .into_owned()
+}
+
+fn markdown_to_html(markdown: &str) -> String {
+    use pulldown_cmark::{Options, Parser, html};
+    let options = Options::ENABLE_TABLES
+        | Options::ENABLE_FOOTNOTES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_HEADING_ATTRIBUTES;
+    // `$…$` stays text: the document converter reads TeX delimiters itself.
+    let mut out = String::with_capacity(markdown.len() * 2);
+    html::push_html(&mut out, Parser::new_ext(markdown, options));
+    out
 }
 
 /// The page `<title>` (or `og:title`), trimmed of site suffixes like " | Site".

@@ -44,6 +44,11 @@ struct ArticleTextView: NSViewRepresentable {
     var onFocus: (() -> Void)?
     /// The content's own appearance; nil inherits the app's.
     var appearance: NSAppearance?
+    /// Languages the code block menu offers.
+    var codeLanguages: [String] = []
+    /// A language picked for a code block from the label in its corner;
+    /// nil goes back to the declared or guessed one.
+    var onCodeLanguage: ((CodeBlockMark, String?) -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -97,6 +102,8 @@ struct ArticleTextView: NSViewRepresentable {
         textView.onEscape = onEscape
         textView.onFocus = onFocus
         textView.wantsFocus = focused
+        textView.codeLanguages = codeLanguages
+        textView.onCodeLanguage = onCodeLanguage
         textView.lineStep = style.fontSize * style.lineHeight
         if textView.maxWidth != style.maxWidth {
             textView.maxWidth = style.maxWidth
@@ -141,6 +148,8 @@ struct ArticleTextView: NSViewRepresentable {
         private var imageTasks: [Task<Void, Never>] = []
         private var pendingImages: [ImageAttachment] = []
         private var imageRanges: [ObjectIdentifier: NSRange] = [:]
+        /// Images loaded for the document being shown, by URL.
+        private var loadedImages: [String: NSImage] = [:]
         private let imageConcurrency = 2
         /// Position set by the app (resume, outline jump, the end of a
         /// previous chapter) that images loading above must not disturb,
@@ -161,6 +170,14 @@ struct ArticleTextView: NSViewRepresentable {
             self.article = article
             self.version = version
             imageTasks.forEach { $0.cancel() }
+            // A rebuilt article (a translation arriving, a style change)
+            // comes with fresh attachments; the images already shown go
+            // straight back in at their size, so nothing above the reader
+            // changes height after the position is put back.
+            if !keepPosition { loadedImages = [:] }
+            for attachment in article.images where !attachment.isLoaded {
+                if let image = loadedImages[attachment.url] { attachment.loaded(image) }
+            }
             textView.textStorage?.setAttributedString(article.text)
             textView.updateInsets()
             hasShown = true
@@ -177,7 +194,9 @@ struct ArticleTextView: NSViewRepresentable {
         /// starts, to put back after the text is rebuilt (a translation batch
         /// arriving, a change of reading mode or style).
         private struct HeldPosition {
-            let spot: BuiltArticle.Spot
+            /// nil: the view is at the header above the first block, which
+            /// has no spot of its own; it stays at the top.
+            let spot: BuiltArticle.Spot?
             let offset: Int
             let delta: CGFloat
         }
@@ -191,14 +210,27 @@ struct ArticleTextView: NSViewRepresentable {
             let within = y - fragment.layoutFragmentFrame.minY
             let line = fragment.textLineFragments.last { $0.typographicBounds.minY <= within } ?? fragment.textLineFragments.first
             let lineTop = fragment.layoutFragmentFrame.minY + (line?.typographicBounds.minY ?? 0) + textView.textContainerOrigin.y
-            guard let place = article.spot(at: fragmentStart + (line?.characterRange.location ?? 0)) else { return nil }
+            let location = fragmentStart + (line?.characterRange.location ?? 0)
+            // In the header (title, byline): anchoring to the first block
+            // would scroll the header away when the text is rebuilt.
+            if let first = article.blocks.first, location < first.range.location {
+                return HeldPosition(spot: nil, offset: 0, delta: top)
+            }
+            guard let place = article.spot(at: location) else { return nil }
             return HeldPosition(spot: place.spot, offset: place.offset, delta: top - lineTop)
         }
 
         /// Puts the held line back where it was, before anything is drawn.
-        private func restore(_ held: HeldPosition) {
-            guard let scroll, let textView, let tlm = textView.textLayoutManager, let article,
-                  let utf16 = article.location(of: held.spot, offset: held.offset),
+        private func restore(_ held: HeldPosition, retry: Bool = true) {
+            guard let scroll, let textView, let tlm = textView.textLayoutManager, let article else { return }
+            guard let spot = held.spot else {
+                scrollingProgrammatically = true
+                scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, held.delta)))
+                scroll.reflectScrolledClipView(scroll.contentView)
+                DispatchQueue.main.async { [weak self] in self?.scrollingProgrammatically = false }
+                return
+            }
+            guard let utf16 = article.location(of: spot, offset: held.offset),
                   let location = tlm.location(tlm.documentRange.location, offsetBy: utf16)
             else { return }
             tlm.ensureLayout(for: NSTextRange(location: tlm.documentRange.location, end: location) ?? tlm.documentRange)
@@ -211,10 +243,18 @@ struct ArticleTextView: NSViewRepresentable {
             }) {
                 lineTop += line.typographicBounds.minY
             }
+            let target = max(0, lineTop + held.delta)
             scrollingProgrammatically = true
-            scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, lineTop + held.delta)))
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: target))
             scroll.reflectScrolledClipView(scroll.contentView)
-            DispatchQueue.main.async { [weak self] in self?.scrollingProgrammatically = false }
+            // The view's height may lag the new text and cut the scroll
+            // short; once it has caught up, go there again.
+            let cutShort = retry && abs(scroll.contentView.bounds.minY - target) > 0.5
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if cutShort { self.restore(held, retry: false) }
+                self.scrollingProgrammatically = false
+            }
         }
 
         /// Loads the article's images a couple at a time, those on or near
@@ -275,6 +315,7 @@ struct ArticleTextView: NSViewRepresentable {
             let lineWidth = textView.textContainer?.size.width ?? textView.bounds.width
             let before = attachment.displayHeight(forLineWidth: lineWidth)
             attachment.loaded(image)
+            loadedImages[attachment.url] = image
             let after = attachment.displayHeight(forLineWidth: lineWidth)
             let origin = textView.textContainerOrigin
             let location = tlm.location(tlm.documentRange.location, offsetBy: range.location)
@@ -394,9 +435,9 @@ struct ArticleTextView: NSViewRepresentable {
         nonisolated func textLayoutManager(_ textLayoutManager: NSTextLayoutManager, textLayoutFragmentFor location: any NSTextLocation, in textElement: NSTextElement) -> NSTextLayoutFragment {
             if let paragraph = textElement as? NSTextParagraph, paragraph.attributedString.length > 0 {
                 let attrs = paragraph.attributedString.attributes(at: 0, effectiveRange: nil)
-                if attrs[.eddyCode] != nil {
+                if let mark = attrs[.eddyCode] {
                     let f = DecoratedFragment(textElement: textElement, range: textElement.elementRange)
-                    f.kind = .code
+                    f.kind = .code(mark as? CodeBlockMark)
                     return f
                 }
                 if let depth = attrs[.eddyQuote] as? Int, depth > 0 {
@@ -449,9 +490,120 @@ final class ReaderTextView: NSTextView {
     var onStep: ((Direction) -> Void)?
     var onEscape: (() -> Void)?
     var onFocus: (() -> Void)?
+    var codeLanguages: [String] = []
+    var onCodeLanguage: ((CodeBlockMark, String?) -> Void)?
     /// Takes keyboard focus when this turns on or the view reaches a window.
     var wantsFocus = false {
         didSet { if wantsFocus, !oldValue { claimFocus(self) } }
+    }
+
+    // MARK: Code block languages
+
+    /// A click on the language label in a code block's corner opens the
+    /// menu of languages instead of placing the insertion point.
+    override func mouseDown(with event: NSEvent) {
+        if let mark = codeMark(at: event) {
+            showLanguageMenu(for: mark, with: event)
+            return
+        }
+        super.mouseDown(with: event)
+    }
+
+    private func codeMark(at event: NSEvent) -> CodeBlockMark? {
+        guard let fragment = codeFragment(at: event), let mark = fragment.codeMark else { return nil }
+        let inView = convert(event.locationInWindow, from: nil)
+        let local = CGPoint(
+            x: inView.x - textContainerOrigin.x - fragment.layoutFragmentFrame.minX,
+            y: inView.y - textContainerOrigin.y - fragment.layoutFragmentFrame.minY
+        )
+        return fragment.labelRect.contains(local) ? mark : nil
+    }
+
+    /// The code block under the pointer, if any.
+    private func codeFragment(at event: NSEvent) -> DecoratedFragment? {
+        guard let tlm = textLayoutManager else { return nil }
+        let inView = convert(event.locationInWindow, from: nil)
+        let inContainer = CGPoint(x: inView.x - textContainerOrigin.x, y: inView.y - textContainerOrigin.y)
+        guard let fragment = tlm.textLayoutFragment(for: inContainer) as? DecoratedFragment, fragment.codeMark != nil,
+              fragment.layoutFragmentFrame.minY <= inContainer.y, inContainer.y < fragment.layoutFragmentFrame.maxY
+        else { return nil }
+        return fragment
+    }
+
+    // MARK: Sideways scrolling in code blocks
+
+    /// The code block a sideways gesture is scrolling; the gesture stays
+    /// with it until it ends, like the direction it started with.
+    private var scrollingCode: DecoratedFragment?
+
+    /// Code longer than its block scrolls sideways under the pointer; up
+    /// and down, and anything else, scroll the article as usual. A gesture
+    /// is sorted when it starts (or every event, for a mouse wheel) and
+    /// its momentum follows it.
+    override func scrollWheel(with event: NSEvent) {
+        if event.phase == .began || (event.phase.isEmpty && event.momentumPhase.isEmpty) {
+            let sideways = abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY)
+            scrollingCode = sideways ? codeFragment(at: event).flatMap { $0.codeOverflow > 0 ? $0 : nil } : nil
+        }
+        guard let fragment = scrollingCode else {
+            super.scrollWheel(with: event)
+            return
+        }
+        if fragment.scrollCode(by: -event.scrollingDeltaX) {
+            redraw(fragment)
+        }
+    }
+
+    /// Has a fragment drawn again where it is. The text view keeps each
+    /// fragment's drawing in a view of its own under its content view;
+    /// invalidating the layout leaves those alone, so they are marked
+    /// directly (any neighbour sharing the rows redraws too, harmlessly).
+    private func redraw(_ fragment: NSTextLayoutFragment) {
+        let frame = fragment.layoutFragmentFrame.offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y)
+        for content in subviews where content.frame.intersects(frame) {
+            for element in content.subviews where element.frame.intersects(frame) {
+                element.needsDisplay = true
+            }
+        }
+    }
+
+    private final class LanguagePick: NSObject {
+        let mark: CodeBlockMark
+        let language: String?
+        init(mark: CodeBlockMark, language: String?) {
+            self.mark = mark
+            self.language = language
+        }
+    }
+
+    private func showLanguageMenu(for mark: CodeBlockMark, with event: NSEvent) {
+        let menu = NSMenu()
+        let current = mark.language?.lowercased()
+        func add(_ title: String, _ token: String?, checked: Bool) {
+            let item = NSMenuItem(title: title, action: #selector(pickLanguage(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = LanguagePick(mark: mark, language: token)
+            item.state = checked ? .on : .off
+            menu.addItem(item)
+        }
+        add(String(localized: "Automatic"), nil, checked: false)
+        add(String(localized: "Plain Text"), "plaintext", checked: CodeBlockMark.isPlain(current))
+        menu.addItem(.separator())
+        var languages = codeLanguages
+        // The block's own language, when it isn't one offered (a grammar
+        // the page named that is highlighted by its nearest relative).
+        if let current, !CodeBlockMark.isPlain(current), !languages.contains(current) {
+            languages.insert(current, at: 0)
+        }
+        for language in languages {
+            add(CodeBlockMark.displayName(language), language, checked: language == current)
+        }
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    @objc private func pickLanguage(_ sender: NSMenuItem) {
+        guard let pick = sender.representedObject as? LanguagePick else { return }
+        onCodeLanguage?(pick.mark, pick.language)
     }
 
     override func viewDidMoveToWindow() {

@@ -51,6 +51,9 @@ enum MathRenderer {
 
     private static let replacements: [(String, String)] = [
         (#"\\[Bb]igg?[lmr]?(?![a-zA-Z])"#, ""),
+        // Font size switches mean nothing to a one-size renderer.
+        (#"\\(tiny|scriptsize|footnotesize|small|normalsize|large|Large|LARGE|huge|Huge)(?![a-zA-Z])\s?"#, ""),
+        (#"\\operatorname\*?(?![a-zA-Z])"#, #"\\mathrm"#),
         (#"\\[dt]frac(?![a-zA-Z])"#, #"\\frac"#),
         (#"\\widehat(?![a-zA-Z])"#, #"\\hat"#),
         (#"\\widetilde(?![a-zA-Z])"#, #"\\tilde"#),
@@ -296,25 +299,133 @@ private struct TableGrid: View {
     }
 }
 
+/// What a code block is, for the label in its corner and the menu behind
+/// it. The value of the `.eddyCode` attribute on the block's paragraph.
+final class CodeBlockMark: NSObject {
+    let blockID: String
+    /// As declared, guessed or picked; nil for plain text.
+    let language: String?
+    /// Where the block starts, inside a quote.
+    let indent: CGFloat
+    /// How far the code is scrolled sideways; lines never wrap.
+    var scrollX: CGFloat = 0
+
+    init(blockID: String, language: String?, indent: CGFloat = 0) {
+        self.blockID = blockID
+        self.language = language
+        self.indent = indent
+    }
+
+    /// Height of the strip above the code holding the label.
+    static let stripHeight: CGFloat = 22
+    /// Space between the block's edge and its code.
+    static let inset: CGFloat = 14
+    /// Space between the last line of code and the block's bottom edge.
+    static let bottomInset: CGFloat = 10
+
+    /// How the label shows a language token: "cpp" as "C++".
+    static func displayName(_ language: String?) -> String {
+        guard let language = language?.lowercased(), !language.isEmpty else { return "Text" }
+        let names: [String: String] = [
+            "plaintext": "Text", "plain": "Text", "text": "Text", "txt": "Text", "none": "Text", "nohighlight": "Text",
+            "c": "C", "cpp": "C++", "c++": "C++", "cc": "C++", "cxx": "C++", "h": "C", "hpp": "C++",
+            "csharp": "C#", "cs": "C#", "c#": "C#", "objc": "Objective-C", "m": "Objective-C",
+            "js": "JavaScript", "javascript": "JavaScript", "jsx": "JSX", "mjs": "JavaScript",
+            "ts": "TypeScript", "typescript": "TypeScript", "tsx": "TSX",
+            "py": "Python", "python": "Python", "python3": "Python", "rb": "Ruby", "ruby": "Ruby",
+            "rs": "Rust", "rust": "Rust", "go": "Go", "golang": "Go", "java": "Java", "kt": "Kotlin", "kotlin": "Kotlin",
+            "swift": "Swift", "php": "PHP", "lua": "Lua", "scala": "Scala", "dart": "Dart", "zig": "Zig",
+            "sh": "Shell", "shell": "Shell", "bash": "Bash", "zsh": "Zsh", "console": "Console", "fish": "Fish", "powershell": "PowerShell",
+            "sql": "SQL", "html": "HTML", "xml": "XML", "svg": "SVG", "css": "CSS", "scss": "SCSS", "json": "JSON",
+            "yaml": "YAML", "yml": "YAML", "toml": "TOML", "ini": "INI", "md": "Markdown", "markdown": "Markdown",
+            "tex": "TeX", "latex": "LaTeX", "diff": "Diff", "patch": "Diff", "makefile": "Makefile", "make": "Makefile",
+            "dockerfile": "Dockerfile", "glsl": "GLSL", "hlsl": "HLSL", "wgsl": "WGSL", "metal": "Metal", "cuda": "CUDA",
+            "hs": "Haskell", "haskell": "Haskell", "ml": "OCaml", "ocaml": "OCaml", "ex": "Elixir", "elixir": "Elixir",
+            "clj": "Clojure", "clojure": "Clojure", "erl": "Erlang", "erlang": "Erlang", "r": "R", "matlab": "MATLAB",
+            "perl": "Perl", "pl": "Perl",
+        ]
+        if let name = names[language] { return name }
+        return language.prefix(1).uppercased() + language.dropFirst()
+    }
+
+    /// Whether the token means no highlighting.
+    static func isPlain(_ language: String?) -> Bool {
+        guard let language = language?.lowercased() else { return true }
+        return ["plaintext", "plain", "text", "txt", "none", "nohighlight"].contains(language)
+    }
+}
+
 /// Draws code block backgrounds and quote bars behind TextKit 2 paragraphs.
+/// A code block gets its language in the corner of a strip above the code;
+/// `labelRect` (in the fragment's own coordinates) is where that is, for
+/// clicks on it.
 final class DecoratedFragment: NSTextLayoutFragment {
-    enum Kind { case code, quote(Int) }
-    var kind: Kind = .code
+    enum Kind { case code(CodeBlockMark?), quote(Int) }
+    var kind: Kind = .code(nil)
+    private(set) var labelRect: CGRect = .zero
+    /// How much wider the code is than the room it has; it scrolls by that.
+    private(set) var codeOverflow: CGFloat = 0
+
+    /// The code block's box, in the fragment's own coordinates: the whole
+    /// column, whatever the length of the code.
+    private var codeBox: CGRect {
+        let width = textLayoutManager?.textContainer?.size.width ?? layoutFragmentFrame.width
+        let indent = codeMark?.indent ?? 0
+        return CGRect(
+            x: indent - layoutFragmentFrame.minX, y: -2,
+            width: width - indent, height: layoutFragmentFrame.height - paragraphSpacingBelow() + 4 + CodeBlockMark.bottomInset
+        )
+    }
 
     override var renderingSurfaceBounds: CGRect {
-        super.renderingSurfaceBounds.union(layoutFragmentFrame.offsetBy(dx: -layoutFragmentFrame.minX, dy: -layoutFragmentFrame.minY).insetBy(dx: -8, dy: -6))
+        let own = layoutFragmentFrame.offsetBy(dx: -layoutFragmentFrame.minX, dy: -layoutFragmentFrame.minY).insetBy(dx: -8, dy: -6)
+        if case .code = kind {
+            return super.renderingSurfaceBounds.union(own).union(codeBox.insetBy(dx: -2, dy: -6))
+        }
+        return super.renderingSurfaceBounds.union(own)
     }
 
     override func draw(at point: CGPoint, in context: CGContext) {
         let frame = CGRect(origin: point, size: layoutFragmentFrame.size)
         switch kind {
-        case .code:
-            let rect = CGRect(x: frame.minX, y: frame.minY - 2, width: frame.width, height: frame.height - paragraphSpacingBelow() + 4)
+        case let .code(mark):
+            let rect = codeBox.offsetBy(dx: point.x, dy: point.y)
             context.saveGState()
             context.setFillColor(NSColor.quaternaryLabelColor.withAlphaComponent(0.18).cgColor)
             context.addPath(CGPath(roundedRect: rect, cornerWidth: 8, cornerHeight: 8, transform: nil))
             context.fillPath()
             context.restoreGState()
+            drawLabel(mark, in: rect, at: point, context: context)
+            // The code at its full length, clipped to the box and shifted
+            // by its scroll. TextKit laid the lines out clipped (so they
+            // never wrap and the block has the right height); the glyphs
+            // past the edge come from drawing each line again whole.
+            let inset = CodeBlockMark.inset
+            let room = rect.width - 2 * inset
+            let lines = codeLines
+            codeOverflow = max(0, (lines.map(\.width).max() ?? 0) - room)
+            let scroll = min(mark?.scrollX ?? 0, codeOverflow)
+            mark?.scrollX = scroll
+            context.saveGState()
+            context.clip(to: CGRect(x: rect.minX + inset - 4, y: rect.minY, width: room + 8, height: rect.height))
+            context.textMatrix = .identity
+            for (fragment, line) in zip(textLineFragments, lines) {
+                let bounds = fragment.typographicBounds
+                let baseline = CGPoint(
+                    x: point.x + bounds.minX + fragment.glyphOrigin.x - scroll,
+                    y: point.y + bounds.minY + fragment.glyphOrigin.y
+                )
+                context.saveGState()
+                context.translateBy(x: baseline.x, y: baseline.y)
+                context.scaleBy(x: 1, y: -1)
+                // The text position isn't part of the graphics state: the
+                // previous line left it at its own end.
+                context.textPosition = .zero
+                CTLineDraw(line.line, context)
+                context.restoreGState()
+            }
+            context.restoreGState()
+            return
         case let .quote(depth):
             context.saveGState()
             context.setFillColor(NSColor.controlAccentColor.withAlphaComponent(0.55).cgColor)
@@ -324,6 +435,61 @@ final class DecoratedFragment: NSTextLayoutFragment {
             context.restoreGState()
         }
         super.draw(at: point, in: context)
+    }
+
+    /// The language, top right, with a mark that it opens a menu.
+    private func drawLabel(_ mark: CodeBlockMark?, in rect: CGRect, at point: CGPoint, context: CGContext) {
+        let text = CodeBlockMark.displayName(mark?.language) + " ▾"
+        let label = NSAttributedString(string: text, attributes: [
+            .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ])
+        let size = label.size()
+        let origin = CGPoint(x: rect.maxX - 12 - size.width, y: rect.minY + (CodeBlockMark.stripHeight - size.height) / 2 + 2)
+        // Generous, for clicking: the whole corner of the strip.
+        labelRect = CGRect(x: origin.x - 10, y: rect.minY, width: size.width + 22, height: CodeBlockMark.stripHeight + 2)
+            .offsetBy(dx: -point.x, dy: -point.y)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
+        label.draw(at: origin)
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    private var builtCodeLines: [(line: CTLine, width: CGFloat)]?
+
+    /// Each line of the code set whole, with its width, from the text
+    /// TextKit gave each line fragment.
+    private var codeLines: [(line: CTLine, width: CGFloat)] {
+        if let builtCodeLines { return builtCodeLines }
+        guard let paragraph = textElement as? NSTextParagraph else { return [] }
+        let text = paragraph.attributedString
+        let lines = textLineFragments.map { fragment in
+            let range = NSIntersectionRange(fragment.characterRange, NSRange(location: 0, length: text.length))
+            let piece = text.attributedSubstring(from: range).mutableCopy() as! NSMutableAttributedString
+            // Line separators and the final newline take no room.
+            while piece.length > 0, let last = piece.string.unicodeScalars.last, last == "\u{2028}" || last == "\n" {
+                piece.deleteCharacters(in: NSRange(location: piece.length - 1, length: 1))
+            }
+            let line = CTLineCreateWithAttributedString(piece)
+            return (line: line, width: CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil)))
+        }
+        builtCodeLines = lines
+        return lines
+    }
+
+    /// The code block's mark, when this is one.
+    var codeMark: CodeBlockMark? {
+        if case let .code(mark) = kind { return mark }
+        return nil
+    }
+
+    /// Scrolls the code sideways by `delta` points; whether anything moved.
+    func scrollCode(by delta: CGFloat) -> Bool {
+        guard let mark = codeMark, codeOverflow > 0 else { return false }
+        let target = min(max(0, mark.scrollX + delta), codeOverflow)
+        guard target != mark.scrollX else { return false }
+        mark.scrollX = target
+        return true
     }
 
     private func paragraphSpacingBelow() -> CGFloat {

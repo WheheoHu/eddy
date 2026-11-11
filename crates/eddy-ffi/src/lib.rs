@@ -268,6 +268,36 @@ impl EddyEngine {
         Ok(self.engine.document(&item_id).await?.map(Into::into))
     }
 
+    /// Highlights a code block as `language` from now on (`None`: as the
+    /// page declared or the guess). The next `document` call reflects it.
+    pub fn set_code_language(
+        &self,
+        item_id: String,
+        block_id: String,
+        language: Option<String>,
+    ) -> R<()> {
+        Ok(self
+            .engine
+            .set_code_language(&item_id, &block_id, language.as_deref())?)
+    }
+
+    /// Language tokens there are grammars for, for a language picker.
+    pub fn highlight_languages(&self) -> Vec<String> {
+        eddy_core::highlight_languages()
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    /// A translation as runs: the formulas it kept between dollars become
+    /// math runs, to render like the original's.
+    pub fn translated_runs(&self, text: String) -> Vec<RunView> {
+        eddy_core::translated_runs(&text)
+            .into_iter()
+            .map(RunView::from)
+            .collect()
+    }
+
     pub async fn set_read(&self, item_id: String, read: bool) -> R<()> {
         Ok(self.engine.set_read(&item_id, read).await?)
     }

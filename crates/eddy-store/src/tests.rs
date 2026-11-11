@@ -28,6 +28,7 @@ fn item(id: &str, published: i64) -> Item {
         starred: false,
         series_id: None,
         chapter_index: None,
+        chapter_level: 0,
         current_version: None,
         excerpt: None,
         lang: None,
@@ -178,7 +179,7 @@ fn item_queries_filter_and_order() {
     assert_eq!(
         ids(ItemQuery {
             unread_only: true,
-            keep: Some("b".into()),
+            keep: vec!["b".into()],
             ..Default::default()
         }),
         ["b", "c", "a"]
@@ -187,7 +188,7 @@ fn item_queries_filter_and_order() {
         ids(ItemQuery {
             filter: ItemFilter::Saved,
             unread_only: true,
-            keep: Some("b".into()),
+            keep: vec!["b".into()],
             ..Default::default()
         }),
         ["c"]

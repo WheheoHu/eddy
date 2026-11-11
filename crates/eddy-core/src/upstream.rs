@@ -318,6 +318,7 @@ impl DirectUpstream {
             starred: up.starred,
             series_id: None,
             chapter_index: None,
+            chapter_level: 0,
             current_version: None,
             excerpt: None,
             lang: None,

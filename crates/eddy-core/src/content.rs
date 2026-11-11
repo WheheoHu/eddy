@@ -1,11 +1,13 @@
+use std::collections::HashMap;
+
 use eddy_doc::{ConvertOptions, SCHEMA_VERSION, html_to_document};
 use eddy_model::{
-    ContentOrigin, ContentVersion, Document, EPUB_MIME, Entity, PDF_MIME, fields, ids::sha256_hex,
-    now_ms,
+    BlockKind, ContentOrigin, ContentVersion, Document, EPUB_MIME, Entity, PDF_MIME, fields,
+    ids::sha256_hex, now_ms,
 };
 
 use crate::engine::Inner;
-use crate::{EngineError, Result};
+use crate::{Engine, EngineError, Result};
 
 /// A content version together with its (possibly regenerated) document.
 #[derive(Clone, Debug)]
@@ -196,8 +198,79 @@ impl Inner {
         let Some(version) = self.store.content_version(hash)? else {
             return Ok(None);
         };
-        let document = self.load_version(&version, Some(&row.item.title))?;
+        let mut document = self.load_version(&version, Some(&row.item.title))?;
+        if let Some(document) = &mut document {
+            self.apply_code_languages(item_id, document)?;
+        }
         Ok(document.map(|document| LoadedDocument { version, document }))
+    }
+
+    /// The languages the user set on the item's code blocks, by block ID.
+    /// Local to this device: a reading preference, not content.
+    pub(crate) fn code_languages(&self, item_id: &str) -> Result<HashMap<String, String>> {
+        Ok(self
+            .store
+            .meta_get(&code_languages_key(item_id))?
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default())
+    }
+
+    /// Re-highlights the code blocks the user picked a language for.
+    fn apply_code_languages(&self, item_id: &str, document: &mut Document) -> Result<()> {
+        let chosen = self.code_languages(item_id)?;
+        if chosen.is_empty() {
+            return Ok(());
+        }
+        for block in &mut document.blocks {
+            let Some(language) = chosen.get(&block.id) else {
+                continue;
+            };
+            if let BlockKind::Code {
+                language: lang,
+                text,
+                highlights,
+            } = &mut block.kind
+            {
+                *highlights = eddy_doc::highlight(text, language);
+                *lang = Some(language.clone());
+            }
+        }
+        Ok(())
+    }
+}
+
+fn code_languages_key(item_id: &str) -> String {
+    format!("code_lang:{item_id}")
+}
+
+impl Engine {
+    /// Sets the language a code block is highlighted in, over what the page
+    /// declared or the guess; `None` goes back to that. Stays on this device.
+    pub fn set_code_language(
+        &self,
+        item_id: &str,
+        block_id: &str,
+        language: Option<&str>,
+    ) -> Result<()> {
+        let inner = &self.inner;
+        let mut chosen = inner.code_languages(item_id)?;
+        match language.map(str::trim).filter(|l| !l.is_empty()) {
+            Some(language) => {
+                chosen.insert(block_id.to_string(), language.to_lowercase());
+            }
+            None => {
+                chosen.remove(block_id);
+            }
+        }
+        let key = code_languages_key(item_id);
+        if chosen.is_empty() {
+            inner.store.meta_delete(&key)?;
+        } else {
+            inner
+                .store
+                .meta_set(&key, &serde_json::to_string(&chosen)?)?;
+        }
+        Ok(())
     }
 }
 

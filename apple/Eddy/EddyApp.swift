@@ -210,8 +210,12 @@ private struct SeriesProposalSheet: View {
             Text("Add “\(proposal.title)” as a Web Series?").font(.headline)
             Text("This page looks like a table of contents with \(proposal.chapters.count) chapters. Eddy can track your progress through all of them.")
                 .foregroundStyle(.secondary)
-            List(Array(proposal.chapters.prefix(50).enumerated()), id: \.offset) { index, chapter in
-                Text("\(index + 1). \(chapter.title)").lineLimit(1)
+            let numbered = numberedChapters
+            List(Array(numbered.prefix(80).enumerated()), id: \.offset) { _, row in
+                Text(row.number.map { "\($0). \(row.chapter.title)" } ?? row.chapter.title)
+                    .lineLimit(1)
+                    .foregroundStyle(row.number == nil ? .secondary : .primary)
+                    .padding(.leading, CGFloat(row.chapter.level) * 16)
             }
             .frame(width: 460, height: 220)
             HStack {
@@ -221,5 +225,15 @@ private struct SeriesProposalSheet: View {
             }
         }
         .padding(20)
+    }
+
+    /// Chapters with their number; sections under a chapter have none.
+    private var numberedChapters: [(number: Int?, chapter: ChapterLinkView)] {
+        var count = 0
+        return proposal.chapters.map { chapter in
+            guard chapter.level == 0 else { return (nil, chapter) }
+            count += 1
+            return (count, chapter)
+        }
     }
 }

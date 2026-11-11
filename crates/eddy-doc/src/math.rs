@@ -234,12 +234,30 @@ fn split_runs(runs: Vec<Run>) -> Split {
     Split::Runs(out)
 }
 
+/// Runs of a translation that came back with the formulas it was sent:
+/// `$…$` is a formula wherever it closes on the same line, since the text
+/// was written with that convention (a model keeps the dollars it was given).
+pub fn translated_runs(text: &str) -> Vec<Run> {
+    split_text_with(text, true)
+        .into_iter()
+        .map(|piece| match piece {
+            Piece::Text(text) => Run::text(text),
+            Piece::Math { tex, .. } => Run::math(tex),
+        })
+        .collect()
+}
+
 fn split_text(text: &str) -> Vec<Piece> {
+    split_text_with(text, false)
+}
+
+fn split_text_with(text: &str, lenient: bool) -> Vec<Piece> {
     let mut pieces = Vec::new();
     let mut plain = String::new();
     let mut rest = text;
     while !rest.is_empty() {
-        if let Some((tex, display, consumed)) = match_math(rest) {
+        let matched = match_math(rest).or_else(|| lenient.then(|| match_dollar(rest)).flatten());
+        if let Some((tex, display, consumed)) = matched {
             if !plain.is_empty() {
                 pieces.push(Piece::Text(std::mem::take(&mut plain)));
             }
@@ -292,5 +310,23 @@ fn match_math(s: &str) -> Option<(String, bool, usize)> {
             || (tex.chars().count() <= 3
                 && tex.chars().all(|c| c.is_ascii_alphanumeric())
                 && tex.chars().next().unwrap().is_ascii_alphabetic()));
+    plausible.then(|| (tex.to_string(), false, 1 + end + 1))
+}
+
+/// `$…$` taken as a formula on looser terms: anything short that closes on
+/// the same line and doesn't look like a price.
+fn match_dollar(s: &str) -> Option<(String, bool, usize)> {
+    let body = s.strip_prefix('$')?;
+    let end = body.find('$')?;
+    let tex = body[..end].trim();
+    let after = body[end + 1..].chars().next();
+    let plausible = !tex.is_empty()
+        && tex.len() <= 300
+        && !tex.contains('\n')
+        && !body[..end].starts_with(char::is_whitespace)
+        && !after.is_some_and(|c| c.is_ascii_digit())
+        && !tex
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, '.' | ','));
     plausible.then(|| (tex.to_string(), false, 1 + end + 1))
 }

@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use eddy_doc::{locator_at, remap_locator};
-use eddy_extract::{SeriesProposal, detect_series};
+use eddy_extract::{ChapterLink, SeriesProposal, detect_series};
 use eddy_model::{
     ContentOrigin, Entity, Item, ItemKind, Locator, PDF_MIME, Position, TextQuote, fields, ids,
     now_ms,
@@ -66,7 +66,7 @@ impl Inner {
         Ok(self.store.items(&ItemQuery {
             filter: ItemFilter::Series(series_id.into()),
             unread_only: false,
-            keep: None,
+            keep: Vec::new(),
             limit: 10_000,
             offset: 0,
         })?)
@@ -408,7 +408,7 @@ impl Engine {
         &self,
         title: &str,
         toc_url: Option<&str>,
-        chapters: &[(String, String)],
+        chapters: &[ChapterLink],
     ) -> Result<String> {
         let inner = &self.inner;
         let series_id = ids::new_local_id();
@@ -419,7 +419,8 @@ impl Engine {
             serde_json::json!({ "title": title, "toc_url": toc_url }),
             false,
         )?;
-        for (index, (chapter_title, url)) in chapters.iter().enumerate() {
+        for (index, chapter) in chapters.iter().enumerate() {
+            let url = &chapter.url;
             let item_id = match inner.saved_by_url(url)? {
                 Some(row) => row.item.id,
                 None => {
@@ -432,7 +433,7 @@ impl Engine {
                         upstream_id: None,
                         kind: ItemKind::Chapter,
                         url: Some(url.clone()),
-                        title: chapter_title.clone(),
+                        title: chapter.title.clone(),
                         author: None,
                         published_at: now,
                         added_at: now,
@@ -440,6 +441,7 @@ impl Engine {
                         starred: false,
                         series_id: None,
                         chapter_index: None,
+                        chapter_level: 0,
                         current_version: None,
                         excerpt: None,
                         lang: None,
@@ -458,17 +460,31 @@ impl Engine {
                     id
                 }
             };
-            self.add_to_series(&series_id, &item_id, index as u32)?;
+            self.place_in_series(&series_id, &item_id, index as u32, chapter.level)?;
         }
         Ok(series_id)
     }
 
     pub fn add_to_series(&self, series_id: &str, item_id: &str, chapter_index: u32) -> Result<()> {
+        self.place_in_series(series_id, item_id, chapter_index, 0)
+    }
+
+    fn place_in_series(
+        &self,
+        series_id: &str,
+        item_id: &str,
+        chapter_index: u32,
+        chapter_level: u32,
+    ) -> Result<()> {
         self.inner.record(
             Entity::Item,
             item_id,
             fields::SERIES,
-            serde_json::json!({ "series_id": series_id, "chapter_index": chapter_index }),
+            serde_json::json!({
+                "series_id": series_id,
+                "chapter_index": chapter_index,
+                "chapter_level": chapter_level,
+            }),
             false,
         )
     }
