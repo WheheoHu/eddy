@@ -309,7 +309,8 @@ private struct Builder {
     mutating func codeBlock(_ id: String, language: String?, text: String, highlights: [HighlightView], indent: CGFloat) {
         let p = NSMutableParagraphStyle()
         p.lineHeightMultiple = 1.15
-        p.paragraphSpacing = style.fontSize * 1.1
+        // The box runs on below the last line by its bottom padding.
+        p.paragraphSpacing = style.fontSize * 1.1 + CodeBlockMark.bottomInset
         // Room above the code for the language label.
         p.paragraphSpacingBefore = CodeBlockMark.stripHeight
         p.headIndent = indent + CodeBlockMark.inset

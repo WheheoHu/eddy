@@ -320,6 +320,8 @@ final class CodeBlockMark: NSObject {
     static let stripHeight: CGFloat = 22
     /// Space between the block's edge and its code.
     static let inset: CGFloat = 14
+    /// Space between the last line of code and the block's bottom edge.
+    static let bottomInset: CGFloat = 10
 
     /// How the label shows a language token: "cpp" as "C++".
     static func displayName(_ language: String?) -> String {
@@ -371,7 +373,7 @@ final class DecoratedFragment: NSTextLayoutFragment {
         let indent = codeMark?.indent ?? 0
         return CGRect(
             x: indent - layoutFragmentFrame.minX, y: -2,
-            width: width - indent, height: layoutFragmentFrame.height - paragraphSpacingBelow() + 4
+            width: width - indent, height: layoutFragmentFrame.height - paragraphSpacingBelow() + 4 + CodeBlockMark.bottomInset
         )
     }
 
