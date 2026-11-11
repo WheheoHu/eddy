@@ -148,6 +148,8 @@ struct ArticleTextView: NSViewRepresentable {
         private var imageTasks: [Task<Void, Never>] = []
         private var pendingImages: [ImageAttachment] = []
         private var imageRanges: [ObjectIdentifier: NSRange] = [:]
+        /// Images loaded for the document being shown, by URL.
+        private var loadedImages: [String: NSImage] = [:]
         private let imageConcurrency = 2
         /// Position set by the app (resume, outline jump, the end of a
         /// previous chapter) that images loading above must not disturb,
@@ -168,6 +170,14 @@ struct ArticleTextView: NSViewRepresentable {
             self.article = article
             self.version = version
             imageTasks.forEach { $0.cancel() }
+            // A rebuilt article (a translation arriving, a style change)
+            // comes with fresh attachments; the images already shown go
+            // straight back in at their size, so nothing above the reader
+            // changes height after the position is put back.
+            if !keepPosition { loadedImages = [:] }
+            for attachment in article.images where !attachment.isLoaded {
+                if let image = loadedImages[attachment.url] { attachment.loaded(image) }
+            }
             textView.textStorage?.setAttributedString(article.text)
             textView.updateInsets()
             hasShown = true
@@ -211,7 +221,7 @@ struct ArticleTextView: NSViewRepresentable {
         }
 
         /// Puts the held line back where it was, before anything is drawn.
-        private func restore(_ held: HeldPosition) {
+        private func restore(_ held: HeldPosition, retry: Bool = true) {
             guard let scroll, let textView, let tlm = textView.textLayoutManager, let article else { return }
             guard let spot = held.spot else {
                 scrollingProgrammatically = true
@@ -233,10 +243,18 @@ struct ArticleTextView: NSViewRepresentable {
             }) {
                 lineTop += line.typographicBounds.minY
             }
+            let target = max(0, lineTop + held.delta)
             scrollingProgrammatically = true
-            scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, lineTop + held.delta)))
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: target))
             scroll.reflectScrolledClipView(scroll.contentView)
-            DispatchQueue.main.async { [weak self] in self?.scrollingProgrammatically = false }
+            // The view's height may lag the new text and cut the scroll
+            // short; once it has caught up, go there again.
+            let cutShort = retry && abs(scroll.contentView.bounds.minY - target) > 0.5
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if cutShort { self.restore(held, retry: false) }
+                self.scrollingProgrammatically = false
+            }
         }
 
         /// Loads the article's images a couple at a time, those on or near
@@ -297,6 +315,7 @@ struct ArticleTextView: NSViewRepresentable {
             let lineWidth = textView.textContainer?.size.width ?? textView.bounds.width
             let before = attachment.displayHeight(forLineWidth: lineWidth)
             attachment.loaded(image)
+            loadedImages[attachment.url] = image
             let after = attachment.displayHeight(forLineWidth: lineWidth)
             let origin = textView.textContainerOrigin
             let location = tlm.location(tlm.documentRange.location, offsetBy: range.location)
@@ -491,12 +510,61 @@ final class ReaderTextView: NSTextView {
     }
 
     private func codeMark(at event: NSEvent) -> CodeBlockMark? {
+        guard let fragment = codeFragment(at: event), let mark = fragment.codeMark else { return nil }
+        let inView = convert(event.locationInWindow, from: nil)
+        let local = CGPoint(
+            x: inView.x - textContainerOrigin.x - fragment.layoutFragmentFrame.minX,
+            y: inView.y - textContainerOrigin.y - fragment.layoutFragmentFrame.minY
+        )
+        return fragment.labelRect.contains(local) ? mark : nil
+    }
+
+    /// The code block under the pointer, if any.
+    private func codeFragment(at event: NSEvent) -> DecoratedFragment? {
         guard let tlm = textLayoutManager else { return nil }
         let inView = convert(event.locationInWindow, from: nil)
         let inContainer = CGPoint(x: inView.x - textContainerOrigin.x, y: inView.y - textContainerOrigin.y)
-        guard let fragment = tlm.textLayoutFragment(for: inContainer) as? DecoratedFragment, let mark = fragment.codeMark else { return nil }
-        let local = CGPoint(x: inContainer.x - fragment.layoutFragmentFrame.minX, y: inContainer.y - fragment.layoutFragmentFrame.minY)
-        return fragment.labelRect.contains(local) ? mark : nil
+        guard let fragment = tlm.textLayoutFragment(for: inContainer) as? DecoratedFragment, fragment.codeMark != nil,
+              fragment.layoutFragmentFrame.minY <= inContainer.y, inContainer.y < fragment.layoutFragmentFrame.maxY
+        else { return nil }
+        return fragment
+    }
+
+    // MARK: Sideways scrolling in code blocks
+
+    /// The code block a sideways gesture is scrolling; the gesture stays
+    /// with it until it ends, like the direction it started with.
+    private var scrollingCode: DecoratedFragment?
+
+    /// Code longer than its block scrolls sideways under the pointer; up
+    /// and down, and anything else, scroll the article as usual. A gesture
+    /// is sorted when it starts (or every event, for a mouse wheel) and
+    /// its momentum follows it.
+    override func scrollWheel(with event: NSEvent) {
+        if event.phase == .began || (event.phase.isEmpty && event.momentumPhase.isEmpty) {
+            let sideways = abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY)
+            scrollingCode = sideways ? codeFragment(at: event).flatMap { $0.codeOverflow > 0 ? $0 : nil } : nil
+        }
+        guard let fragment = scrollingCode else {
+            super.scrollWheel(with: event)
+            return
+        }
+        if fragment.scrollCode(by: -event.scrollingDeltaX) {
+            redraw(fragment)
+        }
+    }
+
+    /// Has a fragment drawn again where it is. The text view keeps each
+    /// fragment's drawing in a view of its own under its content view;
+    /// invalidating the layout leaves those alone, so they are marked
+    /// directly (any neighbour sharing the rows redraws too, harmlessly).
+    private func redraw(_ fragment: NSTextLayoutFragment) {
+        let frame = fragment.layoutFragmentFrame.offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y)
+        for content in subviews where content.frame.intersects(frame) {
+            for element in content.subviews where element.frame.intersects(frame) {
+                element.needsDisplay = true
+            }
+        }
     }
 
     private final class LanguagePick: NSObject {

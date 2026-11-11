@@ -441,3 +441,22 @@ fn offsets_are_utf16_and_inline_math_counts_as_one_unit() {
     let loc = locator_at(&d, "h", &d.blocks[0].id, 9).unwrap();
     assert!(loc.quote.exact.starts_with(" then 中文"));
 }
+
+#[test]
+fn a_translation_keeps_its_formulas_as_math_runs() {
+    let runs = translated_runs(
+        "若 $f(x')$ 在区间 $[a,b]$ 上连续，则 $$E[X] = \\mu$$ 成立；花费 $5 或 $10。",
+    );
+    let maths: Vec<&str> = runs
+        .iter()
+        .filter(|r| r.math)
+        .map(|r| r.text.as_str())
+        .collect();
+    assert_eq!(maths, vec!["f(x')", "[a,b]", "E[X] = \\mu"]);
+    let text: String = runs
+        .iter()
+        .filter(|r| !r.math)
+        .map(|r| r.text.as_str())
+        .collect();
+    assert!(text.contains("花费 $5 或 $10。"), "{text}");
+}

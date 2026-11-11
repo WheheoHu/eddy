@@ -11,7 +11,7 @@ pub use convert::{ConvertOptions, html_to_document};
 pub use guess::guess_language;
 pub use highlight::{highlight, highlight_languages, knows_language};
 pub use locate::{locator_at, progression_at, remap_locator};
-pub use math::{normalize_tex, tex_from_data_mw};
+pub use math::{normalize_tex, tex_from_data_mw, translated_runs};
 
 use eddy_model::{BlockKind, Document, runs_plain_text};
 

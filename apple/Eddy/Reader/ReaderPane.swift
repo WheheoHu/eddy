@@ -208,7 +208,10 @@ struct ReaderPane: View {
                     // Formulas are images drawn now, in the content's colors.
                     var built: BuiltArticle!
                     scheme.drawingAppearance.performAsCurrentDrawingAppearance {
-                        built = ArticleBuilder.build(doc: document, item: item, translations: translations, mode: mode, style: style)
+                        built = ArticleBuilder.build(
+                            doc: document, item: item, translations: translations, mode: mode, style: style,
+                            translatedRuns: { text in model.engine?.translatedRuns(text: text) ?? [RunView(text: text, style: 0, link: nil, math: false)] }
+                        )
                     }
                     return built
                 }

@@ -127,9 +127,10 @@ enum ArticleBuilder {
         item: ItemView?,
         translations: [String: String],
         mode: ReadingMode,
-        style: ReaderStyle
+        style: ReaderStyle,
+        translatedRuns: @escaping (String) -> [RunView] = { [RunView(text: $0, style: 0, link: nil, math: false)] }
     ) -> BuiltArticle {
-        var b = Builder(style: style, translations: mode == .original ? [:] : translations, mode: mode)
+        var b = Builder(style: style, translations: mode == .original ? [:] : translations, mode: mode, translatedRuns: translatedRuns)
         if let item { b.header(item, translatedTitle: mode == .original ? nil : translations["title"]) }
         for block in doc.blocks { b.block(block) }
         return BuiltArticle(text: b.out, blocks: b.ranges, translations: b.translationRanges, images: b.images)
@@ -140,15 +141,18 @@ private struct Builder {
     let style: ReaderStyle
     let translations: [String: String]
     let mode: ReadingMode
+    /// A translation as runs: its formulas render like the original's.
+    let translatedRuns: (String) -> [RunView]
     let out = NSMutableAttributedString()
     var ranges: [(id: String, range: NSRange)] = []
     var translationRanges: [(id: String, range: NSRange)] = []
     var images: [ImageAttachment] = []
 
-    init(style: ReaderStyle, translations: [String: String], mode: ReadingMode) {
+    init(style: ReaderStyle, translations: [String: String], mode: ReadingMode, translatedRuns: @escaping (String) -> [RunView]) {
         self.style = style
         self.translations = translations
         self.mode = mode
+        self.translatedRuns = translatedRuns
     }
 
     // MARK: Paragraph styles
@@ -281,7 +285,7 @@ private struct Builder {
         let translated = translations[id]
         let start = out.length
         if mode == .translation, let translated {
-            out.append(NSAttributedString(string: translated, attributes: base(font, p)))
+            out.append(inline(translatedRuns(translated), font: font, color: .labelColor, p: p))
         } else {
             out.append(inline(runs, font: font, color: .labelColor, p: p))
         }
@@ -296,8 +300,10 @@ private struct Builder {
 
     mutating func translation(for id: String, font: NSFont, p: NSParagraphStyle) {
         guard mode == .bilingual, let text = translations[id] else { return }
-        translationRanges.append((id, NSRange(location: out.length, length: text.utf16.count)))
-        out.append(NSAttributedString(string: text + "\n", attributes: base(font, p, color: .secondaryLabelColor)))
+        let start = out.length
+        out.append(inline(translatedRuns(text), font: font, color: .secondaryLabelColor, p: p))
+        translationRanges.append((id, NSRange(location: start, length: out.length - start)))
+        out.append(NSAttributedString(string: "\n", attributes: base(font, p, color: .secondaryLabelColor)))
     }
 
     mutating func codeBlock(_ id: String, language: String?, text: String, highlights: [HighlightView], indent: CGFloat) {
@@ -306,10 +312,12 @@ private struct Builder {
         p.paragraphSpacing = style.fontSize * 1.1
         // Room above the code for the language label.
         p.paragraphSpacingBefore = CodeBlockMark.stripHeight
-        p.headIndent = indent + 14
-        p.firstLineHeadIndent = indent + 14
-        p.tailIndent = -14
-        let mark = CodeBlockMark(blockID: id, language: language)
+        p.headIndent = indent + CodeBlockMark.inset
+        p.firstLineHeadIndent = indent + CodeBlockMark.inset
+        p.tailIndent = -CodeBlockMark.inset
+        // Lines keep their length; the block scrolls sideways instead.
+        p.lineBreakMode = .byClipping
+        let mark = CodeBlockMark(blockID: id, language: language, indent: indent)
         // One paragraph for the whole block, so its background draws as one.
         let joined = text.replacingOccurrences(of: "\n", with: "\u{2028}")
         let s = NSMutableAttributedString(string: joined, attributes: [

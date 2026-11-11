@@ -289,6 +289,15 @@ impl EddyEngine {
             .collect()
     }
 
+    /// A translation as runs: the formulas it kept between dollars become
+    /// math runs, to render like the original's.
+    pub fn translated_runs(&self, text: String) -> Vec<RunView> {
+        eddy_core::translated_runs(&text)
+            .into_iter()
+            .map(RunView::from)
+            .collect()
+    }
+
     pub async fn set_read(&self, item_id: String, read: bool) -> R<()> {
         Ok(self.engine.set_read(&item_id, read).await?)
     }

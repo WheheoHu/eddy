@@ -29,7 +29,7 @@ pub use content::LoadedDocument;
 pub use eddy_ai::{
     AiSettings, AutoAction, AutoRule, MAX_CONCURRENCY, ProviderSettings, RuleScope, Summary,
 };
-pub use eddy_doc::{Segment, highlight_languages};
+pub use eddy_doc::{Segment, highlight_languages, translated_runs};
 pub use eddy_extract::{ChapterLink, SeriesProposal};
 pub use eddy_fetch::WebRenderer;
 pub use eddy_media::{MediaItem, MediaSet, MediaStatus, MediaType, is_media_url};
