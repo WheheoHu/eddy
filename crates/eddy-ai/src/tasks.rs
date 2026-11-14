@@ -1,11 +1,16 @@
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 use eddy_doc::Segment;
 use futures::future::BoxFuture;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use crate::AiError;
 use crate::provider::{ChatMessage, Provider};
+
+static THINK_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?is)<think>.*?</think>").unwrap());
 
 /// Bumped when a prompt change would alter the translations themselves, so
 /// cached results are not reused. The reply protocol is not part of it.
@@ -39,14 +44,15 @@ pub fn batches(segments: &[Segment]) -> Vec<Vec<Segment>> {
     out
 }
 
-/// Models sometimes wrap JSON in Markdown fences.
-fn strip_fences(text: &str) -> &str {
-    let t = text.trim();
+/// Strips optional `<think>...</think>` reasoning wrappers and Markdown fences.
+fn strip_fences(text: &str) -> String {
+    let without_think = THINK_RE.replace_all(text, "");
+    let t = without_think.trim();
     let t = t
         .strip_prefix("```json")
         .or_else(|| t.strip_prefix("```"))
         .unwrap_or(t);
-    t.strip_suffix("```").unwrap_or(t).trim()
+    t.strip_suffix("```").unwrap_or(t).trim().to_string()
 }
 
 /// Segments go to the model one after another, each under a marker line
@@ -91,7 +97,8 @@ pub fn validate_translations(
     text: &str,
     segments: &[Segment],
 ) -> Result<HashMap<String, String>, AiError> {
-    let text = strip_fences(text);
+    let cleaned = strip_fences(text);
+    let text = cleaned.as_str();
     let found = markers(text);
     if found.is_empty() {
         return Err(AiError::Format("模型未按段落标记返回译文，请重试或更换模型。".into()));
@@ -199,7 +206,7 @@ pub async fn summarize(
     let text = provider
         .complete(&[ChatMessage::system(system), ChatMessage::user(user)])
         .await?;
-    let summary: Summary = serde_json::from_str(strip_fences(&text))
+    let summary: Summary = serde_json::from_str(&strip_fences(&text))
         .map_err(|_| AiError::Format("模型未返回有效的摘要 JSON，请重试或更换模型。".into()))?;
     if summary.tldr.trim().is_empty() {
         return Err(AiError::Format("模型返回的摘要为空，请重试。".into()));
@@ -244,7 +251,7 @@ pub async fn tag(
     let text = provider
         .complete(&[ChatMessage::system(system), ChatMessage::user(user)])
         .await?;
-    let raw: TagResult = serde_json::from_str(strip_fences(&text))
+    let raw: TagResult = serde_json::from_str(&strip_fences(&text))
         .map_err(|_| AiError::Format("模型未返回有效的标签 JSON，请重试。".into()))?;
     let lower: HashMap<String, &String> =
         vocabulary.iter().map(|v| (v.to_lowercase(), v)).collect();

@@ -230,6 +230,10 @@ struct EntryContents: View {
                         if chapter.hasBeenRead {
                             Button("Mark as Unread") { model.markUnread([chapter.id]) }
                         }
+                        Menu("Export") {
+                            Button("Export as PDF…") { model.beginExport(targetID: chapter.id, format: .pdf, fromReader: true) }
+                            Button("Export as EPUB…") { model.beginExport(targetID: chapter.id, format: .epub, fromReader: true) }
+                        }
                         if nested, !filtering {
                             Divider()
                             Button("Expand All") { expanded = Set(rows.filter(\.hasChildren).map(\.chapter.id)) }

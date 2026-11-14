@@ -184,7 +184,7 @@ struct VideoConvertSheet: View {
         pipeline = vs?.pipeline ?? .auto
         transcriptPolicy = vs?.transcriptPolicy ?? .preferAnySubtitles
         let lang = vs?.targetLanguage.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        targetLanguage = lang.isEmpty ? (ai?.targetLanguage ?? "English") : lang
+        targetLanguage = lang.isEmpty ? (ai?.summaryLanguage ?? "English") : lang
 
         if !request.source.isEmpty {
             source = request.source

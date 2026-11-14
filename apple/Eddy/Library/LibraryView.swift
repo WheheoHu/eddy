@@ -347,6 +347,12 @@ struct LibraryView: View {
             if entry.hasBeenRead {
                 Button("Mark as Unread") { model.markUnread(entry: entry) }
             }
+            if entry.kind != .media {
+                Menu("Export") {
+                    Button("Export as PDF…") { model.beginExport(targetID: entry.id, format: .pdf, fromReader: false) }
+                    Button("Export as EPUB…") { model.beginExport(targetID: entry.id, format: .epub, fromReader: false) }
+                }
+            }
             if entry.kind == .webPage {
                 Button("Convert to Web Series…") { Task { await model.convertToSeries(entry) } }
             }

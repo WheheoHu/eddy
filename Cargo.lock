@@ -1133,6 +1133,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "url",
+ "uuid",
  "whatlang",
  "wiremock",
  "zip",

@@ -334,11 +334,11 @@ struct ReaderPane: View {
         withAnimation(.easeInOut(duration: 0.25)) { _ = links.removeLast() }
     }
 
-    /// Translates the page on top as `mode` asks, once AI is set up.
+    /// Translates the page on top as `mode` asks, once Translation is set up.
     private func setLinkMode(_ mode: ReadingMode) {
         guard let top = links.indices.last else { return }
-        if mode != .original, !model.aiConfigured {
-            model.message = "Add an AI provider in Settings to translate."
+        if mode != .original, !model.translationConfigured {
+            model.message = "Add a provider in Settings → Translation to translate."
             return
         }
         if mode != .original { lastTranslationMode = mode }
@@ -506,6 +506,19 @@ struct ReaderPane: View {
                 Button { model.setStarred(item, !item.starred) } label: {
                     Label(item.starred ? "Unstar" : "Star", systemImage: item.starred ? "star.fill" : "star")
                 }
+                if !showingMedia, model.canExport(item.id, fromReader: true) {
+                    Menu {
+                        Button("Export as PDF…") {
+                            model.beginExport(targetID: item.id, format: .pdf, fromReader: true, preferredMode: mode)
+                        }
+                        Button("Export as EPUB…") {
+                            model.beginExport(targetID: item.id, format: .epub, fromReader: true, preferredMode: mode)
+                        }
+                    } label: {
+                        Label("Export", systemImage: "arrow.down.doc")
+                    }
+                    .help("Export as PDF or EPUB")
+                }
                 if let url = item.url.flatMap(URL.init(string:)) {
                     ShareLink(item: url)
                     Link(destination: url) { Label("Open in Browser", systemImage: "arrow.up.forward.square") }
@@ -640,7 +653,7 @@ struct ReaderPane: View {
             case .summary: toggleLinkSummary(true)
             case let .readingMode(new): setLinkMode(new)
             case .toggleTranslation: setLinkMode(page.mode == .original ? lastTranslationMode : .original)
-            case .toggleWeb, .toggleFullText, .step: break
+            case .toggleWeb, .toggleFullText, .step, .export: break
             }
             return
         }
@@ -662,6 +675,9 @@ struct ReaderPane: View {
             setFullText(!showingFullText)
         case let .step(direction):
             neighbors?.go(direction, .vertical)
+        case let .export(format):
+            guard !showingMedia else { return }
+            model.beginExport(targetID: itemID, format: format, fromReader: true, preferredMode: mode)
         }
     }
 
@@ -739,8 +755,8 @@ struct ReaderPane: View {
     /// Translates what isn't yet; batches done before are reused. A run
     /// still finishing its last batch after a cancel goes first.
     private func startTranslation() {
-        guard model.aiConfigured else {
-            model.message = "Add an AI provider in Settings to translate."
+        guard model.translationConfigured else {
+            model.message = "Add a provider in Settings → Translation to translate."
             mode = .original
             return
         }
@@ -791,10 +807,10 @@ struct ReaderPane: View {
         }
     }
 
-    /// Translates the web page as `mode` asks, once AI is set up.
+    /// Translates the web page as `mode` asks, once Translation is set up.
     private func showWebTranslation(_ mode: ReadingMode) {
-        if mode != .original, !model.aiConfigured {
-            model.message = "Add an AI provider in Settings to translate."
+        if mode != .original, !model.translationConfigured {
+            model.message = "Add a provider in Settings → Translation to translate."
             self.mode = .original
             return
         }
@@ -906,7 +922,7 @@ struct SummaryPanel: View {
         .task(id: id) {
             summary = cached()
             errorText = nil
-            if summary == nil, !waiting, model.aiConfigured { await load() }
+            if summary == nil, !waiting, model.summaryConfigured { await load() }
         }
     }
 
@@ -921,7 +937,7 @@ struct SummaryPanel: View {
                         Text(point)
                     }
                 }
-            } else if loading || (waiting && model.aiConfigured) {
+            } else if loading || (waiting && model.summaryConfigured) {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
                     Text(loading ? "Summarizing…" : "Waiting for the page to load…").foregroundStyle(.secondary)
@@ -931,8 +947,8 @@ struct SummaryPanel: View {
                     Text(errorText).foregroundStyle(.secondary)
                     Button("Try Again") { Task { await load() } }
                 }
-            } else if !model.aiConfigured {
-                Text("Add an AI provider in Settings to summarize articles.").foregroundStyle(.secondary)
+            } else if !model.summaryConfigured {
+                Text("Add a provider in Settings → Summaries to summarize articles.").foregroundStyle(.secondary)
             } else {
                 Button("Summarize") { Task { await load() } }
             }

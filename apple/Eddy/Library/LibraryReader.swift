@@ -221,6 +221,12 @@ private struct FeedContents: View {
                             } else {
                                 Button("Mark as Read") { model.setRead(item, true) }
                             }
+                            if model.canExport(item.id, fromReader: false) {
+                                Menu("Export") {
+                                    Button("Export as PDF…") { model.beginExport(targetID: item.id, format: .pdf, fromReader: false) }
+                                    Button("Export as EPUB…") { model.beginExport(targetID: item.id, format: .epub, fromReader: false) }
+                                }
+                            }
                         }
                     }
                 }

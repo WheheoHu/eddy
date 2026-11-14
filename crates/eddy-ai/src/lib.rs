@@ -1,6 +1,6 @@
 //! AI features built on the reader: paragraph translation, summaries and
-//! tagging with the user's vocabulary. Providers are pluggable; the first is
-//! any OpenAI-compatible Chat Completions endpoint.
+//! tagging with the user's vocabulary. Providers support OpenAI-compatible
+//! Chat Completions (`/v1`) and Gemini native (`/v1beta`) endpoints.
 
 mod provider;
 mod redact;
@@ -8,7 +8,9 @@ mod settings;
 mod tasks;
 
 pub use provider::{
-    ChatMessage, OpenAiCompatible, Provider, completion_text, normalize_base, parse_completion,
+    AiProtocol, ChatMessage, ChatProvider, OpenAiCompatible, Provider, ResolvedAiProtocol,
+    completion_text, normalize_base, normalize_gemini_base, normalize_provider_url,
+    parse_completion, parse_gemini_completion, resolve_protocol,
 };
 pub use redact::{model_failure, safe_detail};
 pub use settings::{

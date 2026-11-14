@@ -4,18 +4,51 @@ import UniformTypeIdentifiers
 import WebKit
 
 /// The settings pages; the command palette opens one by name.
-enum SettingsTab: String, CaseIterable, Identifiable {
-    case accounts = "Accounts", reading = "Reading", saving = "Saving", storage = "Storage", ai = "AI", video = "Video"
+enum SettingsTab: CaseIterable, Identifiable, RawRepresentable {
+    case accounts
+    case reading
+    case saving
+    case storage
+    case translation
+    case summaries
+    case video
+
+    init?(rawValue: String) {
+        switch rawValue {
+        case "Accounts": self = .accounts
+        case "Reading": self = .reading
+        case "Saving": self = .saving
+        case "Storage": self = .storage
+        case "Translation", "AI": self = .translation
+        case "Summaries": self = .summaries
+        case "Video": self = .video
+        default: return nil
+        }
+    }
+
+    var rawValue: String {
+        switch self {
+        case .accounts: "Accounts"
+        case .reading: "Reading"
+        case .saving: "Saving"
+        case .storage: "Storage"
+        case .translation: "Translation"
+        case .summaries: "Summaries"
+        case .video: "Video"
+        }
+    }
+
     var id: String { rawValue }
 
     var icon: String {
         switch self {
         case .accounts: "person.crop.circle"
-        case .ai: "sparkles"
-        case .video: "film.stack"
         case .reading: "textformat"
         case .saving: "square.and.arrow.down"
         case .storage: "internaldrive"
+        case .translation: "translate"
+        case .summaries: "sparkles"
+        case .video: "film.stack"
         }
     }
 
@@ -26,7 +59,8 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .reading: .orange
         case .saving: .green
         case .storage: .gray
-        case .ai: .purple
+        case .translation: .cyan
+        case .summaries: .purple
         case .video: .indigo
         }
     }
@@ -34,7 +68,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     var group: SettingsGroup {
         switch self {
         case .accounts, .reading, .saving, .storage: .general
-        case .ai, .video: .intelligence
+        case .translation, .summaries, .video: .intelligence
         }
     }
 }
@@ -86,7 +120,8 @@ struct SettingsView: View {
     @ViewBuilder private var detail: some View {
         switch tab {
         case .accounts: AccountsSettings()
-        case .ai: AISettings()
+        case .translation: TranslationSettingsPage()
+        case .summaries: SummariesSettingsPage()
         case .video: VideoSettingsPage()
         case .reading: ReadingSettings()
         case .saving: SavingSettings()
@@ -361,259 +396,6 @@ private struct SignInWebView: NSViewRepresentable {
     }
 
     func updateNSView(_ view: WKWebView, context: Context) {}
-}
-
-// MARK: - AI
-
-/// Every change saves on its own: toggles, steppers and rules at once, text
-/// fields when submitted or left. The API key goes to the keychain the same
-/// way and the field clears.
-private struct AISettings: View {
-    @Environment(AppModel.self) private var model
-    @State private var baseURL = ""
-    @State private var modelID = ""
-    @State private var key = ""
-    @State private var target = "English"
-    @State private var glossary = ""
-    @State private var syncTranslations = true
-    @State private var syncSummaries = true
-    @State private var dailyLimit = 100
-    @State private var rules: [AutoRuleView] = []
-    @State private var concurrency = 1
-    @State private var testing = false
-    @State private var testNote = ""
-    @State private var note = ""
-    @State private var noteFade: Task<Void, Never>?
-    @State private var loaded = false
-    @FocusState private var focus: Field?
-
-    private enum Field: Hashable { case baseURL, model, key, target, glossary }
-
-    var body: some View {
-        Form {
-            Section {
-                TextField("API base URL", text: $baseURL, prompt: Text("https://api.openai.com/v1"))
-                    .focused($focus, equals: .baseURL)
-                TextField("Model", text: $modelID, prompt: Text("gpt-4.1-mini"))
-                    .focused($focus, equals: .model)
-                SecureField(model.engine?.hasAiKey() == true ? "API key (saved in keychain)" : "API key", text: $key)
-                    .focused($focus, equals: .key)
-                    .onSubmit(saveKey)
-                Stepper("Concurrent requests: \(concurrency)", value: $concurrency, in: 1...Int(model.engine?.maxAiConcurrency() ?? 8))
-                    .onChange(of: concurrency) { _, _ in save() }
-                HStack {
-                    Button("Test") { Task { await test() } }
-                        .disabled(baseURL.isEmpty || modelID.isEmpty || testing)
-                        .help("Send this many translation requests at once to check the model handles them")
-                    if testing { ProgressView().controlSize(.small) }
-                    Text(testNote).foregroundStyle(.secondary).textSelection(.enabled)
-                }
-            } header: {
-                Text("Provider")
-            } footer: {
-                Text("Any OpenAI-compatible Chat Completions endpoint. The key stays in this Mac’s keychain and is never synced. Concurrent requests apply to all AI work together; raise it only if the service allows it.").foregroundStyle(.secondary)
-            }
-
-            Section {
-                TextField("Translate into", text: $target)
-                    .focused($focus, equals: .target)
-                TextField("Glossary (term = translation, one per line)", text: $glossary, axis: .vertical)
-                    .lineLimit(2...4)
-                    .focused($focus, equals: .glossary)
-                Toggle("Sync translations across devices", isOn: $syncTranslations)
-                    .onChange(of: syncTranslations) { _, _ in save() }
-                rulesList(for: .translate)
-            } header: {
-                Text("Translation")
-            } footer: {
-                Text("Paragraphs already in the target language are left as they are. Rules translate new articles as they arrive; “Foreign only” skips articles already in the target language.").foregroundStyle(.secondary)
-            }
-
-            Section {
-                Toggle("Sync summaries across devices", isOn: $syncSummaries)
-                    .onChange(of: syncSummaries) { _, _ in save() }
-                rulesList(for: .summarize)
-            } header: {
-                Text("Summaries")
-            } footer: {
-                Text("Rules summarize new articles as they arrive.").foregroundStyle(.secondary)
-            }
-
-            Section {
-                rulesList(for: .tag)
-            } header: {
-                Text("Tagging")
-            } footer: {
-                Text("Rules tag new articles from your own tags; articles you have tagged already are left alone.").foregroundStyle(.secondary)
-            }
-
-            Section {
-                Stepper("Automatic requests per day: \(dailyLimit)", value: $dailyLimit, in: 0...2000, step: 25)
-                    .onChange(of: dailyLimit) { _, _ in save() }
-            } header: {
-                Text("Automatic Work")
-            } footer: {
-                Text("Caps what the rules above spend in a day; what you ask for yourself is never held back.").foregroundStyle(.secondary)
-            }
-
-            if !note.isEmpty {
-                Text(note).foregroundStyle(.secondary).font(.callout)
-            }
-        }
-        .formStyle(.grouped)
-        .onSubmit { save() }
-        .onChange(of: focus) { old, _ in
-            // Leaving a field commits it.
-            switch old {
-            case .key: saveKey()
-            case .some: save()
-            case nil: break
-            }
-        }
-        .onAppear(perform: load)
-    }
-
-    // MARK: Rules
-
-    @ViewBuilder private func rulesList(for action: AutoActionView) -> some View {
-        ForEach(rules.indices.filter { rules[$0].action == action }, id: \.self) { i in
-            RuleRow(
-                rule: Binding(get: { rules[i] }, set: { rules[i] = $0; save() }),
-                feeds: model.feeds, folders: model.folders
-            ) {
-                rules.remove(at: i)
-                save()
-            }
-        }
-        Button(action == .translate ? "Add Translation Rule" : action == .summarize ? "Add Summary Rule" : "Add Tagging Rule") {
-            rules.append(AutoRuleView(scope: .all, action: action, minChars: 2000, onlyForeign: false))
-            save()
-        }
-    }
-
-    // MARK: Persistence
-
-    private func load() {
-        guard let s = try? model.engine?.aiSettings() else { return }
-        baseURL = s.provider?.baseUrl ?? ""
-        modelID = s.provider?.model ?? ""
-        concurrency = Int(s.provider?.maxConcurrency ?? 1)
-        target = s.targetLanguage
-        glossary = s.glossary
-        syncTranslations = s.syncTranslations
-        syncSummaries = s.syncSummaries
-        dailyLimit = Int(s.dailyAutoLimit)
-        rules = s.rules
-        loaded = true
-    }
-
-    private func save() {
-        guard loaded, let engine = model.engine else { return }
-        let settings = AiSettingsView(
-            provider: baseURL.isEmpty ? nil : providerView,
-            targetLanguage: target,
-            glossary: glossary,
-            syncTranslations: syncTranslations,
-            syncSummaries: syncSummaries,
-            dailyAutoLimit: UInt32(dailyLimit),
-            rules: rules
-        )
-        // Nothing changed: no write, no sync, no "Saved".
-        if let current = try? engine.aiSettings(), current == settings { return }
-        do {
-            try engine.setAiSettings(settings: settings)
-            flash("Saved")
-        } catch {
-            flash(error.localizedDescription, fade: false)
-        }
-    }
-
-    private func saveKey() {
-        guard !key.isEmpty, let engine = model.engine else { return }
-        do {
-            try engine.setAiKey(key: key)
-            key = ""
-            flash("API key saved")
-        } catch {
-            flash(error.localizedDescription, fade: false)
-        }
-    }
-
-    private func flash(_ text: String, fade: Bool = true) {
-        noteFade?.cancel()
-        note = text
-        guard fade else { return }
-        noteFade = Task {
-            try? await Task.sleep(for: .seconds(2))
-            if !Task.isCancelled { note = "" }
-        }
-    }
-
-    private var providerView: ProviderView {
-        ProviderView(baseUrl: baseURL, model: modelID, maxConcurrency: UInt32(concurrency))
-    }
-
-    /// Tries the settings as entered, before they are saved.
-    private func test() async {
-        guard let engine = model.engine else { return }
-        testing = true
-        testNote = ""
-        defer { testing = false }
-        do {
-            let r = try await engine.testAiProvider(provider: providerView, key: key.isEmpty ? nil : key, targetLanguage: target)
-            let seconds = (Double(r.elapsedMs) / 1000).formatted(.number.precision(.fractionLength(1)))
-            testNote = String(localized: "\(r.passed)/\(r.total) passed in \(seconds) s")
-            if let error = r.error { testNote += " — " + error }
-        } catch {
-            testNote = error.localizedDescription
-        }
-    }
-}
-
-/// One automatic rule: where it applies, and for translation whether it
-/// skips articles already in the target language. The action is the section
-/// the row sits in.
-private struct RuleRow: View {
-    @Binding var rule: AutoRuleView
-    let feeds: [SourceView]
-    let folders: [String]
-    let remove: () -> Void
-
-    var body: some View {
-        HStack {
-            Picker("", selection: Binding(get: { scopeTag }, set: { rule = AutoRuleView(scope: scope(from: $0), action: rule.action, minChars: rule.minChars, onlyForeign: rule.onlyForeign) })) {
-                Text("All articles").tag("all")
-                if !folders.isEmpty {
-                    Divider()
-                    ForEach(folders, id: \.self) { Text("Folder: \($0)").tag("category:\($0)") }
-                }
-                Divider()
-                ForEach(feeds) { Text($0.title).tag("source:\($0.id)") }
-                if case let .source(id) = rule.scope, !feeds.contains(where: { $0.id == id }) {
-                    Text("Removed subscription").tag(scopeTag)
-                }
-            }
-            .labelsHidden()
-            if rule.action == .translate {
-                Toggle("Foreign only", isOn: Binding(get: { rule.onlyForeign }, set: { rule = AutoRuleView(scope: rule.scope, action: rule.action, minChars: rule.minChars, onlyForeign: $0) }))
-            }
-            Button(role: .destructive, action: remove) { Image(systemName: "minus.circle") }.buttonStyle(.borderless)
-        }
-    }
-
-    private var scopeTag: String {
-        switch rule.scope {
-        case .all: "all"
-        case let .source(id): "source:\(id)"
-        case let .category(name): "category:\(name)"
-        }
-    }
-
-    private func scope(from tag: String) -> RuleScopeView {
-        if tag.hasPrefix("source:") { return .source(id: String(tag.dropFirst(7))) }
-        if tag.hasPrefix("category:") { return .category(name: String(tag.dropFirst(9))) }
-        return .all
-    }
 }
 
 // MARK: - Full-text rules

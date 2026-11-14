@@ -5,6 +5,8 @@ use regex::Regex;
 static BEARER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?i)Bearer\s+[^\s,;"<>]+"#).unwrap());
 static SK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\bsk-[a-z0-9_-]+").unwrap());
+static GOOGLE_KEY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bAIza[A-Za-z0-9_-]{20,}").unwrap());
 static TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]*>").unwrap());
 static TITLE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?is)<title\b[^>]*>(.*?)</title>").unwrap());
@@ -33,6 +35,7 @@ pub fn safe_detail(value: &str, secrets: &[&str]) -> String {
     }
     let text = BEARER.replace_all(&text, "Bearer [已隐藏]");
     let text = SK.replace_all(&text, "[已隐藏]");
+    let text = GOOGLE_KEY.replace_all(&text, "[已隐藏]");
     let text = TAG.replace_all(&text, "");
     let text: String = text
         .chars()

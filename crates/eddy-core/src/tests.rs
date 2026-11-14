@@ -1095,13 +1095,16 @@ fn configure_ai(engine: &Engine, llm: &MockServer, rules: Vec<AutoRule>) {
 }
 
 fn configure_ai_with(engine: &Engine, llm: &MockServer, rules: Vec<AutoRule>, concurrency: u32) {
+    let provider = ProviderSettings {
+        protocol: crate::AiProtocol::Auto,
+        base_url: llm.uri(),
+        model: "test-model".into(),
+        max_concurrency: concurrency,
+    };
     engine
         .set_ai_settings(AiSettings {
-            provider: Some(ProviderSettings {
-                base_url: llm.uri(),
-                model: "test-model".into(),
-                max_concurrency: concurrency,
-            }),
+            translation_provider: Some(provider.clone()),
+            summary_provider: Some(provider),
             rules,
             ..Default::default()
         })
@@ -1286,7 +1289,7 @@ async fn translation_runs_batches_concurrently_within_the_limit() {
         engine
             .ai_settings()
             .unwrap()
-            .provider
+            .translation_provider
             .unwrap()
             .max_concurrency,
         crate::MAX_CONCURRENCY
@@ -1332,6 +1335,7 @@ async fn provider_test_sends_the_configured_requests_at_once() {
     let dir = tempfile::tempdir().unwrap();
     let engine = open(dir.path());
     let provider = ProviderSettings {
+        protocol: crate::AiProtocol::Auto,
         base_url: llm.uri(),
         model: "test-model".into(),
         max_concurrency: 3,
@@ -1359,6 +1363,7 @@ async fn provider_test_sends_the_configured_requests_at_once() {
     let r = engine
         .test_ai_provider(
             ProviderSettings {
+                protocol: crate::AiProtocol::Auto,
                 base_url: limited.uri(),
                 model: "m".into(),
                 max_concurrency: 2,
@@ -1383,7 +1388,7 @@ async fn translation_summary_and_tags_with_caching() {
         engine
             .ai_settings()
             .unwrap()
-            .provider
+            .translation_provider
             .unwrap()
             .base_url
             .ends_with("/v1")
@@ -2875,3 +2880,279 @@ fn video_settings_persist_across_reopen_and_normalize_filetrans_slug() {
     assert_eq!(loaded.stage2.model, "claude-opus-5-5");
     assert!(reopened.has_video_stage_key(crate::VideoStageRole::Asr));
 }
+
+#[tokio::test]
+async fn split_translation_and_summary_providers_use_independent_keys_quotas_and_video_fallback() {
+    let pages = mock_pages().await;
+    let trans_llm = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(wiremock::matchers::header("authorization", "Bearer sk-trans-only"))
+        .respond_with(|req: &wiremock::Request| {
+            let segs = requested_segments(req);
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"choices": [{"message": {"content": echo_translation(&segs)}}]}))
+        })
+        .mount(&trans_llm)
+        .await;
+
+    let sum_llm = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1beta/models/gemini-2.5-pro:generateContent"))
+        .and(wiremock::matchers::header("x-goog-api-key", "AIzaSySummarySecretKey0000000000"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{ "text": "{\"tldr\":\"独立摘要模型\",\"points\":[\"要点A\"]}" }]
+                }
+            }]
+        })))
+        .mount(&sum_llm)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let platform = Arc::new(crate::MemoryPlatform::default());
+    // Seed legacy key before first open to verify one-time migration & deletion.
+    platform.secret_set("ai:api-key", "sk-legacy-migrated");
+    let engine = Engine::open(dir.path(), platform.clone(), EngineOptions::default()).unwrap();
+    assert!(engine.has_ai_role_key(crate::AiRole::Translation));
+    assert!(engine.has_ai_role_key(crate::AiRole::Summary));
+    assert!(platform.secret_get("ai:api-key").is_none());
+
+    // Removing translation key does not resurrect on reopen, while summary key stays.
+    engine.set_ai_role_key(crate::AiRole::Translation, None).unwrap();
+    drop(engine);
+    let engine = Engine::open(dir.path(), platform.clone(), EngineOptions::default()).unwrap();
+    assert!(!engine.has_ai_role_key(crate::AiRole::Translation));
+    assert!(engine.has_ai_role_key(crate::AiRole::Summary));
+
+    // Configure distinct OpenAI translation endpoint and Gemini summary endpoint.
+    engine
+        .set_ai_settings(AiSettings {
+            translation_provider: Some(ProviderSettings {
+                protocol: crate::AiProtocol::OpenAi,
+                base_url: trans_llm.uri(),
+                model: "trans-mini".into(),
+                max_concurrency: 2,
+            }),
+            target_language: "日本語".into(),
+            translation_daily_limit: 50,
+            summary_provider: Some(ProviderSettings {
+                protocol: crate::AiProtocol::Gemini,
+                base_url: format!("{}/v1beta", sum_llm.uri()),
+                model: "gemini-2.5-pro".into(),
+                max_concurrency: 1,
+            }),
+            summary_language: "简体中文".into(),
+            summary_daily_limit: 10,
+            ..Default::default()
+        })
+        .unwrap();
+    engine
+        .set_ai_role_key(crate::AiRole::Translation, Some("sk-trans-only"))
+        .unwrap();
+    engine
+        .set_ai_role_key(
+            crate::AiRole::Summary,
+            Some("AIzaSySummarySecretKey0000000000"),
+        )
+        .unwrap();
+
+    let row = engine
+        .save_url(&format!("{}/essay", pages.uri()))
+        .await
+        .unwrap();
+    let tr = engine.translate(&row.item.id, false, None).await.unwrap();
+    assert!(tr.complete);
+    let sum = engine.summarize(&row.item.id, false).await.unwrap();
+    assert_eq!(sum.summary.tldr, "独立摘要模型");
+
+    let trans_used = engine.ai_role_usage_today(crate::AiRole::Translation).unwrap();
+    let sum_used = engine.ai_role_usage_today(crate::AiRole::Summary).unwrap();
+    assert!(trans_used >= 3);
+    assert_eq!(sum_used, 1);
+    assert_eq!(engine.ai_usage_today().unwrap(), trans_used + sum_used);
+
+    // Video blank stage2 inherits from Summaries provider, protocol, key, and language.
+    let runtime_video = engine
+        .inner
+        .resolve_runtime_video_config(None, None, None, None)
+        .unwrap();
+    assert!(runtime_video.stage2.url.ends_with("/v1beta"));
+    assert_eq!(runtime_video.stage2.model, "gemini-2.5-pro");
+    assert_eq!(
+        runtime_video.stage2.protocol,
+        eddy_video::ProtocolKind::Gemini
+    );
+    assert_eq!(runtime_video.target_language, "简体中文");
+}
+
+#[tokio::test]
+async fn export_handles_eligibility_passthrough_bilingual_epub_and_unfetched_web_series() {
+    let pages = mock_pages().await;
+    let llm = mock_llm().await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(&dir.path().join("data"));
+    engine.set_pdf_reader(Some(Arc::new(FakePdfReader)));
+    configure_ai(&engine, &llm, vec![]);
+
+    // 1. Saved Media URL is excluded from Reader export.
+    Mock::given(method("GET"))
+        .and(path("/clip.mp4"))
+        .respond_with(ResponseTemplate::new(200).insert_header("content-type", "video/mp4"))
+        .mount(&pages)
+        .await;
+    let media_row = engine
+        .save_url(&format!("{}/clip.mp4", pages.uri()))
+        .await
+        .unwrap();
+    assert!(
+        !engine
+            .export_options(&media_row.item.id, true)
+            .unwrap()
+            .exportable
+    );
+
+    // 2. Book -> EPUB passthrough in Original mode copies exact original bytes,
+    //    while Bilingual mode builds a translated EPUB 3 that re-imports cleanly.
+    let orig_epub_bytes = sample_epub();
+    let epub_src = dir.path().join("sampling.epub");
+    std::fs::write(&epub_src, &orig_epub_bytes).unwrap();
+    let book = engine.import_file(&epub_src).await.unwrap();
+    let series_id = book.series_id.clone().unwrap();
+
+    // From Reader on a chapter, scope choice is offered; from list on series_id, it is Whole.
+    let reader_opts = engine.export_options(&book.item_id, true).unwrap();
+    assert!(reader_opts.exportable && reader_opts.can_choose_scope && reader_opts.is_book);
+    let list_opts = engine.export_options(&series_id, false).unwrap();
+    assert!(list_opts.exportable && !list_opts.can_choose_scope && list_opts.can_passthrough_epub);
+
+    let passthrough_epub = dir.path().join("passthrough.epub");
+    engine
+        .export_epub(
+            crate::ExportRequest {
+                job_id: "job-pass-epub".into(),
+                target_id: book.item_id.clone(),
+                destination_path: passthrough_epub.to_string_lossy().into_owned(),
+                scope: crate::ExportScope::Whole,
+                mode: crate::ExportContentMode::Original,
+                include_summary: false,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read(&passthrough_epub).unwrap(), orig_epub_bytes);
+
+    let bilingual_epub = dir.path().join("bilingual.epub");
+    engine
+        .export_epub(
+            crate::ExportRequest {
+                job_id: "job-bi-epub".into(),
+                target_id: book.item_id.clone(),
+                destination_path: bilingual_epub.to_string_lossy().into_owned(),
+                scope: crate::ExportScope::Whole,
+                mode: crate::ExportContentMode::Bilingual,
+                include_summary: false,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let built_bytes = std::fs::read(&bilingual_epub).unwrap();
+    assert_ne!(built_bytes, orig_epub_bytes);
+
+    // Round-trip import the exported bilingual EPUB into a fresh engine to verify valid EPUB 3.
+    let verify_engine = open(&dir.path().join("verify"));
+    let reimported = verify_engine.import_file(&bilingual_epub).await.unwrap();
+    let first_doc = verify_engine
+        .document(&reimported.item_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(first_doc.document.plain_text().contains("译："));
+
+    // 3. Pdf -> PDF passthrough in Original mode vs Prepared payload in Bilingual mode.
+    let raw_pdf_bytes = b"%PDF-1.7\n1 0 obj<<>>endobj\n%%EOF\n";
+    let pdf_src = dir.path().join("paper.pdf");
+    std::fs::write(&pdf_src, raw_pdf_bytes).unwrap();
+    let paper = engine.import_file(&pdf_src).await.unwrap();
+
+    let passthrough_pdf = dir.path().join("passthrough.pdf");
+    let pdf_outcome = engine
+        .export_or_prepare_pdf(
+            crate::ExportRequest {
+                job_id: "job-pass-pdf".into(),
+                target_id: paper.item_id.clone(),
+                destination_path: passthrough_pdf.to_string_lossy().into_owned(),
+                scope: crate::ExportScope::Whole,
+                mode: crate::ExportContentMode::Original,
+                include_summary: false,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(pdf_outcome, crate::PdfExportOutcome::CopiedOriginal));
+    assert_eq!(std::fs::read(&passthrough_pdf).unwrap(), raw_pdf_bytes);
+
+    let bi_pdf_outcome = engine
+        .export_or_prepare_pdf(
+            crate::ExportRequest {
+                job_id: "job-bi-pdf".into(),
+                target_id: paper.item_id.clone(),
+                destination_path: dir.path().join("bi.pdf").to_string_lossy().into_owned(),
+                scope: crate::ExportScope::Whole,
+                mode: crate::ExportContentMode::Bilingual,
+                include_summary: false,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    match bi_pdf_outcome {
+        crate::PdfExportOutcome::Prepared(payload) => {
+            assert_eq!(payload.chapters.len(), 1);
+            assert!(!payload.chapters[0].translations.is_empty());
+        }
+        crate::PdfExportOutcome::CopiedOriginal => panic!("expected prepared bilingual PDF"),
+    }
+
+    // 4. WebSeries with unfetched chapters automatically fetches and exports all chapters.
+    let ws_id = engine
+        .create_series(
+            "Online Guide",
+            Some(&format!("{}/toc", pages.uri())),
+            &[
+                chapter("Part One", format!("{}/1", pages.uri())),
+                chapter("Part Two", format!("{}/2", pages.uri())),
+            ],
+        )
+        .unwrap();
+    let ws_chapters_before = engine.inner.chapters(&ws_id).unwrap();
+    assert!(ws_chapters_before.iter().all(|r| r.item.current_version.is_none()));
+
+    let ws_pdf_outcome = engine
+        .export_or_prepare_pdf(
+            crate::ExportRequest {
+                job_id: "job-ws-pdf".into(),
+                target_id: ws_id.clone(),
+                destination_path: dir.path().join("guide.pdf").to_string_lossy().into_owned(),
+                scope: crate::ExportScope::Whole,
+                mode: crate::ExportContentMode::Translation,
+                include_summary: false,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    match ws_pdf_outcome {
+        crate::PdfExportOutcome::Prepared(payload) => {
+            assert_eq!(payload.chapters.len(), 2);
+            assert!(payload.chapters.iter().all(|c| !c.document.blocks.is_empty()));
+            assert!(payload.chapters.iter().all(|c| !c.translations.is_empty()));
+        }
+        crate::PdfExportOutcome::CopiedOriginal => panic!("expected prepared WebSeries PDF"),
+    }
+}
+

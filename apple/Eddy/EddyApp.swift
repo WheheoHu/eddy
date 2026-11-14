@@ -52,6 +52,12 @@ struct EddyApp: App {
                 Button("Save Page…") { model.savingURL = true }.keyboardShortcut("l", modifiers: .command)
                 Button("Convert Video to Book…") { model.requestVideoConvert() }.keyboardShortcut("L", modifiers: [.command, .shift])
                 Button("Import EPUB, PDF, or Video…") { model.importing = true }.keyboardShortcut("o", modifiers: .command)
+                Divider()
+                Button("Export as PDF…") { model.exportCurrentItem(.pdf) }
+                    .disabled(!model.canExportCurrentItem)
+                Button("Export as EPUB…") { model.exportCurrentItem(.epub) }
+                    .disabled(!model.canExportCurrentItem)
+                Divider()
                 Button("Refresh") { Task { await model.refresh() } }.keyboardShortcut("r", modifiers: .command)
             }
             CommandGroup(before: .toolbar) {
@@ -160,6 +166,9 @@ struct RootView: View {
         .sheet(isPresented: $model.savingURL) { SavePageSheet() }
         .sheet(item: $model.pendingVideoConvert) { req in
             VideoConvertSheet(request: req)
+        }
+        .sheet(item: $model.activeExport) { state in
+            ExportProgressSheet(state: state)
         }
         .sheet(item: Binding(get: { model.pendingSeries.map(SeriesProposalBox.init) }, set: { if $0 == nil { model.pendingSeries = nil } })) { box in
             SeriesProposalSheet(proposal: box.proposal)

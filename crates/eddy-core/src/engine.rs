@@ -95,8 +95,10 @@ pub(crate) struct Inner {
     pub translation_cancels: parking_lot::Mutex<std::collections::HashSet<String>>,
     /// Block being read per item; its translation batch goes first.
     pub translation_focus: parking_lot::Mutex<std::collections::HashMap<String, String>>,
-    /// Caps requests to the model service; sized by the provider settings.
-    pub ai_gate: parking_lot::Mutex<(usize, Arc<tokio::sync::Semaphore>)>,
+    /// Caps concurrent translation requests; sized by `translation_provider`.
+    pub translation_gate: parking_lot::Mutex<(usize, Arc<tokio::sync::Semaphore>)>,
+    /// Caps concurrent summary/tagging requests; sized by `summary_provider`.
+    pub summary_gate: parking_lot::Mutex<(usize, Arc<tokio::sync::Semaphore>)>,
     /// One request per AI cache key at a time; whoever waits finds it cached.
     pub ai_requests:
         parking_lot::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
@@ -115,6 +117,8 @@ pub(crate) struct Inner {
     pub video_cancels:
         parking_lot::Mutex<std::collections::HashMap<String, Arc<std::sync::atomic::AtomicBool>>>,
     pub video_listener: RwLock<Option<crate::video::VideoJobCallback>>,
+    pub export_cancels: parking_lot::Mutex<std::collections::HashSet<String>>,
+    pub export_translating: parking_lot::Mutex<std::collections::HashMap<String, String>>,
 }
 
 /// Cheap to clone; all clones share one engine.
@@ -160,7 +164,8 @@ impl Engine {
             progress_throttle: parking_lot::Mutex::new(Default::default()),
             translation_cancels: parking_lot::Mutex::new(Default::default()),
             translation_focus: parking_lot::Mutex::new(Default::default()),
-            ai_gate: parking_lot::Mutex::new((1, Arc::new(tokio::sync::Semaphore::new(1)))),
+            translation_gate: parking_lot::Mutex::new((1, Arc::new(tokio::sync::Semaphore::new(1)))),
+            summary_gate: parking_lot::Mutex::new((1, Arc::new(tokio::sync::Semaphore::new(1)))),
             ai_requests: parking_lot::Mutex::new(Default::default()),
             full_text_tried: parking_lot::Mutex::new(Default::default()),
             search: eddy_search::SearchIndex::open(&data_dir.join("index")).ok(),
@@ -172,8 +177,11 @@ impl Engine {
             pdf_warming: parking_lot::Mutex::new(Default::default()),
             video_cancels: parking_lot::Mutex::new(Default::default()),
             video_listener: RwLock::new(None),
+            export_cancels: parking_lot::Mutex::new(Default::default()),
+            export_translating: parking_lot::Mutex::new(Default::default()),
         });
         let _ = inner.store.recover_interrupted_video_jobs(now_ms());
+        let _ = inner.migrate_ai_keys();
         inner.rebuild_fetcher()?;
         inner.store.upsert_source(&Source {
             id: ids::saved_source_id(),

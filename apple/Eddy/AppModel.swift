@@ -29,6 +29,8 @@ struct Notice: Equatable {
         case error
         /// A page was saved; "Show" brings it into view.
         case saved(itemID: String)
+        /// A file was exported; "Show in Finder" reveals it.
+        case exported(path: String)
     }
 
     let text: String
@@ -63,6 +65,7 @@ struct ReaderCommand: Equatable {
         /// Between the full text and the feed's content.
         case toggleFullText
         case step(Direction)
+        case export(ExportFormatView)
     }
 
     let itemID: String
@@ -167,6 +170,7 @@ final class AppModel {
     var importing = false
     var mediaRequest: MediaRequest?
     var pendingVideoConvert: VideoConvertRequest?
+    var activeExport: ActiveExportState?
     var videoJobs: [VideoJobView] = []
     var serverVideoCapable = false
     var showingVideoJobs = false
@@ -762,9 +766,14 @@ final class AppModel {
 
     // MARK: AI
 
-    var aiConfigured: Bool {
-        guard let engine, engine.hasAiKey() else { return false }
-        return (try? engine.aiSettings().provider) != nil
+    var translationConfigured: Bool {
+        guard let engine, engine.hasAiRoleKey(role: .translation) else { return false }
+        return (try? engine.aiSettings().translationProvider) != nil
+    }
+
+    var summaryConfigured: Bool {
+        guard let engine, engine.hasAiRoleKey(role: .summary) else { return false }
+        return (try? engine.aiSettings().summaryProvider) != nil
     }
 
     /// Returns what is translated, and whether that is all of it: a

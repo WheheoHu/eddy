@@ -212,6 +212,10 @@ struct CommandPalette: View {
                 if item.hasBeenRead { model.markUnread([item.id]) } else { model.setRead(item, true) }
             },
         ]
+        if model.canExport(id, fromReader: true) {
+            items.append(PaletteItem(id: "exportPDF", group: .reader, title: String(localized: "Export as PDF…"), icon: "doc.richtext") { command(.export(.pdf)) })
+            items.append(PaletteItem(id: "exportEPUB", group: .reader, title: String(localized: "Export as EPUB…"), icon: "book.closed") { command(.export(.epub)) })
+        }
         if item.seriesId != nil || item.kind == .feed {
             let chapter = item.seriesId != nil
             items.append(PaletteItem(id: "previous", group: .reader, title: chapter ? String(localized: "Previous Chapter") : String(localized: "Previous Article"), icon: "chevron.up") { command(.step(.previous)) })

@@ -157,7 +157,7 @@ struct VideoSettingsPage: View {
             }
             .onChange(of: transcriptPolicy) { _, _ in save() }
 
-            TextField("Book language (blank uses AI setting)", text: $targetLanguage, prompt: Text("English / 简体中文"))
+            TextField("Book language (blank uses Summaries language)", text: $targetLanguage, prompt: Text("English / 简体中文"))
                 .focused($focus, equals: .targetLanguage)
 
             Stepper("Concurrent chapters: \(chapterConcurrency)", value: $chapterConcurrency, in: 1...6)
@@ -174,7 +174,7 @@ struct VideoSettingsPage: View {
                 .focused($focus, equals: .s1URL)
             TextField("Model", text: $stage1Model, prompt: Text("gemini-3.8-flash"))
                 .focused($focus, equals: .s1Model)
-            SecureField(hasKey(.stage1) ? "API key (saved in keychain)" : "API key (blank inherits Stage 2 / AI key)", text: $stage1Key)
+            SecureField(hasKey(.stage1) ? "API key (saved in keychain)" : "API key (blank inherits Stage 2 / Summaries key)", text: $stage1Key)
                 .focused($focus, equals: .s1Key)
                 .onSubmit { saveKey(.stage1, &stage1Key) }
             testRow(testing: testingStage1, note: stage1Note, disabled: stage1Model.isEmpty && stage1URL.isEmpty) {
@@ -191,11 +191,11 @@ struct VideoSettingsPage: View {
     private var vlmSection: some View {
         Section {
             protocolPicker($vlmProtocol)
-            TextField("API URL (blank inherits Stage 2 / AI URL)", text: $vlmURL, prompt: Text("https://api.openai.com/v1"))
+            TextField("API URL (blank inherits Stage 2 / Summaries URL)", text: $vlmURL, prompt: Text("https://api.openai.com/v1"))
                 .focused($focus, equals: .vlmURL)
             TextField("Model (blank inherits Stage 2 model)", text: $vlmModel, prompt: Text("qwen3-vl-plus / claude-opus-5-5"))
                 .focused($focus, equals: .vlmModel)
-            SecureField(hasKey(.vlm) ? "API key (saved in keychain)" : "API key (blank inherits Stage 2 / AI key)", text: $vlmKey)
+            SecureField(hasKey(.vlm) ? "API key (saved in keychain)" : "API key (blank inherits Stage 2 / Summaries key)", text: $vlmKey)
                 .focused($focus, equals: .vlmKey)
                 .onSubmit { saveKey(.vlm, &vlmKey) }
             testRow(testing: testingVlm, note: vlmNote, disabled: false) {
@@ -212,11 +212,11 @@ struct VideoSettingsPage: View {
     private var stage2Section: some View {
         Section {
             protocolPicker($stage2Protocol)
-            TextField("API URL (blank inherits AI URL)", text: $stage2URL, prompt: Text("https://api.openai.com/v1"))
+            TextField("API URL (blank inherits Summaries URL)", text: $stage2URL, prompt: Text("https://api.openai.com/v1"))
                 .focused($focus, equals: .s2URL)
-            TextField("Model (blank inherits AI model)", text: $stage2Model, prompt: Text("claude-opus-5-5"))
+            TextField("Model (blank inherits Summaries model)", text: $stage2Model, prompt: Text("claude-opus-5-5"))
                 .focused($focus, equals: .s2Model)
-            SecureField(hasKey(.stage2) ? "API key (saved in keychain)" : "API key (blank inherits AI key)", text: $stage2Key)
+            SecureField(hasKey(.stage2) ? "API key (saved in keychain)" : "API key (blank inherits Summaries key)", text: $stage2Key)
                 .focused($focus, equals: .s2Key)
                 .onSubmit { saveKey(.stage2, &stage2Key) }
             testRow(testing: testingStage2, note: stage2Note, disabled: false) {
@@ -237,7 +237,7 @@ struct VideoSettingsPage: View {
                 .focused($focus, equals: .asrURL)
             TextField("Model", text: $asrModel, prompt: Text("qwen3-asr-flash"))
                 .focused($focus, equals: .asrModel)
-            SecureField(hasKey(.asr) ? "API key (saved in keychain)" : "API key (blank inherits AI key)", text: $asrKey)
+            SecureField(hasKey(.asr) ? "API key (saved in keychain)" : "API key (blank inherits Summaries key)", text: $asrKey)
                 .focused($focus, equals: .asrKey)
                 .onSubmit { saveKey(.asr, &asrKey) }
             testRow(testing: testingAsr, note: asrNote, disabled: asrModel.isEmpty) {
@@ -399,7 +399,7 @@ struct VideoSettingsPage: View {
         } else if role == .vlm, !s2URL.isEmpty {
             s2URL
         } else {
-            ai?.provider?.baseUrl ?? ""
+            ai?.summaryProvider?.baseUrl ?? ""
         }
 
         let effectiveModel: String = if !trimmedModel.isEmpty {
@@ -407,7 +407,7 @@ struct VideoSettingsPage: View {
         } else if role == .vlm, !s2Model.isEmpty {
             s2Model
         } else {
-            ai?.provider?.model ?? ""
+            ai?.summaryProvider?.model ?? ""
         }
 
         let pendingKey = key.trimmingCharacters(in: .whitespacesAndNewlines)

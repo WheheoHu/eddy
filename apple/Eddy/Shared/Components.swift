@@ -170,6 +170,12 @@ struct MessageBanner: View {
                         model.reveal(itemID: itemID)
                     }
                     .help("Show it in Saved")
+                case let .exported(path):
+                    Button("Show in Finder") {
+                        model.notice = nil
+                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+                    }
+                    .help("Reveal the exported file in Finder")
                 }
             }
             .buttonStyle(.borderless)
