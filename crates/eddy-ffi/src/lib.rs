@@ -4,6 +4,7 @@ mod ai;
 mod media;
 mod progress;
 mod sync;
+mod video;
 mod views;
 
 use std::path::PathBuf;
@@ -15,6 +16,7 @@ pub use ai::*;
 pub use media::*;
 pub use progress::*;
 pub use sync::*;
+pub use video::*;
 pub use views::*;
 
 uniffi::setup_scaffolding!();

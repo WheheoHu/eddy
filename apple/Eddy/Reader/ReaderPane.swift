@@ -382,6 +382,9 @@ struct ReaderPane: View {
             }
             if let item, rendererID == RendererRegistry.article.id, item.url.map(isMediaUrl(url:)) == true {
                 Banner(icon: "play.rectangle", text: "This post is a video or pictures.") {
+                    if let rawURL = item.url, isVideoUrl(url: rawURL) {
+                        Button("Convert to Book…") { model.requestVideoConvert(source: rawURL, title: item.title) }
+                    }
                     Button("Play") { model.play(item) }
                         .keyboardShortcut(.return, modifiers: .command)
                         .help("Show it in the media viewer (⌘Return)")
@@ -473,6 +476,14 @@ struct ReaderPane: View {
                     .help(muted ? "Unmute (M)" : "Mute (M)")
                     Button { model.play(item) } label: { Label("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") }
                         .help("Show it over the whole window")
+                    if let rawURL = item.url, isVideoUrl(url: rawURL) {
+                        Button {
+                            model.requestVideoConvert(source: rawURL, title: item.title)
+                        } label: {
+                            Label("Convert to Book…", systemImage: "book.pages")
+                        }
+                        .help("Convert this presentation video into an illustrated multi-chapter book")
+                    }
                 } else {
                     Picker("Language", selection: $mode) {
                         ForEach(ReadingMode.allCases) { Text($0.rawValue).tag($0) }

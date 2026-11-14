@@ -36,6 +36,7 @@ docker compose exec eddy-server eddy-server remove-device <设备 ID>
 
 - 数据在命名卷 `eddy-data`（容器内 `/data`）：SQLite 数据库、内容 blob、搜索索引、加密后的 FreshRSS 密码（`secrets.json`）。
 - `EDDY_MASTER_KEY` 丢失后无法解密 FreshRSS 密码，只需在客户端重新填写账号；其他数据不受影响。
+- 若要在服务端后台托管“视频转多章图书”任务（客户端合盖离线等待），在 `.env` 中配置 `EDDY_VIDEO_STAGE2_*`（以及可选的 `EDDY_VIDEO_STAGE1_*`、`EDDY_VIDEO_ASR_*`）；密钥只留在服务端环境变量里，客户端只读取布尔状态 `video_capable`。
 
 ## 迁到服务器
 

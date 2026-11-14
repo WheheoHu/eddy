@@ -36,6 +36,7 @@ pub struct ServerStatus {
     pub server_id: String,
     pub account: Option<eddy_sync::AccountInfo>,
     pub cursor: i64,
+    pub video_capable: bool,
 }
 
 impl HubUpstream {
@@ -278,7 +279,7 @@ impl Inner {
         Ok(true)
     }
 
-    fn hub_client(&self) -> Option<SyncClient> {
+    pub(crate) fn hub_client(&self) -> Option<SyncClient> {
         let url = self.store.meta_get(URL_META).ok().flatten()?;
         let token = self.platform.secret_get(TOKEN_KEY)?;
         SyncClient::new(&url, Some(token)).ok()
@@ -375,6 +376,7 @@ impl Engine {
             server_id: info.server_id,
             account: info.account,
             cursor,
+            video_capable: info.video_capable,
         })
     }
 
@@ -405,6 +407,7 @@ impl Engine {
             server_id: info.server_id,
             account: info.account,
             cursor,
+            video_capable: info.video_capable,
         }))
     }
 
@@ -482,6 +485,10 @@ impl Engine {
                 });
                 while let Some(cursor) = rx.recv().await {
                     backoff = Duration::from_secs(2);
+                    if cursor < 0 {
+                        engine.inner.notify_video_listener();
+                        continue;
+                    }
                     let local: i64 = engine
                         .inner
                         .store
@@ -492,12 +499,14 @@ impl Engine {
                         .unwrap_or(0);
                     if cursor > local
                         && engine.inner.live.load(Ordering::SeqCst)
-                        && let Err(e) = engine.refresh().await
                     {
-                        engine
-                            .inner
-                            .platform
-                            .log(LogLevel::Warn, &format!("live sync failed: {e}"));
+                        if let Err(e) = engine.refresh().await {
+                            engine
+                                .inner
+                                .platform
+                                .log(LogLevel::Warn, &format!("live sync failed: {e}"));
+                        }
+                        engine.inner.notify_video_listener();
                     }
                 }
                 let _ = listener.await;

@@ -532,6 +532,21 @@ async fn unauthenticated_and_tampered_requests_are_rejected() {
         .await
         .unwrap();
     let device = eddy_sync::SyncClient::new(&url, Some(paired.token)).unwrap();
+    // Unconfigured server reports video_capable == false and lists empty video jobs.
+    assert!(!paired.info.video_capable);
+    assert!(device.video_jobs().await.unwrap().is_empty());
+    // Rejects non-HTTP local path on server video-jobs endpoint.
+    assert!(
+        device
+            .create_video_job(&eddy_sync::CreateVideoJobRequest {
+                source: "/etc/passwd".into(),
+                pipeline: None,
+                transcript_policy: None,
+                target_language: None,
+            })
+            .await
+            .is_err()
+    );
     // A blob must match its hash.
     assert!(
         device

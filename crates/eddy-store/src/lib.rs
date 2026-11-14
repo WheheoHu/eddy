@@ -6,6 +6,7 @@ mod items;
 mod ops;
 mod schema;
 mod server;
+mod video_jobs;
 
 use std::path::{Path, PathBuf};
 
@@ -15,6 +16,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 pub use items::{ItemFilter, ItemQuery, ItemRow};
 pub use ops::{OpOrigin, StoredOp};
 pub use server::Device;
+pub use video_jobs::VideoJobRecord;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {

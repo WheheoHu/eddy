@@ -7,6 +7,7 @@ pub struct ServerStatusView {
     pub server_id: String,
     pub account: Option<AccountView>,
     pub cursor: i64,
+    pub video_capable: bool,
 }
 
 impl From<eddy_core::ServerStatus> for ServerStatusView {
@@ -19,6 +20,7 @@ impl From<eddy_core::ServerStatus> for ServerStatusView {
                 username: a.username,
             }),
             cursor: s.cursor,
+            video_capable: s.video_capable,
         }
     }
 }

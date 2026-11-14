@@ -106,6 +106,28 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE items ADD COLUMN chapter_level INTEGER NOT NULL DEFAULT 0;
     "#,
+    // 7: Local/server background Video-to-Book job queue (device-local, not in OpLog).
+    r#"
+    CREATE TABLE video_jobs(
+        id TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        title TEXT NOT NULL,
+        pipeline TEXT NOT NULL,
+        transcript_policy TEXT NOT NULL,
+        target_language TEXT NOT NULL,
+        phase TEXT NOT NULL,
+        status TEXT NOT NULL,
+        completed_chapters INTEGER NOT NULL DEFAULT 0,
+        total_chapters INTEGER NOT NULL DEFAULT 0,
+        detail TEXT NOT NULL DEFAULT '',
+        error TEXT,
+        result_series_id TEXT,
+        result_item_id TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX video_jobs_created ON video_jobs(created_at DESC);
+    "#,
 ];
 
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {

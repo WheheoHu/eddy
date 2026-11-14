@@ -49,13 +49,15 @@ struct AddToolbar: ToolbarContent {
         ToolbarItem(placement: .navigation) {
             Menu {
                 Button("Save Page…") { model.savingURL = true }
-                Button("Import EPUB or PDF…") { model.importing = true }
+                Button("Convert Video to Book…") { model.requestVideoConvert() }
+                Button("Import EPUB, PDF, or Video…") { model.importing = true }
             } label: {
                 Label("Add", systemImage: "plus")
             } primaryAction: {
                 model.savingURL = true
             }
-            .help("Save a page to read later (⌘L), or import an EPUB or PDF (⌘O)")
+            .help("Save a page (⌘L), convert a presentation video, or import a file (⌘O)")
         }
+        VideoJobsToolbarItem()
     }
 }

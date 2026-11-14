@@ -229,6 +229,11 @@ struct CommandPalette: View {
             })
         }
         if let url = item.url.flatMap(URL.init(string:)) {
+            if isVideoUrl(url: url.absoluteString) {
+                items.append(PaletteItem(id: "convertVideo", group: .reader, title: String(localized: "Convert Video to Book…"), icon: "book.pages") {
+                    model.requestVideoConvert(source: url.absoluteString, title: item.title)
+                })
+            }
             items.append(PaletteItem(id: "web", group: .reader, title: String(localized: "Switch Between Reader and Web Page"), icon: "safari") { command(.toggleWeb) })
             items.append(PaletteItem(id: "browser", group: .reader, title: String(localized: "Open in Browser"), icon: "arrow.up.forward.square") { NSWorkspace.shared.open(url) })
             items.append(PaletteItem(id: "copy", group: .reader, title: String(localized: "Copy Link"), icon: "link") {
@@ -241,12 +246,17 @@ struct CommandPalette: View {
 
     /// Commands on the article list on screen.
     private var listItems: [PaletteItem] {
-        guard let list = model.currentList else { return [] }
-        return [
-            PaletteItem(id: "markAllRead", group: .list, title: String(localized: "Mark All as Read"), subtitle: list.title, icon: "checkmark.circle") {
-                model.requestMarkAllRead(list)
+        var out: [PaletteItem] = [
+            PaletteItem(id: "newVideoBook", group: .list, title: String(localized: "Convert Video to Book…"), subtitle: "⇧⌘L", icon: "film.stack") {
+                model.requestVideoConvert()
             },
         ]
+        if let list = model.currentList {
+            out.append(PaletteItem(id: "markAllRead", group: .list, title: String(localized: "Mark All as Read"), subtitle: list.title, icon: "checkmark.circle") {
+                model.requestMarkAllRead(list)
+            })
+        }
+        return out
     }
 
     /// The current mode's sidebar.
