@@ -2834,3 +2834,44 @@ async fn segments_already_in_target_language_are_not_sent_to_the_model() {
     assert_eq!(all.len(), 1);
     assert_eq!(llm.received_requests().await.unwrap().len(), 1);
 }
+
+#[test]
+fn video_settings_persist_across_reopen_and_normalize_filetrans_slug() {
+    let dir = tempfile::tempdir().unwrap();
+    let platform = std::sync::Arc::new(crate::MemoryPlatform::default());
+    let engine = Engine::open(dir.path(), platform.clone(), EngineOptions::default()).unwrap();
+
+    let vs = crate::VideoSettings {
+        transcript_policy: crate::TranscriptPolicy::AlwaysAsr,
+        asr: crate::StageEndpointSettings {
+            protocol: crate::ProtocolKind::Auto,
+            url: "https://dashscope.aliyuncs.com/compatible-mode/v1".into(),
+            model: "qwen-audio-3.0-asr-flash-filetrans".into(),
+        },
+        stage1: crate::StageEndpointSettings {
+            protocol: crate::ProtocolKind::Auto,
+            url: "https://token.example.com/v1beta".into(),
+            model: "gemini-3.8-flash".into(),
+        },
+        stage2: crate::StageEndpointSettings {
+            protocol: crate::ProtocolKind::Auto,
+            url: "https://token.example.com/v1".into(),
+            model: "claude-opus-5-5".into(),
+        },
+        ..Default::default()
+    };
+    engine.set_video_settings(vs).unwrap();
+    engine
+        .set_video_stage_key(crate::VideoStageRole::Asr, "sk-asr-test")
+        .unwrap();
+
+    drop(engine);
+
+    let reopened = Engine::open(dir.path(), platform, EngineOptions::default()).unwrap();
+    let loaded = reopened.video_settings().unwrap();
+    assert_eq!(loaded.transcript_policy, crate::TranscriptPolicy::AlwaysAsr);
+    assert_eq!(loaded.asr.model, "qwen3-asr-flash");
+    assert_eq!(loaded.stage1.model, "gemini-3.8-flash");
+    assert_eq!(loaded.stage2.model, "claude-opus-5-5");
+    assert!(reopened.has_video_stage_key(crate::VideoStageRole::Asr));
+}

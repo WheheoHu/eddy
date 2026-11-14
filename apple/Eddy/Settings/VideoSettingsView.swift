@@ -1,3 +1,4 @@
+import AppKit
 import EddyKit
 import SwiftUI
 
@@ -52,7 +53,10 @@ struct VideoSettingsPage: View {
             asrSection
         }
         .formStyle(.grouped)
-        .onSubmit { save() }
+        .onSubmit {
+            commitPendingKeys()
+            save()
+        }
         .onChange(of: focus) { old, _ in
             switch old {
             case .s1Key: saveKey(.stage1, &stage1Key)
@@ -68,6 +72,18 @@ struct VideoSettingsPage: View {
             }
         }
         .onAppear(perform: load)
+        .onDisappear {
+            commitPendingKeys()
+            save()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { _ in
+            commitPendingKeys()
+            save()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willResignActiveNotification)) { _ in
+            commitPendingKeys()
+            save()
+        }
     }
 
     private var toolchainSection: some View {
@@ -262,7 +278,7 @@ struct VideoSettingsPage: View {
     }
 
     private func save() {
-        guard loaded else { return }
+        guard loaded, let engine = model.engine else { return }
         let settings = VideoSettingsView(
             pipeline: pipeline,
             transcriptPolicy: transcriptPolicy,
@@ -286,7 +302,24 @@ struct VideoSettingsPage: View {
                 model: stage2Model.trimmingCharacters(in: .whitespacesAndNewlines)
             )
         )
-        try? model.engine?.setVideoSettings(settings: settings)
+        if let current = try? engine.videoSettings(), current == settings { return }
+        try? engine.setVideoSettings(settings: settings)
+        // Reload normalized fields (e.g. `-filetrans` -> `qwen3-asr-flash`)
+        if let saved = try? engine.videoSettings(), saved.asr.model != asrModel {
+            asrModel = saved.asr.model
+        }
+    }
+
+    private func commitPendingKeys() {
+        if !stage1Key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            saveKey(.stage1, &stage1Key)
+        }
+        if !stage2Key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            saveKey(.stage2, &stage2Key)
+        }
+        if !asrKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            saveKey(.asr, &asrKey)
+        }
     }
 
     private func saveKey(_ role: VideoStageRoleView, _ field: inout String) {
@@ -306,6 +339,9 @@ struct VideoSettingsPage: View {
         note: Binding<String>
     ) async {
         save()
+        if !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            try? model.engine?.setVideoStageKey(role: role, key: key.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
         testing.wrappedValue = true
         note.wrappedValue = ""
         defer { testing.wrappedValue = false }

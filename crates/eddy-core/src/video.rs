@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use eddy_model::{Entity, ids, now_ms};
+use eddy_model::{Entity, fields, ids, now_ms};
 use eddy_store::VideoJobRecord;
 use eddy_sync::{CreateVideoJobRequest, RemoteVideoJob};
 use eddy_video::{
@@ -174,6 +174,28 @@ impl Inner {
         }
     }
 
+    pub(crate) fn recover_legacy_video_setting(&self) -> Result<Option<VideoSettings>> {
+        let ops = self.store.ops_since(0, 10_000)?;
+        for (stored, _) in ops.into_iter().rev() {
+            if stored.op.entity == Entity::Setting
+                && stored.op.entity_id == VIDEO_SETTINGS_KEY
+                && let Ok(mut parsed) = serde_json::from_value::<VideoSettings>(stored.op.value)
+                && (!parsed.asr.model.is_empty()
+                    || !parsed.stage1.model.is_empty()
+                    || !parsed.stage2.model.is_empty()
+                    || !parsed.stage2.url.is_empty())
+            {
+                if parsed.asr.model.trim().ends_with("-filetrans")
+                    && parsed.asr.url.contains("compatible-mode")
+                {
+                    parsed.asr.model = "qwen3-asr-flash".into();
+                }
+                return Ok(Some(parsed));
+            }
+        }
+        Ok(None)
+    }
+
     /// Resolves a complete `RuntimeVideoConfig` on the client (combining `VideoSettings` with
     /// fallback `AiSettings` and Keychain keys) or on `eddy-server` (from `EDDY_VIDEO_*` env vars).
     pub(crate) fn resolve_runtime_video_config(
@@ -207,6 +229,7 @@ impl Inner {
             .setting(VIDEO_SETTINGS_KEY)?
             .map(serde_json::from_value)
             .transpose()?
+            .or_else(|| self.recover_legacy_video_setting().ok().flatten())
             .unwrap_or_default();
         let ai: eddy_ai::AiSettings = self
             .store
@@ -423,21 +446,36 @@ impl Engine {
     }
 
     pub fn video_settings(&self) -> Result<VideoSettings> {
-        Ok(self
-            .inner
-            .store
-            .setting(VIDEO_SETTINGS_KEY)?
-            .map(serde_json::from_value)
-            .transpose()?
-            .unwrap_or_default())
+        if let Some(val) = self.inner.store.setting(VIDEO_SETTINGS_KEY)? {
+            return Ok(serde_json::from_value(val)?);
+        }
+        // Recover any VideoSettings op previously written under field `"video"` before the
+        // `fields::VALUE` fix, and persist it into `settings`.
+        if let Some(recovered) = self.inner.recover_legacy_video_setting()? {
+            self.inner.record(
+                Entity::Setting,
+                VIDEO_SETTINGS_KEY,
+                fields::VALUE,
+                serde_json::to_value(&recovered)?,
+                false,
+            )?;
+            return Ok(recovered);
+        }
+        Ok(VideoSettings::default())
     }
 
     pub fn set_video_settings(&self, mut settings: VideoSettings) -> Result<()> {
         settings.chapter_concurrency = settings.chapter_concurrency.clamp(1, 6);
+        // Normalize common DashScope async-only ASR slug to OpenAI-compatible `qwen3-asr-flash`
+        if settings.asr.model.trim().ends_with("-filetrans")
+            && settings.asr.url.contains("compatible-mode")
+        {
+            settings.asr.model = "qwen3-asr-flash".into();
+        }
         self.inner.record(
             Entity::Setting,
             VIDEO_SETTINGS_KEY,
-            VIDEO_SETTINGS_KEY,
+            fields::VALUE,
             serde_json::to_value(&settings)?,
             false,
         )?;
