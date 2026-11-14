@@ -43,6 +43,7 @@ pub enum TranscriptPolicy {
 pub enum VideoStageRole {
     Asr,
     Stage1,
+    Vlm,
     Stage2,
 }
 
@@ -51,6 +52,7 @@ impl VideoStageRole {
         match self {
             VideoStageRole::Asr => "video:asr-key",
             VideoStageRole::Stage1 => "video:stage1-key",
+            VideoStageRole::Vlm => "video:vlm-key",
             VideoStageRole::Stage2 => "video:stage2-key",
         }
     }
@@ -79,7 +81,11 @@ pub struct VideoSettings {
     pub ffmpeg_path: String,
     pub yt_dlp_path: String,
     pub asr: StageEndpointSettings,
+    /// Stage 1A: Gemini Native Video Planner (`/v1beta` full-video stream localization).
     pub stage1: StageEndpointSettings,
+    /// Stage 1B: Vision Language Model (`VLM`) for `LocalFramesTwoStage` candidate slide selection.
+    pub vlm: StageEndpointSettings,
+    /// Stage 2: Deep Chapter Writer.
     pub stage2: StageEndpointSettings,
 }
 
@@ -94,6 +100,7 @@ impl Default for VideoSettings {
             yt_dlp_path: String::new(),
             asr: StageEndpointSettings::default(),
             stage1: StageEndpointSettings::default(),
+            vlm: StageEndpointSettings::default(),
             stage2: StageEndpointSettings::default(),
         }
     }
@@ -249,7 +256,11 @@ pub struct RuntimeVideoConfig {
     pub yt_dlp_path: Option<String>,
     pub cookies_from_browser: Option<String>,
     pub asr: Option<StageEndpoint>,
+    /// Stage 1A: Gemini Native Video Planner.
     pub stage1: StageEndpoint,
+    /// Stage 1B: Vision Language Model (VLM) for `LocalFramesTwoStage`.
+    pub vlm: StageEndpoint,
+    /// Stage 2: Deep Chapter Writer.
     pub stage2: StageEndpoint,
 }
 
@@ -264,6 +275,9 @@ impl RuntimeVideoConfig {
         if !self.stage1.api_key.is_empty() {
             out.push(self.stage1.api_key.as_str());
         }
+        if !self.vlm.api_key.is_empty() {
+            out.push(self.vlm.api_key.as_str());
+        }
         if !self.stage2.api_key.is_empty() {
             out.push(self.stage2.api_key.as_str());
         }
@@ -275,7 +289,9 @@ impl RuntimeVideoConfig {
             VideoPipelineMode::GeminiTwoStage => VideoPipelineMode::GeminiTwoStage,
             VideoPipelineMode::LocalFramesTwoStage => VideoPipelineMode::LocalFramesTwoStage,
             VideoPipelineMode::Auto => {
-                if self.stage1.resolved_protocol() == ResolvedProtocol::Gemini {
+                if self.stage1.is_configured()
+                    && self.stage1.resolved_protocol() == ResolvedProtocol::Gemini
+                {
                     VideoPipelineMode::GeminiTwoStage
                 } else {
                     VideoPipelineMode::LocalFramesTwoStage
@@ -320,6 +336,8 @@ impl RuntimeVideoConfig {
         let stage2 = build_ep("STAGE2", &default_url, &default_key)?;
         let stage1 = build_ep("STAGE1", &stage2.url, &stage2.api_key)
             .unwrap_or_else(|| stage2.clone());
+        let vlm = build_ep("VLM", &stage2.url, &stage2.api_key)
+            .unwrap_or_else(|| stage2.clone());
         let asr = build_ep("ASR", &default_url, &default_key);
 
         let pipeline = match env_str("EDDY_VIDEO_PIPELINE")
@@ -360,6 +378,7 @@ impl RuntimeVideoConfig {
             cookies_from_browser: None,
             asr,
             stage1,
+            vlm,
             stage2,
         })
     }

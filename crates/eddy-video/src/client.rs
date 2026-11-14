@@ -42,6 +42,34 @@ pub fn build_http_client(timeout_secs: u64) -> Result<reqwest::Client, VideoErro
         .map_err(|e| VideoError::Network(e.to_string()))
 }
 
+/// Computes exponential backoff delay when an upstream API returns HTTP 429 (rate limit)
+/// or transient 502/503/504 gateway errors.
+pub(crate) fn retry_delay_for_status(
+    status: u16,
+    headers: &HeaderMap,
+    attempt: usize,
+) -> Option<Duration> {
+    const MAX_RETRIES: usize = 5;
+    if attempt >= MAX_RETRIES || !matches!(status, 429 | 502 | 503 | 504) {
+        return None;
+    }
+    if let Some(ra) = headers
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
+    {
+        return Some(Duration::from_secs(ra.clamp(2, 60)));
+    }
+    let secs = match attempt {
+        0 => 3,
+        1 => 7,
+        2 => 14,
+        3 => 24,
+        _ => 36,
+    };
+    Some(Duration::from_secs(secs))
+}
+
 pub fn gemini_headers(endpoint: &StageEndpoint) -> Result<HeaderMap, VideoError> {
     let key = endpoint.api_key.trim();
     let mut headers = HeaderMap::new();
@@ -153,25 +181,43 @@ async fn call_openai_chat(
     });
 
     let t0 = Instant::now();
-    let resp = http
-        .post(&url)
-        .bearer_auth(key)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| VideoError::Network(redact_text(&e.to_string(), &secrets)))?;
+    let mut attempt = 0usize;
+    let (status, resp_headers, content_type, raw) = loop {
+        let send_res = http
+            .post(&url)
+            .bearer_auth(key)
+            .json(&body)
+            .send()
+            .await;
 
-    let status = resp.status();
-    let resp_headers = resp.headers().clone();
-    let content_type = resp_headers
-        .get(CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    let raw = resp
-        .text()
-        .await
-        .map_err(|e| VideoError::Network(redact_text(&e.to_string(), &secrets)))?;
+        let resp = match send_res {
+            Ok(r) => r,
+            Err(_e) if attempt < 3 => {
+                attempt += 1;
+                tokio::time::sleep(Duration::from_secs(3 * attempt as u64)).await;
+                continue;
+            }
+            Err(e) => return Err(VideoError::Network(redact_text(&e.to_string(), &secrets))),
+        };
+
+        let status = resp.status();
+        let resp_headers = resp.headers().clone();
+        if let Some(delay) = retry_delay_for_status(status.as_u16(), &resp_headers, attempt) {
+            attempt += 1;
+            tokio::time::sleep(delay).await;
+            continue;
+        }
+        let content_type = resp_headers
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let raw = resp
+            .text()
+            .await
+            .map_err(|e| VideoError::Network(redact_text(&e.to_string(), &secrets)))?;
+        break (status, resp_headers, content_type, raw);
+    };
 
     if !status.is_success() {
         return Err(VideoError::Provider(eddy_ai::model_failure(
@@ -280,39 +326,51 @@ pub async fn call_gemini_generate_content(
     }
 
     let t0 = Instant::now();
-    let mut resp = http
-        .post(&url)
-        .headers(headers.clone())
-        .json(&payload)
-        .send()
-        .await
-        .map_err(|e| VideoError::Network(redact_text(&e.to_string(), &secrets)))?;
-
-    let mut status = resp.status();
-    let mut resp_headers = resp.headers().clone();
-    let mut raw = resp
-        .text()
-        .await
-        .map_err(|e| VideoError::Network(redact_text(&e.to_string(), &secrets)))?;
-
-    if status.as_u16() == 400 && expect_json && raw.contains("responseMimeType") {
-        if let Some(obj) = payload["generationConfig"].as_object_mut() {
-            obj.remove("responseMimeType");
-        }
-        resp = http
+    let mut attempt = 0usize;
+    let (status, resp_headers, raw) = loop {
+        let send_res = http
             .post(&url)
-            .headers(headers)
+            .headers(headers.clone())
             .json(&payload)
             .send()
-            .await
-            .map_err(|e| VideoError::Network(redact_text(&e.to_string(), &secrets)))?;
-        status = resp.status();
-        resp_headers = resp.headers().clone();
-        raw = resp
+            .await;
+
+        let resp = match send_res {
+            Ok(r) => r,
+            Err(_e) if attempt < 3 => {
+                attempt += 1;
+                tokio::time::sleep(Duration::from_secs(3 * attempt as u64)).await;
+                continue;
+            }
+            Err(e) => return Err(VideoError::Network(redact_text(&e.to_string(), &secrets))),
+        };
+
+        let status = resp.status();
+        let resp_headers = resp.headers().clone();
+        if let Some(delay) = retry_delay_for_status(status.as_u16(), &resp_headers, attempt) {
+            attempt += 1;
+            tokio::time::sleep(delay).await;
+            continue;
+        }
+        let raw = resp
             .text()
             .await
             .map_err(|e| VideoError::Network(redact_text(&e.to_string(), &secrets)))?;
-    }
+
+        if status.as_u16() == 400
+            && expect_json
+            && raw.contains("responseMimeType")
+            && payload["generationConfig"]
+                .get("responseMimeType")
+                .is_some()
+        {
+            if let Some(obj) = payload["generationConfig"].as_object_mut() {
+                obj.remove("responseMimeType");
+            }
+            continue;
+        }
+        break (status, resp_headers, raw);
+    };
 
     let content_type = resp_headers
         .get(CONTENT_TYPE)
@@ -376,43 +434,19 @@ pub async fn call_gemini_generate_content(
     })
 }
 
-/// Tests connectivity and credentials for a stage endpoint.
-pub async fn test_stage_endpoint(endpoint: &StageEndpoint) -> Result<u64, VideoError> {
+/// Tests connectivity and real model invocation for any stage endpoint (`Stage 1`, `VLM`, `Stage 2`, or `ASR`).
+pub async fn test_stage_endpoint(
+    endpoint: &StageEndpoint,
+    is_asr_role: bool,
+) -> Result<u64, VideoError> {
     let http = build_http_client(45)?;
     let model_lower = endpoint.model.to_ascii_lowercase();
-    if endpoint.resolved_protocol() == ResolvedProtocol::OpenAi
-        && (model_lower.contains("asr")
-            || model_lower.contains("whisper")
-            || model_lower.contains("transcribe"))
+    if is_asr_role
+        || model_lower.contains("asr")
+        || model_lower.contains("whisper")
+        || model_lower.contains("transcribe")
     {
-        // Dedicated ASR models do not accept text chat; verify auth/endpoint via `/models` or short probe
-        let base = endpoint.normalized_openai_base_url()?;
-        let secrets = [endpoint.api_key.trim()];
-        let t0 = Instant::now();
-        let resp = http
-            .get(format!("{base}/models"))
-            .bearer_auth(endpoint.api_key.trim())
-            .send()
-            .await
-            .map_err(|e| VideoError::Network(redact_text(&e.to_string(), &secrets)))?;
-        if resp.status().is_success() {
-            return Ok(t0.elapsed().as_millis() as u64);
-        }
-        let status = resp.status().as_u16();
-        let headers = resp.headers().clone();
-        let ct = headers
-            .get(CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        let raw = resp.text().await.unwrap_or_default();
-        return Err(VideoError::Provider(eddy_ai::model_failure(
-            status,
-            &ct,
-            &raw,
-            &secrets,
-            Some(&headers),
-        )));
+        return crate::asr::probe_asr_endpoint(&http, endpoint).await;
     }
 
     let out = call_stage_model(

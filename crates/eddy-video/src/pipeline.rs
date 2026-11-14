@@ -232,6 +232,21 @@ pub async fn run_video_pipeline(
                     cfg.cookies_from_browser.as_deref(),
                 )
                 .await?;
+                let asr_prog_cb = on_progress.clone();
+                let asr_title = probe.title.clone();
+                let chunk_cb: Option<Arc<dyn Fn(usize, usize) + Send + Sync>> =
+                    asr_prog_cb.map(|cb| {
+                        Arc::new(move |done: usize, total: usize| {
+                            cb(PipelineProgress {
+                                phase: PipelinePhase::Transcribing,
+                                completed_chapters: 0,
+                                total_chapters: 0,
+                                detail: format!("Transcribing speech ({done} of {total} segments)…"),
+                                resolved_title: Some(asr_title.clone()),
+                            });
+                        }) as Arc<dyn Fn(usize, usize) + Send + Sync>
+                    });
+
                 transcribe_with_api(
                     ffmpeg,
                     ffprobe,
@@ -240,6 +255,7 @@ pub async fn run_video_pipeline(
                     asr_ep,
                     job_dir,
                     &probe.title,
+                    chunk_cb,
                 )
                 .await?
             }
@@ -294,7 +310,7 @@ pub async fn run_video_pipeline(
                     &transcript,
                     &local_video,
                     job_dir,
-                    &cfg.stage1,
+                    &cfg.vlm,
                     &cfg.target_language,
                     &report,
                 )
@@ -445,6 +461,14 @@ pub async fn run_video_pipeline(
     // Clean temporary large media streams while keeping lightweight JSON checkpoints
     let _ = std::fs::remove_file(job_dir.join("video.mp4"));
     let _ = std::fs::remove_file(job_dir.join("audio_16k.mp3"));
+    if let Ok(entries) = std::fs::read_dir(job_dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.file_stem().and_then(|s| s.to_str()) == Some("raw_audio") {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+    }
     let _ = std::fs::remove_dir_all(job_dir.join("proxies"));
 
     report(

@@ -19,6 +19,13 @@ struct VideoSettingsPage: View {
     @State private var testingStage1 = false
     @State private var stage1Note = ""
 
+    @State private var vlmProtocol: VideoProtocolView = .auto
+    @State private var vlmURL = ""
+    @State private var vlmModel = ""
+    @State private var vlmKey = ""
+    @State private var testingVlm = false
+    @State private var vlmNote = ""
+
     @State private var stage2Protocol: VideoProtocolView = .auto
     @State private var stage2URL = ""
     @State private var stage2Model = ""
@@ -40,6 +47,7 @@ struct VideoSettingsPage: View {
     private enum Field: Hashable {
         case targetLanguage, ffmpegPath, ytDlpPath
         case s1URL, s1Model, s1Key
+        case vlmURL, vlmModel, vlmKey
         case s2URL, s2Model, s2Key
         case asrURL, asrModel, asrKey
     }
@@ -49,6 +57,7 @@ struct VideoSettingsPage: View {
             toolchainSection
             generalSection
             stage1Section
+            vlmSection
             stage2Section
             asrSection
         }
@@ -60,6 +69,7 @@ struct VideoSettingsPage: View {
         .onChange(of: focus) { old, _ in
             switch old {
             case .s1Key: saveKey(.stage1, &stage1Key)
+            case .vlmKey: saveKey(.vlm, &vlmKey)
             case .s2Key: saveKey(.stage2, &stage2Key)
             case .asrKey: saveKey(.asr, &asrKey)
             case .ffmpegPath, .ytDlpPath:
@@ -133,8 +143,8 @@ struct VideoSettingsPage: View {
 
     private var generalSection: some View {
         Section {
-            Picker("Visual pipeline", selection: $pipeline) {
-                Text("Automatic (Gemini Video + Writer)").tag(VideoPipelineModeView.auto)
+            Picker("Default visual pipeline", selection: $pipeline) {
+                Text("Automatic (Gemini Video if set, else VLM)").tag(VideoPipelineModeView.auto)
                 Text("Gemini Native Video + Local HD Capture").tag(VideoPipelineModeView.geminiTwoStage)
                 Text("Local Scene Detection + VLM").tag(VideoPipelineModeView.localFramesTwoStage)
             }
@@ -164,16 +174,37 @@ struct VideoSettingsPage: View {
                 .focused($focus, equals: .s1URL)
             TextField("Model", text: $stage1Model, prompt: Text("gemini-3.8-flash"))
                 .focused($focus, equals: .s1Model)
-            SecureField(hasKey(.stage1) ? "API key (saved in keychain)" : "API key (blank inherits AI key)", text: $stage1Key)
+            SecureField(hasKey(.stage1) ? "API key (saved in keychain)" : "API key (blank inherits Stage 2 / AI key)", text: $stage1Key)
                 .focused($focus, equals: .s1Key)
                 .onSubmit { saveKey(.stage1, &stage1Key) }
             testRow(testing: testingStage1, note: stage1Note, disabled: stage1Model.isEmpty && stage1URL.isEmpty) {
                 await runTest(role: .stage1, proto: stage1Protocol, url: stage1URL, model: stage1Model, key: stage1Key, testing: $testingStage1, note: $stage1Note)
             }
         } header: {
-            Text("Stage 1 — Visual Slide Planner")
+            Text("Stage 1A — Gemini Video Planner (Native Video Stream)")
         } footer: {
-            Text("Supports both Gemini native format (/v1beta, recommended for full-video timestamp localization) and OpenAI-compatible VLM endpoints (/v1). Keys stay strictly in this Mac’s keychain.")
+            Text("Used by “Gemini Native Video + Local HD Capture” to scan the full video stream and pinpoint exact slide timestamps.")
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var vlmSection: some View {
+        Section {
+            protocolPicker($vlmProtocol)
+            TextField("API URL (blank inherits Stage 2 / AI URL)", text: $vlmURL, prompt: Text("https://api.openai.com/v1"))
+                .focused($focus, equals: .vlmURL)
+            TextField("Model (blank inherits Stage 2 model)", text: $vlmModel, prompt: Text("qwen3-vl-plus / claude-opus-5-5"))
+                .focused($focus, equals: .vlmModel)
+            SecureField(hasKey(.vlm) ? "API key (saved in keychain)" : "API key (blank inherits Stage 2 / AI key)", text: $vlmKey)
+                .focused($focus, equals: .vlmKey)
+                .onSubmit { saveKey(.vlm, &vlmKey) }
+            testRow(testing: testingVlm, note: vlmNote, disabled: false) {
+                await runTest(role: .vlm, proto: vlmProtocol, url: vlmURL, model: vlmModel, key: vlmKey, testing: $testingVlm, note: $vlmNote)
+            }
+        } header: {
+            Text("Stage 1B — Vision Model / VLM (Local Scene Detection)")
+        } footer: {
+            Text("Used when running “Local Scene Detection + VLM” to inspect locally deduplicated candidate frames, filter out talking heads, and plan chapters. Keeps your VLM separate from Gemini Video above.")
                 .foregroundStyle(.secondary)
         }
     }
@@ -215,7 +246,7 @@ struct VideoSettingsPage: View {
         } header: {
             Text("Speech Recognition (ASR)")
         } footer: {
-            Text("Used for local video files or online videos without subtitles (supports Qwen OpenAI-compatible input_audio, Whisper /audio/transcriptions, and Gemini audio).")
+            Text("Sends ~2-minute speech segments with automatic 429 rate-limit backoff. Clicking Test sends a real 0.45s audio frame to verify the model.")
                 .foregroundStyle(.secondary)
         }
     }
@@ -260,6 +291,10 @@ struct VideoSettingsPage: View {
         stage1URL = vs.stage1.url
         stage1Model = vs.stage1.model
 
+        vlmProtocol = vs.vlm.protocol
+        vlmURL = vs.vlm.url
+        vlmModel = vs.vlm.model
+
         stage2Protocol = vs.stage2.protocol
         stage2URL = vs.stage2.url
         stage2Model = vs.stage2.model
@@ -296,6 +331,11 @@ struct VideoSettingsPage: View {
                 url: stage1URL.trimmingCharacters(in: .whitespacesAndNewlines),
                 model: stage1Model.trimmingCharacters(in: .whitespacesAndNewlines)
             ),
+            vlm: VideoEndpointView(
+                protocol: vlmProtocol,
+                url: vlmURL.trimmingCharacters(in: .whitespacesAndNewlines),
+                model: vlmModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            ),
             stage2: VideoEndpointView(
                 protocol: stage2Protocol,
                 url: stage2URL.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -304,7 +344,6 @@ struct VideoSettingsPage: View {
         )
         if let current = try? engine.videoSettings(), current == settings { return }
         try? engine.setVideoSettings(settings: settings)
-        // Reload normalized fields (e.g. `-filetrans` -> `qwen3-asr-flash`)
         if let saved = try? engine.videoSettings(), saved.asr.model != asrModel {
             asrModel = saved.asr.model
         }
@@ -313,6 +352,9 @@ struct VideoSettingsPage: View {
     private func commitPendingKeys() {
         if !stage1Key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             saveKey(.stage1, &stage1Key)
+        }
+        if !vlmKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            saveKey(.vlm, &vlmKey)
         }
         if !stage2Key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             saveKey(.stage2, &stage2Key)
@@ -347,12 +389,27 @@ struct VideoSettingsPage: View {
         defer { testing.wrappedValue = false }
 
         let ai = try? model.engine?.aiSettings()
-        let effectiveURL = url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? (ai?.provider?.baseUrl ?? "")
-            : url.trimmingCharacters(in: .whitespacesAndNewlines)
-        let effectiveModel = modelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? (ai?.provider?.model ?? "")
-            : modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedModel = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let s2URL = stage2URL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let s2Model = stage2Model.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let effectiveURL: String = if !trimmedURL.isEmpty {
+            trimmedURL
+        } else if role == .vlm, !s2URL.isEmpty {
+            s2URL
+        } else {
+            ai?.provider?.baseUrl ?? ""
+        }
+
+        let effectiveModel: String = if !trimmedModel.isEmpty {
+            trimmedModel
+        } else if role == .vlm, !s2Model.isEmpty {
+            s2Model
+        } else {
+            ai?.provider?.model ?? ""
+        }
+
         let pendingKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
 
         do {

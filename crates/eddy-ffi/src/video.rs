@@ -99,6 +99,7 @@ impl From<TranscriptPolicyView> for core::TranscriptPolicy {
 pub enum VideoStageRoleView {
     Asr,
     Stage1,
+    Vlm,
     Stage2,
 }
 
@@ -107,6 +108,7 @@ impl From<VideoStageRoleView> for core::VideoStageRole {
         match r {
             VideoStageRoleView::Asr => core::VideoStageRole::Asr,
             VideoStageRoleView::Stage1 => core::VideoStageRole::Stage1,
+            VideoStageRoleView::Vlm => core::VideoStageRole::Vlm,
             VideoStageRoleView::Stage2 => core::VideoStageRole::Stage2,
         }
     }
@@ -200,6 +202,7 @@ pub struct VideoSettingsView {
     pub yt_dlp_path: String,
     pub asr: VideoEndpointView,
     pub stage1: VideoEndpointView,
+    pub vlm: VideoEndpointView,
     pub stage2: VideoEndpointView,
 }
 
@@ -214,6 +217,7 @@ impl From<core::VideoSettings> for VideoSettingsView {
             yt_dlp_path: s.yt_dlp_path,
             asr: s.asr.into(),
             stage1: s.stage1.into(),
+            vlm: s.vlm.into(),
             stage2: s.stage2.into(),
         }
     }
@@ -230,6 +234,7 @@ impl From<VideoSettingsView> for core::VideoSettings {
             yt_dlp_path: s.yt_dlp_path,
             asr: s.asr.into(),
             stage1: s.stage1.into(),
+            vlm: s.vlm.into(),
             stage2: s.stage2.into(),
         }
     }

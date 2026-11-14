@@ -293,8 +293,31 @@ impl Inner {
         }
 
         let mut stage1 = resolve_ep(VideoStageRole::Stage1, &vs.stage1, false);
-        if !stage1.is_configured() {
-            stage1 = stage2.clone();
+        if stage1.api_key.is_empty() {
+            stage1.api_key = stage2.api_key.clone();
+        }
+
+        let mut vlm = resolve_ep(VideoStageRole::Vlm, &vs.vlm, false);
+        if vlm.url.trim().is_empty() {
+            vlm.url = stage2.url.clone();
+        }
+        if vlm.api_key.trim().is_empty() {
+            vlm.api_key = stage2.api_key.clone();
+        }
+        if !vlm.is_configured() {
+            vlm = if stage2.is_configured() {
+                stage2.clone()
+            } else {
+                stage1.clone()
+            };
+        }
+
+        let effective_mode = pipeline_override.unwrap_or(vs.pipeline);
+        if effective_mode == VideoPipelineMode::GeminiTwoStage && !stage1.is_configured() {
+            return Err(EngineError::Invalid(
+                "Configure Stage 1A (Gemini Video Planner) in Settings -> Video, or switch pipeline to Local Scene Detection + VLM."
+                    .into(),
+            ));
         }
 
         let asr_ep = resolve_ep(VideoStageRole::Asr, &vs.asr, false);
@@ -311,7 +334,7 @@ impl Inner {
             .unwrap_or(ai.target_language);
 
         Ok(RuntimeVideoConfig {
-            pipeline: pipeline_override.unwrap_or(vs.pipeline),
+            pipeline: effective_mode,
             transcript_policy: policy_override.unwrap_or(vs.transcript_policy),
             target_language,
             chapter_concurrency: vs.concurrency(),
@@ -320,6 +343,7 @@ impl Inner {
             cookies_from_browser,
             asr,
             stage1,
+            vlm,
             stage2,
         })
     }
@@ -516,6 +540,11 @@ impl Engine {
             .filter(|s| !s.is_empty())
             .map(String::from)
             .or_else(|| self.inner.platform.secret_get(role.secret_key()))
+            .or_else(|| {
+                (role == VideoStageRole::Vlm)
+                    .then(|| self.inner.platform.secret_get(VideoStageRole::Stage2.secret_key()))
+                    .flatten()
+            })
             .or_else(|| self.inner.platform.secret_get("ai:api-key"))
             .unwrap_or_default();
         let ep = StageEndpoint {
@@ -524,7 +553,7 @@ impl Engine {
             model: model.trim().to_string(),
             api_key: key,
         };
-        Ok(test_stage_endpoint(&ep).await?)
+        Ok(test_stage_endpoint(&ep, role == VideoStageRole::Asr).await?)
     }
 
     pub fn check_video_toolchain(&self) -> Result<ToolchainStatus> {

@@ -1,12 +1,16 @@
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use crate::client::{UserPart, build_http_client, call_stage_model, extract_json_object};
+use crate::client::{
+    UserPart, build_http_client, call_stage_model, extract_json_object, test_stage_endpoint,
+};
 use crate::epub_builder::build_epub_bytes;
 use crate::media::parse_vtt_or_srt;
 use crate::models::{ArticleBlock, ArticleDocument, ArticleSection};
 use crate::redact::{REDACTED, redact_text};
-use crate::settings::{ProtocolKind, ResolvedProtocol, StageEndpoint};
+use crate::settings::{
+    ProtocolKind, ResolvedProtocol, StageEndpoint, VideoSettings, VideoStageRole,
+};
 use crate::toolchain::{is_video_file_path, is_video_url};
 
 #[test]
@@ -160,3 +164,83 @@ async fn calls_gemini_token_relay_with_dual_headers_and_skips_thought() {
     let json = extract_json_object(&out.text).unwrap();
     assert_eq!(json["hello"], "world");
 }
+
+#[tokio::test]
+async fn asr_test_sends_real_audio_inference_to_qwen_asr() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(header("authorization", "Bearer sk-asr-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{
+                "message": {"content": ""}
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let ep = StageEndpoint {
+        protocol: ProtocolKind::OpenAi,
+        url: format!("{}/v1", server.uri()),
+        model: "qwen3-asr-flash".into(),
+        api_key: "sk-asr-key".into(),
+    };
+    let ms = test_stage_endpoint(&ep, true).await.unwrap();
+    let _ = ms;
+}
+
+#[tokio::test]
+async fn retries_on_http_429_rate_limit_and_recovers() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("Retry-After", "1")
+                .set_body_string(r#"{"error":{"code":"limit_requests","message":"Rate limit"}}"#),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{
+                "message": {"content": "{\"ok\": true}"}
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let ep = StageEndpoint {
+        protocol: ProtocolKind::OpenAi,
+        url: format!("{}/v1", server.uri()),
+        model: "gpt-4.1-mini".into(),
+        api_key: "sk-test".into(),
+    };
+    let http = build_http_client(15).unwrap();
+    let out = call_stage_model(
+        &http,
+        &ep,
+        "Return JSON.",
+        &[UserPart::Text("Ping".into())],
+        0.0,
+        32,
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(out.text.contains("ok"));
+}
+
+#[test]
+fn video_settings_deserializes_legacy_json_with_default_vlm_slot() {
+    let legacy = r#"{"pipeline":"auto","transcript_policy":"prefer_any_subtitles","target_language":"","chapter_concurrency":2,"ffmpeg_path":"","yt_dlp_path":"","asr":{"protocol":"auto","url":"","model":"qwen3-asr-flash"},"stage1":{"protocol":"gemini","url":"https://example.com/v1beta","model":"gemini-3.8-flash"},"stage2":{"protocol":"auto","url":"","model":""}}"#;
+    let parsed: VideoSettings = serde_json::from_str(legacy).unwrap();
+    assert_eq!(parsed.stage1.model, "gemini-3.8-flash");
+    assert!(parsed.vlm.url.is_empty());
+    assert_eq!(VideoStageRole::Vlm.secret_key(), "video:vlm-key");
+}
+
