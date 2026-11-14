@@ -303,6 +303,12 @@ struct ThreePaneView: View {
                 } else {
                     Button("Mark as Read") { model.setRead(item, true) }
                 }
+                if model.canExport(item.id, fromReader: false) {
+                    Menu("Export") {
+                        Button("Export as PDF…") { model.beginExport(targetID: item.id, format: .pdf, fromReader: false) }
+                        Button("Export as EPUB…") { model.beginExport(targetID: item.id, format: .epub, fromReader: false) }
+                    }
+                }
                 if let url = item.url.flatMap(URL.init(string:)) {
                     if isVideoUrl(url: url.absoluteString) {
                         Button("Convert Video to Book…") {
@@ -548,6 +554,12 @@ struct CollectionList: View {
             if let id = ids.first, let entry = model.entry(id) {
                 if entry.hasBeenRead {
                     Button("Mark as Unread") { model.markUnread(entry: entry) }
+                }
+                if entry.kind != .media {
+                    Menu("Export") {
+                        Button("Export as PDF…") { model.beginExport(targetID: entry.id, format: .pdf, fromReader: false) }
+                        Button("Export as EPUB…") { model.beginExport(targetID: entry.id, format: .epub, fromReader: false) }
+                    }
                 }
                 if entry.kind == .webPage {
                     Button("Convert to Web Series…") { Task { await model.convertToSeries(entry) } }

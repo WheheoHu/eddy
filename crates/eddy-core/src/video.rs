@@ -238,29 +238,44 @@ impl Inner {
             .transpose()?
             .unwrap_or_default();
 
+        let fallback_protocol = ai
+            .summary_provider
+            .as_ref()
+            .map(|p| match p.protocol {
+                eddy_ai::AiProtocol::Auto => ProtocolKind::Auto,
+                eddy_ai::AiProtocol::OpenAi => ProtocolKind::OpenAi,
+                eddy_ai::AiProtocol::Gemini => ProtocolKind::Gemini,
+            })
+            .unwrap_or(ProtocolKind::Auto);
         let fallback_url = ai
-            .provider
+            .summary_provider
             .as_ref()
             .map(|p| p.base_url.clone())
             .unwrap_or_default();
         let fallback_model = ai
-            .provider
+            .summary_provider
             .as_ref()
             .map(|p| p.model.clone())
             .unwrap_or_default();
         let fallback_key = self
             .platform
-            .secret_get("ai:api-key")
+            .secret_get(crate::AiRole::Summary.secret_key())
             .unwrap_or_default();
 
         let resolve_ep = |role: VideoStageRole,
                           ep_cfg: &eddy_video::StageEndpointSettings,
                           inherit_model: bool|
          -> StageEndpoint {
-            let url = if ep_cfg.url.trim().is_empty() {
+            let inheriting_url = ep_cfg.url.trim().is_empty();
+            let url = if inheriting_url {
                 fallback_url.clone()
             } else {
                 ep_cfg.url.trim().to_string()
+            };
+            let protocol = if inheriting_url && ep_cfg.protocol == ProtocolKind::Auto {
+                fallback_protocol
+            } else {
+                ep_cfg.protocol
             };
             let model = if ep_cfg.model.trim().is_empty() {
                 if inherit_model {
@@ -277,7 +292,7 @@ impl Inner {
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or_else(|| fallback_key.clone());
             StageEndpoint {
-                protocol: ep_cfg.protocol,
+                protocol,
                 url,
                 model,
                 api_key,
@@ -287,7 +302,7 @@ impl Inner {
         let stage2 = resolve_ep(VideoStageRole::Stage2, &vs.stage2, true);
         if !stage2.is_configured() {
             return Err(EngineError::Invalid(
-                "Configure Stage 2 (Chapter Writer) or the main AI provider in Settings -> Video first."
+                "Configure Stage 2 (Chapter Writer) in Settings -> Video or a Summaries provider in Settings -> Summaries first."
                     .into(),
             ));
         }
@@ -331,7 +346,7 @@ impl Inner {
                 let s = vs.target_language.trim();
                 (!s.is_empty()).then(|| s.to_string())
             })
-            .unwrap_or(ai.target_language);
+            .unwrap_or(ai.summary_language);
 
         Ok(RuntimeVideoConfig {
             pipeline: effective_mode,
@@ -541,11 +556,15 @@ impl Engine {
             .map(String::from)
             .or_else(|| self.inner.platform.secret_get(role.secret_key()))
             .or_else(|| {
-                (role == VideoStageRole::Vlm)
+                (role == VideoStageRole::Vlm || role == VideoStageRole::Stage1)
                     .then(|| self.inner.platform.secret_get(VideoStageRole::Stage2.secret_key()))
                     .flatten()
             })
-            .or_else(|| self.inner.platform.secret_get("ai:api-key"))
+            .or_else(|| {
+                self.inner
+                    .platform
+                    .secret_get(crate::AiRole::Summary.secret_key())
+            })
             .unwrap_or_default();
         let ep = StageEndpoint {
             protocol,

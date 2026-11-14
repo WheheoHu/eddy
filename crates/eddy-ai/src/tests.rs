@@ -337,3 +337,171 @@ fn target_languages_map_to_detection_codes() {
     assert_eq!(lang_code_for("日本語"), Some("jpn"));
     assert_eq!(lang_code_for("Klingon"), None);
 }
+
+#[test]
+fn protocol_resolution_and_gemini_url_normalization() {
+    assert_eq!(
+        resolve_protocol(
+            AiProtocol::Auto,
+            "https://generativelanguage.googleapis.com",
+            "gemini-2.5-flash"
+        ),
+        ResolvedAiProtocol::Gemini
+    );
+    assert_eq!(
+        resolve_protocol(
+            AiProtocol::Auto,
+            "https://gateway.example.com/v1beta",
+            "gemini-2.5-pro"
+        ),
+        ResolvedAiProtocol::Gemini
+    );
+    // Google's OpenAI-compatible shim keeps OpenAI protocol under Auto.
+    assert_eq!(
+        resolve_protocol(
+            AiProtocol::Auto,
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            "gemini-2.5-flash"
+        ),
+        ResolvedAiProtocol::OpenAi
+    );
+    assert_eq!(
+        normalize_gemini_base("https://generativelanguage.googleapis.com").unwrap(),
+        "https://generativelanguage.googleapis.com/v1beta"
+    );
+    assert_eq!(
+        normalize_gemini_base(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
+        )
+        .unwrap(),
+        "https://generativelanguage.googleapis.com/v1beta"
+    );
+}
+
+#[test]
+fn legacy_ai_settings_migrate_to_independent_translation_and_summary_providers() {
+    let legacy = serde_json::json!({
+        "provider": {
+            "base_url": "https://api.example.com/v1",
+            "model": "gpt-4.1-mini",
+            "max_concurrency": 3
+        },
+        "target_language": "English",
+        "glossary": "Eddy = Eddy",
+        "sync_translations": true,
+        "sync_summaries": false,
+        "daily_auto_limit": 250,
+        "rules": []
+    });
+    let migrated: AiSettings = serde_json::from_value(legacy).unwrap();
+    assert_eq!(
+        migrated
+            .translation_provider
+            .as_ref()
+            .map(|p| (p.base_url.as_str(), p.model.as_str(), p.max_concurrency)),
+        Some(("https://api.example.com/v1", "gpt-4.1-mini", 3))
+    );
+    assert_eq!(migrated.summary_provider, migrated.translation_provider);
+    assert_eq!(migrated.target_language, "English");
+    assert_eq!(migrated.summary_language, "English");
+    assert_eq!(migrated.translation_daily_limit, 250);
+    assert_eq!(migrated.summary_daily_limit, 250);
+    assert!(!migrated.sync_summaries);
+
+    // Once saved in the new schema, clearing one provider keeps the other intact.
+    let mut split = migrated.clone();
+    split.translation_provider = None;
+    split.summary_language = "简体中文".into();
+    split.translation_daily_limit = 50;
+    let round_trip: AiSettings =
+        serde_json::from_value(serde_json::to_value(&split).unwrap()).unwrap();
+    assert!(round_trip.translation_provider.is_none());
+    assert!(round_trip.summary_provider.is_some());
+    assert_eq!(round_trip.summary_language, "简体中文");
+    assert_eq!(round_trip.translation_daily_limit, 50);
+    assert_eq!(round_trip.summary_daily_limit, 250);
+}
+
+#[tokio::test]
+async fn gemini_native_provider_runs_tasks_skips_thoughts_and_redacts_keys() {
+    let server = MockServer::start().await;
+    let gemini_key = "AIzaSyTestSecretKeyValue1234567890";
+
+    Mock::given(method("POST"))
+        .and(path("/v1beta/models/gemini-2.5-flash:generateContent"))
+        .and(header("x-goog-api-key", gemini_key))
+        .and(body_string_contains("systemInstruction"))
+        .and(body_string_contains("Translate each input segment into 简体中文"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [
+                        { "thought": true, "text": "internal reasoning" },
+                        { "text": "<think>extra</think>\n<<<s0>>>\n你好\n<<<s1>>>\n世界" }
+                    ]
+                }
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1beta/models/gemini-2.5-flash:generateContent"))
+        .and(body_string_contains("You summarize articles"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [
+                        { "thought": true, "text": "thinking about summary" },
+                        { "text": "```json\n{\"tldr\":\"Gemini 摘要\",\"points\":[\"第一点\"]}\n```" }
+                    ]
+                }
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    let provider = ChatProvider::new(
+        AiProtocol::Auto,
+        &format!("{}/v1beta", server.uri()),
+        "models/gemini-2.5-flash",
+        gemini_key,
+    )
+    .unwrap();
+    assert!(!format!("{provider:?}").contains(gemini_key));
+    assert!(provider.cache_identity().starts_with("gemini\u{1f}"));
+
+    let tr = translate_batch(&provider, &segs(), "简体中文", "")
+        .await
+        .unwrap();
+    assert_eq!(tr["s0"], "你好");
+    assert_eq!(tr["s1"], "世界");
+
+    let sum = summarize(&provider, "Title", "Body", "简体中文")
+        .await
+        .unwrap();
+    assert_eq!(sum.tldr, "Gemini 摘要");
+    assert_eq!(sum.points, ["第一点"]);
+
+    // Verify Google key pattern redaction on errors.
+    let err_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+            "error": { "message": format!("API key {gemini_key} not valid") }
+        })))
+        .mount(&err_server)
+        .await;
+    let bad = ChatProvider::new(
+        AiProtocol::Gemini,
+        &err_server.uri(),
+        "gemini-2.5-flash",
+        gemini_key,
+    )
+    .unwrap();
+    let err = summarize(&bad, "T", "B", "English")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("403") && !err.contains(gemini_key) && err.contains("[已隐藏]"));
+}
+

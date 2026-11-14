@@ -1,6 +1,7 @@
 //! UniFFI surface of the Eddy engine for Swift and Kotlin.
 
 mod ai;
+mod export;
 mod media;
 mod progress;
 mod sync;
@@ -13,6 +14,7 @@ use std::sync::Arc;
 use eddy_core::{Engine, EngineError, EngineOptions, LogLevel, Platform};
 
 pub use ai::*;
+pub use export::*;
 pub use media::*;
 pub use progress::*;
 pub use sync::*;

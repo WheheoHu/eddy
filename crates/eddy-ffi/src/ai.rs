@@ -5,8 +5,51 @@ use eddy_core as core;
 
 use crate::{EddyEngine, EddyError};
 
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AiProtocolView {
+    Auto,
+    OpenAi,
+    Gemini,
+}
+
+impl From<AiProtocolView> for core::AiProtocol {
+    fn from(p: AiProtocolView) -> Self {
+        match p {
+            AiProtocolView::Auto => core::AiProtocol::Auto,
+            AiProtocolView::OpenAi => core::AiProtocol::OpenAi,
+            AiProtocolView::Gemini => core::AiProtocol::Gemini,
+        }
+    }
+}
+
+impl From<core::AiProtocol> for AiProtocolView {
+    fn from(p: core::AiProtocol) -> Self {
+        match p {
+            core::AiProtocol::Auto => AiProtocolView::Auto,
+            core::AiProtocol::OpenAi => AiProtocolView::OpenAi,
+            core::AiProtocol::Gemini => AiProtocolView::Gemini,
+        }
+    }
+}
+
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AiRoleView {
+    Translation,
+    Summary,
+}
+
+impl From<AiRoleView> for core::AiRole {
+    fn from(r: AiRoleView) -> Self {
+        match r {
+            AiRoleView::Translation => core::AiRole::Translation,
+            AiRoleView::Summary => core::AiRole::Summary,
+        }
+    }
+}
+
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct ProviderView {
+    pub protocol: AiProtocolView,
     pub base_url: String,
     pub model: String,
     /// Requests sent at once, 1 to `max_ai_concurrency()`.
@@ -16,6 +59,18 @@ pub struct ProviderView {
 impl From<ProviderView> for core::ProviderSettings {
     fn from(p: ProviderView) -> Self {
         core::ProviderSettings {
+            protocol: p.protocol.into(),
+            base_url: p.base_url,
+            model: p.model,
+            max_concurrency: p.max_concurrency,
+        }
+    }
+}
+
+impl From<core::ProviderSettings> for ProviderView {
+    fn from(p: core::ProviderSettings) -> Self {
+        ProviderView {
+            protocol: p.protocol.into(),
             base_url: p.base_url,
             model: p.model,
             max_concurrency: p.max_concurrency,
@@ -55,28 +110,30 @@ pub struct AutoRuleView {
 
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct AiSettingsView {
-    pub provider: Option<ProviderView>,
+    pub translation_provider: Option<ProviderView>,
     pub target_language: String,
     pub glossary: String,
     pub sync_translations: bool,
+    pub translation_daily_limit: u32,
+    pub summary_provider: Option<ProviderView>,
+    pub summary_language: String,
     pub sync_summaries: bool,
-    pub daily_auto_limit: u32,
+    pub summary_daily_limit: u32,
     pub rules: Vec<AutoRuleView>,
 }
 
 impl From<core::AiSettings> for AiSettingsView {
     fn from(s: core::AiSettings) -> Self {
         AiSettingsView {
-            provider: s.provider.map(|p| ProviderView {
-                base_url: p.base_url,
-                model: p.model,
-                max_concurrency: p.max_concurrency,
-            }),
+            translation_provider: s.translation_provider.map(Into::into),
             target_language: s.target_language,
             glossary: s.glossary,
             sync_translations: s.sync_translations,
+            translation_daily_limit: s.translation_daily_limit,
+            summary_provider: s.summary_provider.map(Into::into),
+            summary_language: s.summary_language,
             sync_summaries: s.sync_summaries,
-            daily_auto_limit: s.daily_auto_limit,
+            summary_daily_limit: s.summary_daily_limit,
             rules: s
                 .rules
                 .into_iter()
@@ -102,12 +159,15 @@ impl From<core::AiSettings> for AiSettingsView {
 impl From<AiSettingsView> for core::AiSettings {
     fn from(s: AiSettingsView) -> Self {
         core::AiSettings {
-            provider: s.provider.map(Into::into),
+            translation_provider: s.translation_provider.map(Into::into),
             target_language: s.target_language,
             glossary: s.glossary,
             sync_translations: s.sync_translations,
+            translation_daily_limit: s.translation_daily_limit,
+            summary_provider: s.summary_provider.map(Into::into),
+            summary_language: s.summary_language,
             sync_summaries: s.sync_summaries,
-            daily_auto_limit: s.daily_auto_limit,
+            summary_daily_limit: s.summary_daily_limit,
             rules: s
                 .rules
                 .into_iter()
@@ -217,13 +277,17 @@ impl EddyEngine {
         Ok(self.engine.set_ai_settings(settings.into())?)
     }
 
-    /// Stores the API key in this device's keychain; `None` removes it.
-    pub fn set_ai_key(&self, key: Option<String>) -> R<()> {
-        Ok(self.engine.set_ai_key(key.as_deref())?)
+    /// Stores a role's API key in this device's keychain; `None` removes it.
+    pub fn set_ai_role_key(&self, role: AiRoleView, key: Option<String>) -> R<()> {
+        Ok(self.engine.set_ai_role_key(role.into(), key.as_deref())?)
     }
 
-    pub fn has_ai_key(&self) -> bool {
-        self.engine.has_ai_key()
+    pub fn has_ai_role_key(&self, role: AiRoleView) -> bool {
+        self.engine.has_ai_role_key(role.into())
+    }
+
+    pub fn ai_role_usage_today(&self, role: AiRoleView) -> R<u32> {
+        Ok(self.engine.ai_role_usage_today(role.into())?)
     }
 
     pub fn ai_usage_today(&self) -> R<u32> {
@@ -285,8 +349,8 @@ impl EddyEngine {
     }
 
     /// Sends `provider.max_concurrency` translation requests at once with
-    /// these settings; an empty `key` uses the saved one.
-    pub async fn test_ai_provider(
+    /// these settings; an empty `key` uses the saved translation key.
+    pub async fn test_translation_provider(
         &self,
         provider: ProviderView,
         key: Option<String>,
@@ -294,7 +358,27 @@ impl EddyEngine {
     ) -> R<AiTestView> {
         let r = self
             .engine
-            .test_ai_provider(provider.into(), key.as_deref(), &target_language)
+            .test_translation_provider(provider.into(), key.as_deref(), &target_language)
+            .await?;
+        Ok(AiTestView {
+            total: r.total,
+            passed: r.passed,
+            elapsed_ms: r.elapsed_ms,
+            error: r.error,
+        })
+    }
+
+    /// Sends `provider.max_concurrency` summary requests at once with
+    /// these settings; an empty `key` uses the saved summary key.
+    pub async fn test_summary_provider(
+        &self,
+        provider: ProviderView,
+        key: Option<String>,
+        summary_language: String,
+    ) -> R<AiTestView> {
+        let r = self
+            .engine
+            .test_summary_provider(provider.into(), key.as_deref(), &summary_language)
             .await?;
         Ok(AiTestView {
             total: r.total,

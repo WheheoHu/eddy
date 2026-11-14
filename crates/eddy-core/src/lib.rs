@@ -5,6 +5,8 @@ mod ai;
 mod collection;
 mod content;
 mod engine;
+mod epub_export;
+mod export;
 mod fulltext;
 mod hub;
 mod images;
@@ -23,12 +25,13 @@ mod upstream;
 mod video;
 
 pub use ai::{
-    AiTestResult, BatchCallback, ItemTagsResult, SummaryResult, TagInfo, TranslationResult,
+    AiRole, AiTestResult, BatchCallback, ItemTagsResult, SummaryResult, TagInfo, TranslationResult,
 };
 pub use collection::{CollectionEntry, CollectionKind};
 pub use content::LoadedDocument;
 pub use eddy_ai::{
-    AiSettings, AutoAction, AutoRule, MAX_CONCURRENCY, ProviderSettings, RuleScope, Summary,
+    AiProtocol, AiSettings, AutoAction, AutoRule, MAX_CONCURRENCY, ProviderSettings, RuleScope,
+    Summary,
 };
 pub use eddy_doc::{Segment, highlight_languages, translated_runs};
 pub use eddy_extract::{ChapterLink, SeriesProposal};
@@ -36,6 +39,11 @@ pub use eddy_fetch::WebRenderer;
 pub use eddy_media::{MediaItem, MediaSet, MediaStatus, MediaType, is_media_url};
 pub use engine::{
     Engine, EngineOptions, EngineStatus, Mode, RefreshSummary, SourceInfo, SourceStats,
+};
+pub use export::{
+    ExportContentMode, ExportFormat, ExportOptions, ExportProgress, ExportProgressCallback,
+    ExportRequest, ExportScope, PdfExportOutcome, PreparedExportChapter, PreparedPdfExport,
+    sanitize_filename,
 };
 pub use fulltext::RulesOnOpen;
 pub use hub::{ServerStatus, plausible_hlc};

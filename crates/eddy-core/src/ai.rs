@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use eddy_ai::{
-    AiError, AiSettings, AutoAction, ChatMessage, OpenAiCompatible, PROMPT_VERSION, Provider,
-    ProviderSettings, RuleScope, Summary, batches, lang_code_for, normalize_base,
+    AiError, AiSettings, AutoAction, ChatMessage, ChatProvider, PROMPT_VERSION, Provider,
+    ProviderSettings, RuleScope, Summary, batches, lang_code_for, normalize_provider_url,
 };
 use eddy_doc::{ConvertOptions, Segment, html_to_document, translation_segments};
 use eddy_extract::extract;
@@ -17,10 +17,36 @@ use crate::content::LoadedDocument;
 use crate::engine::{Engine, Inner};
 use crate::{EngineError, LogLevel, Result};
 
-const AI_KEY: &str = "ai:api-key";
+const LEGACY_AI_KEY: &str = "ai:api-key";
+const TRANSLATE_AI_KEY: &str = "ai:translate:api-key";
+const SUMMARY_AI_KEY: &str = "ai:summarize:api-key";
+const AI_KEYS_MIGRATED_META: &str = "ai_keys_migrated_v1";
 const SETTINGS_KEY: &str = "ai";
 const AUTO_CAP: usize = 20;
 const AUTO_CONCURRENCY: usize = 2;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AiRole {
+    Translation,
+    Summary,
+}
+
+impl AiRole {
+    pub const fn secret_key(self) -> &'static str {
+        match self {
+            AiRole::Translation => TRANSLATE_AI_KEY,
+            AiRole::Summary => SUMMARY_AI_KEY,
+        }
+    }
+
+    pub(crate) fn usage_day_key(self) -> String {
+        let prefix = match self {
+            AiRole::Translation => "translate",
+            AiRole::Summary => "summary",
+        };
+        format!("{prefix}:{}", today())
+    }
+}
 
 pub type BatchCallback = Arc<dyn Fn(&HashMap<String, String>) + Send + Sync>;
 
@@ -106,7 +132,7 @@ pub struct TranslationResult {
     pub complete: bool,
 }
 
-/// Outcome of `Engine::test_ai_provider`.
+/// Outcome of `Engine::test_translation_provider` / `Engine::test_summary_provider`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AiTestResult {
     /// Requests sent at once.
@@ -151,9 +177,9 @@ fn today() -> String {
     format!("d{days}")
 }
 
-/// Waits for a slot in the shared limit before each request.
+/// Waits for a slot in the role's concurrency limit before each request.
 struct Limited {
-    inner: OpenAiCompatible,
+    inner: ChatProvider,
     gate: Arc<Semaphore>,
 }
 
@@ -215,6 +241,30 @@ fn nearest(pending: &[usize], focus: usize) -> usize {
 }
 
 impl Inner {
+    /// One-time migration copying the legacy single `ai:api-key` into both
+    /// `ai:translate:api-key` and `ai:summarize:api-key` and removing the
+    /// legacy entry so deleting either key later stays deleted.
+    pub(crate) fn migrate_ai_keys(&self) -> Result<()> {
+        if self.store.meta_get(AI_KEYS_MIGRATED_META)?.is_some() {
+            return Ok(());
+        }
+        if let Some(legacy) = self
+            .platform
+            .secret_get(LEGACY_AI_KEY)
+            .filter(|k| !k.trim().is_empty())
+        {
+            if self.platform.secret_get(TRANSLATE_AI_KEY).is_none() {
+                let _ = self.platform.secret_set(TRANSLATE_AI_KEY, &legacy);
+            }
+            if self.platform.secret_get(SUMMARY_AI_KEY).is_none() {
+                let _ = self.platform.secret_set(SUMMARY_AI_KEY, &legacy);
+            }
+            self.platform.secret_delete(LEGACY_AI_KEY);
+        }
+        self.store.meta_set(AI_KEYS_MIGRATED_META, "1")?;
+        Ok(())
+    }
+
     pub(crate) fn ai_settings(&self) -> Result<AiSettings> {
         Ok(self
             .store
@@ -223,32 +273,66 @@ impl Inner {
             .unwrap_or_default())
     }
 
-    fn provider(&self, settings: &AiSettings) -> Result<Arc<dyn Provider>> {
-        let p = settings
-            .provider
-            .as_ref()
-            .ok_or_else(|| EngineError::Invalid("还没有设置模型服务。".into()))?;
-        let key = self
-            .platform
-            .secret_get(AI_KEY)
-            .ok_or_else(|| EngineError::Invalid("还没有填写模型 API Key。".into()))?;
-        self.limited_provider(p, &key)
+    pub(crate) fn has_role_key(&self, role: AiRole) -> bool {
+        self.platform
+            .secret_get(role.secret_key())
+            .is_some_and(|k| !k.trim().is_empty())
     }
 
-    /// A provider whose requests share the engine-wide limit.
-    fn limited_provider(&self, p: &ProviderSettings, key: &str) -> Result<Arc<dyn Provider>> {
-        let provider = OpenAiCompatible::new(&p.base_url, &p.model, key)
+    pub(crate) fn role_usage_today(&self, role: AiRole) -> Result<u32> {
+        Ok(self.store.ai_usage_today(&role.usage_day_key())?)
+    }
+
+    fn record_role_usage(&self, role: AiRole, count: u32) -> Result<()> {
+        self.store.add_ai_usage(&role.usage_day_key(), count)?;
+        Ok(())
+    }
+
+    fn provider_for(&self, settings: &AiSettings, role: AiRole) -> Result<Arc<dyn Provider>> {
+        let (provider_cfg, missing_provider_msg, missing_key_msg) = match role {
+            AiRole::Translation => (
+                settings.translation_provider.as_ref(),
+                "还没有在 Translation 设置里配置翻译模型服务。",
+                "还没有在 Translation 设置里填写 API Key。",
+            ),
+            AiRole::Summary => (
+                settings.summary_provider.as_ref(),
+                "还没有在 Summaries 设置里配置摘要模型服务。",
+                "还没有在 Summaries 设置里填写 API Key。",
+            ),
+        };
+        let p = provider_cfg.ok_or_else(|| EngineError::Invalid(missing_provider_msg.into()))?;
+        let key = self
+            .platform
+            .secret_get(role.secret_key())
+            .filter(|k| !k.trim().is_empty())
+            .ok_or_else(|| EngineError::Invalid(missing_key_msg.into()))?;
+        self.limited_provider(role, p, &key)
+    }
+
+    /// A provider whose requests share the role's concurrency limit.
+    fn limited_provider(
+        &self,
+        role: AiRole,
+        p: &ProviderSettings,
+        key: &str,
+    ) -> Result<Arc<dyn Provider>> {
+        let provider = ChatProvider::new(p.protocol, &p.base_url, &p.model, key)
             .map_err(|e| EngineError::Invalid(e.to_string()))?;
         Ok(Arc::new(Limited {
             inner: provider,
-            gate: self.ai_gate(p.concurrency()),
+            gate: self.role_gate(role, p.concurrency()),
         }))
     }
 
-    /// The shared semaphore, replaced when the configured size changes;
+    /// The per-role semaphore, replaced when the configured size changes;
     /// requests already holding the old one finish under it.
-    fn ai_gate(&self, size: usize) -> Arc<Semaphore> {
-        let mut gate = self.ai_gate.lock();
+    fn role_gate(&self, role: AiRole, size: usize) -> Arc<Semaphore> {
+        let mutex = match role {
+            AiRole::Translation => &self.translation_gate,
+            AiRole::Summary => &self.summary_gate,
+        };
+        let mut gate = mutex.lock();
         if gate.0 != size {
             *gate = (size, Arc::new(Semaphore::new(size)));
         }
@@ -278,7 +362,7 @@ impl Inner {
         on_batch: Option<BatchCallback>,
     ) -> Result<TranslationResult> {
         let settings = self.ai_settings()?;
-        let provider = self.provider(&settings)?;
+        let provider = self.provider_for(&settings, AiRole::Translation)?;
         let (doc, title) = self.ai_document(item_id)?;
         let target = settings.target_language.clone();
         let identity = provider.cache_identity();
@@ -386,7 +470,7 @@ impl Inner {
         let all_cached = pending.is_empty();
         let of_block = batch_of_blocks(&batches);
         let limit = settings
-            .provider
+            .translation_provider
             .as_ref()
             .map_or(1, ProviderSettings::concurrency);
         let mut in_flight = FuturesUnordered::new();
@@ -422,7 +506,7 @@ impl Inner {
                         {
                             return Ok(r);
                         }
-                        self.store.add_ai_usage(&today(), 1)?;
+                        self.record_role_usage(AiRole::Translation, 1)?;
                         let r = eddy_ai::translate_batch(provider, batch, target, glossary)
                             .await
                             .map_err(|e| EngineError::Invalid(e.to_string()))?;
@@ -492,10 +576,10 @@ impl Inner {
         })
     }
 
-    /// Translates `segments` with the configured provider, as many
+    /// Translates `segments` with the configured translation provider, as many
     /// requests at once as it allows, counting each against the day's
-    /// usage. Stops when cancelled under `key`, returning what is done;
-    /// a failed batch stops it with the error.
+    /// translation usage. Stops when cancelled under `key`, returning what is
+    /// done; a failed batch stops it with the error.
     pub(crate) async fn translate_text(
         &self,
         key: &str,
@@ -503,13 +587,13 @@ impl Inner {
         on_batch: Option<BatchCallback>,
     ) -> Result<HashMap<String, String>> {
         let settings = self.ai_settings()?;
-        let provider = self.provider(&settings)?;
+        let provider = self.provider_for(&settings, AiRole::Translation)?;
         let target = settings.target_language.clone();
         self.translation_cancels.lock().remove(key);
         let (segments, skipped) = needing_translation(segments, &target);
         let batches = batches(&segments);
         let limit = settings
-            .provider
+            .translation_provider
             .as_ref()
             .map_or(1, ProviderSettings::concurrency);
         let mut pending: Vec<usize> = (0..batches.len()).collect();
@@ -526,7 +610,7 @@ impl Inner {
         loop {
             while !stopped && failure.is_none() && in_flight.len() < limit && !pending.is_empty() {
                 let i = pending.remove(0);
-                self.store.add_ai_usage(&today(), 1)?;
+                self.record_role_usage(AiRole::Translation, 1)?;
                 let (provider, batch, target, glossary) =
                     (provider.as_ref(), &batches[i], &target, &settings.glossary);
                 in_flight.push(async move {
@@ -558,13 +642,14 @@ impl Inner {
 
     pub(crate) async fn summarize(&self, item_id: &str, force: bool) -> Result<SummaryResult> {
         let settings = self.ai_settings()?;
-        let provider = self.provider(&settings)?;
+        let provider = self.provider_for(&settings, AiRole::Summary)?;
         let (doc, title) = self.ai_document(item_id)?;
+        let lang = settings.summary_language.clone();
         let key = artifact_key(&[
             "summary",
             &doc.version.hash,
             &provider.cache_identity(),
-            &settings.target_language,
+            &lang,
             PROMPT_VERSION,
         ]);
         let request = self.ai_request(&key);
@@ -580,12 +665,12 @@ impl Inner {
                 cached: true,
             });
         }
-        self.store.add_ai_usage(&today(), 1)?;
+        self.record_role_usage(AiRole::Summary, 1)?;
         let summary = eddy_ai::summarize(
             provider.as_ref(),
             &title,
             &doc.document.plain_text(),
-            &settings.target_language,
+            &lang,
         )
         .await
         .map_err(|e| EngineError::Invalid(e.to_string()))?;
@@ -594,7 +679,7 @@ impl Inner {
             item_id,
             "summary",
             &doc.version.hash,
-            Some(&settings.target_language),
+            Some(&lang),
             Some(provider.model()),
             &serde_json::to_string(&summary)?,
             settings.sync_summaries,
@@ -609,7 +694,7 @@ impl Inner {
     /// HTML, the article extracted as saving would. Nothing is kept.
     pub(crate) async fn summarize_page(&self, url: &str, html: &str) -> Result<Summary> {
         let settings = self.ai_settings()?;
-        let provider = self.provider(&settings)?;
+        let provider = self.provider_for(&settings, AiRole::Summary)?;
         let rule = self.fetcher.read().rule_for(url).cloned();
         let extracted =
             extract(html, url, rule.as_ref()).map_err(|e| EngineError::Invalid(e.to_string()))?;
@@ -620,12 +705,12 @@ impl Inner {
                 title: extracted.title.as_deref(),
             },
         );
-        self.store.add_ai_usage(&today(), 1)?;
+        self.record_role_usage(AiRole::Summary, 1)?;
         eddy_ai::summarize(
             provider.as_ref(),
             extracted.title.as_deref().unwrap_or_default(),
             &document.plain_text(),
-            &settings.target_language,
+            &settings.summary_language,
         )
         .await
         .map_err(|e| EngineError::Invalid(e.to_string()))
@@ -635,11 +720,11 @@ impl Inner {
     /// this item are never re-applied; new names become suggestions.
     pub(crate) async fn suggest_tags(&self, item_id: &str) -> Result<ItemTagsResult> {
         let settings = self.ai_settings()?;
-        let provider = self.provider(&settings)?;
+        let provider = self.provider_for(&settings, AiRole::Summary)?;
         let (doc, title) = self.ai_document(item_id)?;
         let vocabulary = self.store.tags()?;
         let names: Vec<String> = vocabulary.iter().map(|(_, n)| n.clone()).collect();
-        self.store.add_ai_usage(&today(), 1)?;
+        self.record_role_usage(AiRole::Summary, 1)?;
         let result = eddy_ai::tag(
             provider.as_ref(),
             &title,
@@ -707,48 +792,66 @@ impl Inner {
         })
     }
 
-    /// Runs automatic AI rules on new items in the background, within the
-    /// daily budget. Results already present (e.g. synced from another
+    /// Runs automatic AI rules on new items in the background, within each
+    /// role's daily budget. Results already present (e.g. synced from another
     /// device) are reused instead of paid for again.
     pub(crate) fn auto_ai(self: &Arc<Self>, item_ids: Vec<String>) {
         let Ok(settings) = self.ai_settings() else {
             return;
         };
         let jobs = self.auto_jobs(&settings, item_ids);
-        self.run_auto_jobs(jobs, settings.daily_auto_limit);
+        self.run_auto_jobs(
+            jobs,
+            settings.translation_daily_limit,
+            settings.summary_daily_limit,
+        );
     }
 
-    /// The automatic rules for an item being read, within the day's budget:
-    /// the summary and translation they ask for, which the reader shows,
-    /// while the rest (tags) run in the background.
+    /// The automatic rules for an item being read, within each role's daily
+    /// budget: the summary and translation they ask for, which the reader
+    /// shows, while the rest (tags) run in the background.
     pub(crate) fn auto_ai_on_open(self: &Arc<Self>, item_id: &str) -> (bool, bool) {
         let Ok(settings) = self.ai_settings() else {
             return (false, false);
         };
         let jobs = self.auto_jobs(&settings, vec![item_id.to_string()]);
-        let within_budget =
-            || self.store.ai_usage_today(&today()).unwrap_or(u32::MAX) < settings.daily_auto_limit;
+        let trans_within_budget = || {
+            self.role_usage_today(AiRole::Translation)
+                .unwrap_or(u32::MAX)
+                < settings.translation_daily_limit
+        };
+        let sum_within_budget = || {
+            self.role_usage_today(AiRole::Summary).unwrap_or(u32::MAX)
+                < settings.summary_daily_limit
+        };
         let asks = |action| jobs.iter().any(|(_, a)| *a == action);
         let shown = (
-            asks(AutoAction::Summarize) && within_budget(),
-            asks(AutoAction::Translate) && within_budget(),
+            asks(AutoAction::Summarize) && sum_within_budget(),
+            asks(AutoAction::Translate) && trans_within_budget(),
         );
         let rest = jobs
             .into_iter()
             .filter(|(_, a)| !matches!(a, AutoAction::Summarize | AutoAction::Translate))
             .collect();
-        self.run_auto_jobs(rest, settings.daily_auto_limit);
+        self.run_auto_jobs(
+            rest,
+            settings.translation_daily_limit,
+            settings.summary_daily_limit,
+        );
         shown
     }
 
-    /// The (item, action) pairs the rules ask for; none without a provider
-    /// and key.
+    /// The (item, action) pairs the rules ask for; each action requires its
+    /// corresponding role provider and key to be configured.
     fn auto_jobs(&self, settings: &AiSettings, item_ids: Vec<String>) -> Vec<(String, AutoAction)> {
         let mut jobs = Vec::new();
-        if settings.rules.is_empty()
-            || settings.provider.is_none()
-            || self.platform.secret_get(AI_KEY).is_none()
-        {
+        if settings.rules.is_empty() {
+            return jobs;
+        }
+        let trans_ready =
+            settings.translation_provider.is_some() && self.has_role_key(AiRole::Translation);
+        let sum_ready = settings.summary_provider.is_some() && self.has_role_key(AiRole::Summary);
+        if !trans_ready && !sum_ready {
             return jobs;
         }
         let target_code = lang_code_for(&settings.target_language);
@@ -762,6 +865,13 @@ impl Inner {
                 .as_deref()
                 .and_then(|s| self.store.source(s).ok().flatten());
             for rule in &settings.rules {
+                let role_ready = match rule.action {
+                    AutoAction::Translate => trans_ready,
+                    AutoAction::Summarize | AutoAction::Tag => sum_ready,
+                };
+                if !role_ready {
+                    continue;
+                }
                 let in_scope = match &rule.scope {
                     RuleScope::All => true,
                     RuleScope::Source { id } => row.item.source_id.as_deref() == Some(id.as_str()),
@@ -788,7 +898,12 @@ impl Inner {
         jobs
     }
 
-    fn run_auto_jobs(self: &Arc<Self>, jobs: Vec<(String, AutoAction)>, limit: u32) {
+    fn run_auto_jobs(
+        self: &Arc<Self>,
+        jobs: Vec<(String, AutoAction)>,
+        translation_limit: u32,
+        summary_limit: u32,
+    ) {
         if jobs.is_empty() {
             return;
         }
@@ -799,7 +914,13 @@ impl Inner {
                 .for_each_concurrent(AUTO_CONCURRENCY, |(id, action)| {
                     let inner = inner.clone();
                     async move {
-                        if inner.store.ai_usage_today(&today()).unwrap_or(u32::MAX) >= limit {
+                        let (role, limit) = match action {
+                            AutoAction::Translate => (AiRole::Translation, translation_limit),
+                            AutoAction::Summarize | AutoAction::Tag => {
+                                (AiRole::Summary, summary_limit)
+                            }
+                        };
+                        if inner.role_usage_today(role).unwrap_or(u32::MAX) >= limit {
                             return;
                         }
                         let result = match action {
@@ -821,6 +942,17 @@ impl Inner {
     }
 }
 
+fn normalize_provider_in_place(p: &mut ProviderSettings) -> Result<()> {
+    p.model = p.model.trim().to_string();
+    if p.model.is_empty() {
+        return Err(EngineError::Invalid("请填写模型 ID。".into()));
+    }
+    p.base_url = normalize_provider_url(p.protocol, &p.base_url, &p.model)
+        .map_err(|e| EngineError::Invalid(e.to_string()))?;
+    p.max_concurrency = p.concurrency() as u32;
+    Ok(())
+}
+
 impl Engine {
     pub fn ai_settings(&self) -> Result<AiSettings> {
         self.inner.ai_settings()
@@ -828,14 +960,19 @@ impl Engine {
 
     /// Saves the (non-secret) AI settings; they sync like other settings.
     pub fn set_ai_settings(&self, mut settings: AiSettings) -> Result<()> {
-        if let Some(p) = settings.provider.as_mut() {
-            p.base_url =
-                normalize_base(&p.base_url).map_err(|e| EngineError::Invalid(e.to_string()))?;
-            p.model = p.model.trim().to_string();
-            if p.model.is_empty() {
-                return Err(EngineError::Invalid("请填写模型 ID。".into()));
-            }
-            p.max_concurrency = p.concurrency() as u32;
+        if let Some(p) = settings.translation_provider.as_mut() {
+            normalize_provider_in_place(p)?;
+        }
+        if let Some(p) = settings.summary_provider.as_mut() {
+            normalize_provider_in_place(p)?;
+        }
+        settings.target_language = settings.target_language.trim().to_string();
+        if settings.target_language.is_empty() {
+            settings.target_language = "English".into();
+        }
+        settings.summary_language = settings.summary_language.trim().to_string();
+        if settings.summary_language.is_empty() {
+            settings.summary_language = settings.target_language.clone();
         }
         self.inner.record(
             Entity::Setting,
@@ -846,25 +983,40 @@ impl Engine {
         )
     }
 
-    /// Stores the API key in this device's keychain only; `None` removes it.
-    pub fn set_ai_key(&self, key: Option<&str>) -> Result<()> {
+    /// Stores a role's API key in this device's keychain only; `None` removes it.
+    pub fn set_ai_role_key(&self, role: AiRole, key: Option<&str>) -> Result<()> {
         match key.map(str::trim).filter(|k| !k.is_empty()) {
             Some(k) => {
-                if !self.inner.platform.secret_set(AI_KEY, k) {
+                if !self.inner.platform.secret_set(role.secret_key(), k) {
                     return Err(EngineError::Invalid("无法把 API Key 保存到钥匙串。".into()));
                 }
             }
-            None => self.inner.platform.secret_delete(AI_KEY),
+            None => self.inner.platform.secret_delete(role.secret_key()),
         }
         Ok(())
     }
 
+    pub fn has_ai_role_key(&self, role: AiRole) -> bool {
+        self.inner.has_role_key(role)
+    }
+
+    /// Convenience helper setting both Translation and Summary keys at once.
+    pub fn set_ai_key(&self, key: Option<&str>) -> Result<()> {
+        self.set_ai_role_key(AiRole::Translation, key)?;
+        self.set_ai_role_key(AiRole::Summary, key)
+    }
+
     pub fn has_ai_key(&self) -> bool {
-        self.inner.platform.secret_get(AI_KEY).is_some()
+        self.has_ai_role_key(AiRole::Translation) || self.has_ai_role_key(AiRole::Summary)
+    }
+
+    pub fn ai_role_usage_today(&self, role: AiRole) -> Result<u32> {
+        self.inner.role_usage_today(role)
     }
 
     pub fn ai_usage_today(&self) -> Result<u32> {
-        Ok(self.inner.store.ai_usage_today(&today())?)
+        Ok(self.ai_role_usage_today(AiRole::Translation)?
+            + self.ai_role_usage_today(AiRole::Summary)?)
     }
 
     /// Translates the item's current content paragraph by paragraph.
@@ -1024,8 +1176,8 @@ impl Engine {
 
     /// Sends the configured number of translation requests at once with
     /// these (possibly unsaved) provider settings; `key` falls back to the
-    /// saved one. Nothing is cached or counted against the daily budget.
-    pub async fn test_ai_provider(
+    /// saved translation key. Nothing is cached or counted against the daily budget.
+    pub async fn test_translation_provider(
         &self,
         provider: ProviderSettings,
         key: Option<&str>,
@@ -1036,12 +1188,18 @@ impl Engine {
             None => self
                 .inner
                 .platform
-                .secret_get(AI_KEY)
-                .ok_or_else(|| EngineError::Invalid("还没有填写模型 API Key。".into()))?,
+                .secret_get(AiRole::Translation.secret_key())
+                .filter(|k| !k.trim().is_empty())
+                .ok_or_else(|| EngineError::Invalid("还没有填写翻译 API Key。".into()))?,
         };
-        let service = OpenAiCompatible::new(&provider.base_url, &provider.model, &key)
+        let service = ChatProvider::new(provider.protocol, &provider.base_url, &provider.model, &key)
             .map_err(|e| EngineError::Invalid(e.to_string()))?;
         let total = provider.concurrency();
+        let target = if target_language.trim().is_empty() {
+            "English"
+        } else {
+            target_language.trim()
+        };
         let sample = [
             Segment {
                 id: "p1".into(),
@@ -1054,7 +1212,7 @@ impl Engine {
         ];
         let started = std::time::Instant::now();
         let results = futures::future::join_all(
-            (0..total).map(|_| eddy_ai::translate_batch(&service, &sample, target_language, "")),
+            (0..total).map(|_| eddy_ai::translate_batch(&service, &sample, target, "")),
         )
         .await;
         let error = results
@@ -1067,6 +1225,63 @@ impl Engine {
             elapsed_ms: started.elapsed().as_millis() as u64,
             error,
         })
+    }
+
+    /// Sends the configured number of summary requests at once with these
+    /// (possibly unsaved) provider settings; `key` falls back to the saved
+    /// summary key. Nothing is cached or counted against the daily budget.
+    pub async fn test_summary_provider(
+        &self,
+        provider: ProviderSettings,
+        key: Option<&str>,
+        summary_language: &str,
+    ) -> Result<AiTestResult> {
+        let key = match key.map(str::trim).filter(|k| !k.is_empty()) {
+            Some(k) => k.to_string(),
+            None => self
+                .inner
+                .platform
+                .secret_get(AiRole::Summary.secret_key())
+                .filter(|k| !k.trim().is_empty())
+                .ok_or_else(|| EngineError::Invalid("还没有填写摘要 API Key。".into()))?,
+        };
+        let service = ChatProvider::new(provider.protocol, &provider.base_url, &provider.model, &key)
+            .map_err(|e| EngineError::Invalid(e.to_string()))?;
+        let total = provider.concurrency();
+        let lang = if summary_language.trim().is_empty() {
+            "English"
+        } else {
+            summary_language.trim()
+        };
+        let sample_title = "Library Hours and Borrowing Policy";
+        let sample_body = "The municipal library opens at nine in the morning from Monday through Saturday. \
+            Registered readers may borrow up to five books at a time for twenty-one days, and renewals can be \
+            requested online unless another reader has placed a hold.";
+        let started = std::time::Instant::now();
+        let results = futures::future::join_all(
+            (0..total).map(|_| eddy_ai::summarize(&service, sample_title, sample_body, lang)),
+        )
+        .await;
+        let error = results
+            .iter()
+            .find_map(|r| r.as_ref().err())
+            .map(|e| e.to_string());
+        Ok(AiTestResult {
+            total: total as u32,
+            passed: results.iter().filter(|r| r.is_ok()).count() as u32,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            error,
+        })
+    }
+
+    pub async fn test_ai_provider(
+        &self,
+        provider: ProviderSettings,
+        key: Option<&str>,
+        target_language: &str,
+    ) -> Result<AiTestResult> {
+        self.test_translation_provider(provider, key, target_language)
+            .await
     }
 
     /// Stops the item's translation once the batch in flight is done; what
