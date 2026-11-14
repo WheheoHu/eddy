@@ -304,6 +304,11 @@ struct ThreePaneView: View {
                     Button("Mark as Read") { model.setRead(item, true) }
                 }
                 if let url = item.url.flatMap(URL.init(string:)) {
+                    if isVideoUrl(url: url.absoluteString) {
+                        Button("Convert Video to Book…") {
+                            model.requestVideoConvert(source: url.absoluteString, title: item.title)
+                        }
+                    }
                     Button("Open in Browser") { NSWorkspace.shared.open(url) }
                     Button("Copy Link") {
                         NSPasteboard.general.clearContents()
@@ -546,6 +551,11 @@ struct CollectionList: View {
                 }
                 if entry.kind == .webPage {
                     Button("Convert to Web Series…") { Task { await model.convertToSeries(entry) } }
+                }
+                if let rawURL = entry.url, isVideoUrl(url: rawURL) {
+                    Button("Convert to Book…") {
+                        model.requestVideoConvert(source: rawURL, title: entry.title)
+                    }
                 }
                 Button("Delete…", role: .destructive) { model.requestDelete(entry) }
             }

@@ -20,6 +20,7 @@ mod rules;
 mod search;
 mod server;
 mod upstream;
+mod video;
 
 pub use ai::{
     AiTestResult, BatchCallback, ItemTagsResult, SummaryResult, TagInfo, TranslationResult,
@@ -49,6 +50,13 @@ pub use progress::{ResumePoint, SeriesInfo};
 pub use rules::RulePackSummary;
 pub use search::SearchResult;
 pub use upstream::HistoryCallback;
+pub use video::{
+    StartVideoJobOptions, VideoJobCallback, VideoJobInfo, VideoJobTarget, record_to_remote,
+};
+pub use eddy_video::{
+    PipelinePhase, ProtocolKind, StageEndpointSettings, ToolchainStatus, TranscriptPolicy,
+    VideoPipelineMode, VideoProbe, VideoSettings, VideoStageRole, is_video_file_path, is_video_url,
+};
 
 pub use eddy_store::{ItemFilter, ItemQuery, ItemRow};
 

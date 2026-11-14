@@ -91,6 +91,13 @@ struct MarkAllRequest: Identifiable {
     let until: Int64
 }
 
+/// A video URL or local video file ready for the Video-to-Book preflight sheet.
+struct VideoConvertRequest: Identifiable, Equatable {
+    let id = UUID()
+    var source: String
+    var suggestedTitle: String?
+}
+
 /// App-wide state over the engine. Views read lists through it so a single
 /// `revision` bump refreshes everything after a change.
 @Observable
@@ -159,6 +166,12 @@ final class AppModel {
     var savingURL = false
     var importing = false
     var mediaRequest: MediaRequest?
+    var pendingVideoConvert: VideoConvertRequest?
+    var videoJobs: [VideoJobView] = []
+    var serverVideoCapable = false
+    var showingVideoJobs = false
+    private var completedJobIDs: Set<String> = []
+    private var videoJobsRefreshTask: Task<Void, Never>?
 
     private var leadImages: [String: String?] = [:]
     private var imageCache = NSCache<NSString, NSImage>()
@@ -177,10 +190,17 @@ final class AppModel {
         }
         reload()
         guard let engine else { return }
+        engine.setVideoJobListener(listener: VideoJobBridge { [weak self] in
+            self?.scheduleVideoJobsRefresh()
+        })
         spoolWatcher = SpoolWatcher(path: engine.spoolDir()) { [weak self] in
             Task { @MainActor in await self?.importCaptures() }
         }
-        Task { await importCaptures() }
+        Task {
+            await importCaptures()
+            await refreshVideoJobs(initial: true)
+            await refreshServerCapability()
+        }
         observeActivation()
     }
 
@@ -452,9 +472,14 @@ final class AppModel {
         return image
     }
 
-    /// Imports EPUB books and PDFs, then brings the last one into view.
+    /// Imports EPUB books and PDFs, then brings the last one into view;
+    /// video files open the Video-to-Book preflight sheet.
     func importFiles(_ urls: [URL]) async {
         guard let engine, !urls.isEmpty else { return }
+        if let videoURL = urls.first(where: { isVideoFile(path: $0.path) }) {
+            pendingVideoConvert = VideoConvertRequest(source: videoURL.path, suggestedTitle: videoURL.deletingPathExtension().lastPathComponent)
+            return
+        }
         busy = true
         defer { busy = false }
         var imported: [ImportResultView] = []
@@ -790,10 +815,124 @@ final class AppModel {
     private func becameActive() {
         guard let engine, let status else { return }
         if status.mode == .server {
-            Task { await engine.startLiveSync() }
+            Task {
+                await engine.startLiveSync()
+                await refreshServerCapability()
+            }
         }
+        Task { await refreshVideoJobs(initial: false) }
         let stale = status.lastRefresh.map { Date().timeIntervalSince1970 * 1000 - Double($0) > 10 * 60 * 1000 } ?? true
         if status.mode != .unconfigured, stale { Task { await refresh() } }
+    }
+
+    // MARK: Video-to-Book Jobs
+
+    var activeVideoJobsCount: Int {
+        videoJobs.filter { $0.status == "queued" || $0.status == "running" }.count
+    }
+
+    func requestVideoConvert(source: String = "", title: String? = nil) {
+        pendingVideoConvert = VideoConvertRequest(source: source, suggestedTitle: title)
+    }
+
+    func refreshServerCapability() async {
+        guard let engine, status?.mode == .server else {
+            serverVideoCapable = false
+            return
+        }
+        serverVideoCapable = (try? await engine.serverStatus())?.videoCapable ?? false
+    }
+
+    func scheduleVideoJobsRefresh() {
+        guard videoJobsRefreshTask == nil else { return }
+        videoJobsRefreshTask = Task {
+            try? await Task.sleep(for: .milliseconds(250))
+            videoJobsRefreshTask = nil
+            await refreshVideoJobs(initial: false)
+        }
+    }
+
+    func refreshVideoJobs(initial: Bool) async {
+        guard let engine else { return }
+        let latest = (try? await engine.videoJobs()) ?? []
+        if initial {
+            completedJobIDs = Set(latest.filter { $0.status == "succeeded" }.map(\.id))
+            videoJobs = latest
+            return
+        }
+        var newlyFinished: VideoJobView?
+        for job in latest where job.status == "succeeded" && !completedJobIDs.contains(job.id) {
+            completedJobIDs.insert(job.id)
+            newlyFinished = job
+        }
+        videoJobs = latest
+        if let done = newlyFinished {
+            if done.target == .server {
+                _ = try? await engine.refresh()
+            }
+            reload()
+            if let itemID = done.resultItemId {
+                notice = Notice(text: String(localized: "Converted “\(done.title)”"), kind: .saved(itemID: itemID))
+            } else {
+                message = String(localized: "Converted “\(done.title)”")
+            }
+        }
+    }
+
+    func startVideoJob(_ request: StartVideoJobRequestView) async {
+        guard let engine else { return }
+        do {
+            _ = try await engine.startVideoJob(request: request)
+            await refreshVideoJobs(initial: false)
+            showingVideoJobs = true
+        } catch {
+            report(error)
+        }
+    }
+
+    func retryVideoJob(_ job: VideoJobView) async {
+        guard let engine else { return }
+        do {
+            _ = try await engine.retryVideoJob(id: job.id, target: job.target)
+            await refreshVideoJobs(initial: false)
+        } catch {
+            report(error)
+        }
+    }
+
+    func cancelVideoJob(_ job: VideoJobView) async {
+        guard let engine else { return }
+        do {
+            _ = try await engine.cancelVideoJob(id: job.id, target: job.target)
+            await refreshVideoJobs(initial: false)
+        } catch {
+            report(error)
+        }
+    }
+
+    func dismissVideoJob(_ job: VideoJobView) async {
+        guard let engine else { return }
+        do {
+            try await engine.dismissVideoJob(id: job.id, target: job.target)
+            completedJobIDs.remove(job.id)
+            await refreshVideoJobs(initial: false)
+        } catch {
+            report(error)
+        }
+    }
+}
+
+/// Forwards background video job updates to the main actor.
+final class VideoJobBridge: VideoJobListener, @unchecked Sendable {
+    private let handler: @MainActor () -> Void
+
+    init(_ handler: @escaping @MainActor () -> Void) {
+        self.handler = handler
+    }
+
+    func onChange() {
+        let handler = handler
+        Task { @MainActor in handler() }
     }
 }
 

@@ -50,7 +50,8 @@ struct EddyApp: App {
         .commands {
             CommandGroup(after: .newItem) {
                 Button("Save Page…") { model.savingURL = true }.keyboardShortcut("l", modifiers: .command)
-                Button("Import EPUB or PDF…") { model.importing = true }.keyboardShortcut("o", modifiers: .command)
+                Button("Convert Video to Book…") { model.requestVideoConvert() }.keyboardShortcut("L", modifiers: [.command, .shift])
+                Button("Import EPUB, PDF, or Video…") { model.importing = true }.keyboardShortcut("o", modifiers: .command)
                 Button("Refresh") { Task { await model.refresh() } }.keyboardShortcut("r", modifiers: .command)
             }
             CommandGroup(before: .toolbar) {
@@ -78,7 +79,7 @@ struct RootView: View {
     let mode: AppMode
     @State private var keyMonitor: Any?
 
-    static let importTypes: [UTType] = [.epub, .pdf]
+    static let importTypes: [UTType] = [.epub, .pdf, .mpeg4Movie, .quickTimeMovie, .movie, .audiovisualContent]
 
     var body: some View {
         @Bindable var model = model
@@ -157,6 +158,9 @@ struct RootView: View {
             return true
         }
         .sheet(isPresented: $model.savingURL) { SavePageSheet() }
+        .sheet(item: $model.pendingVideoConvert) { req in
+            VideoConvertSheet(request: req)
+        }
         .sheet(item: Binding(get: { model.pendingSeries.map(SeriesProposalBox.init) }, set: { if $0 == nil { model.pendingSeries = nil } })) { box in
             SeriesProposalSheet(proposal: box.proposal)
         }
@@ -168,18 +172,31 @@ private struct SavePageSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var url = ""
 
+    private var looksLikeVideo: Bool {
+        isVideoUrl(url: url.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Save a Page").font(.headline)
             TextField("https://", text: $url).textFieldStyle(.roundedBorder).frame(width: 420).onSubmit(save)
-            Text("Eddy fetches the article now and keeps it for offline reading. Saving a table of contents offers to add the whole series.")
+            Text(looksLikeVideo
+                 ? "Video link detected: save it as a media bookmark, or convert the presentation into an illustrated multi-chapter book."
+                 : "Eddy fetches the article now and keeps it for offline reading. Saving a table of contents offers to add the whole series.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .frame(width: 420, alignment: .leading)
             HStack {
+                if looksLikeVideo {
+                    Button("Convert to Book…") {
+                        let target = url.trimmingCharacters(in: .whitespacesAndNewlines)
+                        dismiss()
+                        model.requestVideoConvert(source: target)
+                    }
+                }
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Save") { save() }.keyboardShortcut(.defaultAction).disabled(url.isEmpty)
+                Button(looksLikeVideo ? "Save Video" : "Save") { save() }.keyboardShortcut(.defaultAction).disabled(url.isEmpty)
             }
         }
         .padding(20)

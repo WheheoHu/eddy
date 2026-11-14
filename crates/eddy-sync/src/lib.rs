@@ -48,6 +48,39 @@ pub struct ServerInfo {
     pub server_id: String,
     pub account: Option<AccountInfo>,
     pub cursor: i64,
+    #[serde(default)]
+    pub video_capable: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateVideoJobRequest {
+    pub source: String,
+    #[serde(default)]
+    pub pipeline: Option<String>,
+    #[serde(default)]
+    pub transcript_policy: Option<String>,
+    #[serde(default)]
+    pub target_language: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteVideoJob {
+    pub id: String,
+    pub source: String,
+    pub title: String,
+    pub pipeline: String,
+    pub transcript_policy: String,
+    pub target_language: String,
+    pub phase: String,
+    pub status: String,
+    pub completed_chapters: u32,
+    pub total_chapters: u32,
+    pub detail: String,
+    pub error: Option<String>,
+    pub result_series_id: Option<String>,
+    pub result_item_id: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -314,6 +347,31 @@ impl SyncClient {
         .await
     }
 
+    pub async fn video_jobs(&self) -> Result<Vec<RemoteVideoJob>> {
+        self.json(self.http.get(self.url("video-jobs"))).await
+    }
+
+    pub async fn create_video_job(&self, req: &CreateVideoJobRequest) -> Result<RemoteVideoJob> {
+        self.json(self.http.post(self.url("video-jobs")).json(req))
+            .await
+    }
+
+    pub async fn retry_video_job(&self, id: &str) -> Result<RemoteVideoJob> {
+        self.json(self.http.post(self.url(&format!("video-jobs/{id}/retry"))))
+            .await
+    }
+
+    pub async fn cancel_video_job(&self, id: &str) -> Result<RemoteVideoJob> {
+        self.json(self.http.post(self.url(&format!("video-jobs/{id}/cancel"))))
+            .await
+    }
+
+    pub async fn dismiss_video_job(&self, id: &str) -> Result<()> {
+        self.send(self.http.delete(self.url(&format!("video-jobs/{id}"))))
+            .await
+            .map(|_| ())
+    }
+
     /// Opens the live channel and calls `on_change` with the server cursor
     /// whenever new ops land. Returns when the connection closes.
     pub async fn listen(&self, mut on_change: impl FnMut(i64) + Send) -> Result<()> {
@@ -343,9 +401,12 @@ impl SyncClient {
             let message = message.map_err(|e| SyncError::Network(e.to_string()))?;
             if let Ok(text) = message.to_text()
                 && let Ok(n) = serde_json::from_str::<serde_json::Value>(text)
-                && let Some(cursor) = n["cursor"].as_i64()
             {
-                on_change(cursor);
+                if let Some(cursor) = n["cursor"].as_i64() {
+                    on_change(cursor);
+                } else if n["video_jobs"].as_bool() == Some(true) {
+                    on_change(-1);
+                }
             }
         }
         Ok(())

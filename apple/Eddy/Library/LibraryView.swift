@@ -350,6 +350,11 @@ struct LibraryView: View {
             if entry.kind == .webPage {
                 Button("Convert to Web Series…") { Task { await model.convertToSeries(entry) } }
             }
+            if let rawURL = entry.url, isVideoUrl(url: rawURL) {
+                Button("Convert to Book…") {
+                    model.requestVideoConvert(source: rawURL, title: entry.title)
+                }
+            }
             Button("Delete…", role: .destructive) { model.requestDelete(entry) }
         }
     }

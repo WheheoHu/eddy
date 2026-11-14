@@ -237,6 +237,20 @@ impl Inner {
         }
     }
 
+    pub(crate) fn import_epub_bytes(&self, bytes: &[u8], fallback_title: &str) -> Result<Imported> {
+        if bytes.len() as u64 > MAX_IMPORT_BYTES {
+            return Err(EngineError::Invalid(format!(
+                "文件太大，最多支持 {} MB。",
+                MAX_IMPORT_BYTES / 1024 / 1024
+            )));
+        }
+        let key = ids::sha256_hex(bytes);
+        if let Some(existing) = self.existing_import(&key)? {
+            return Ok(existing);
+        }
+        self.import_epub(bytes, &key, fallback_title)
+    }
+
     fn existing_import(&self, key: &str) -> Result<Option<Imported>> {
         for item_id in self.store.items_with_raw_blob(key)? {
             let Some(row) = self.store.item(&item_id)? else {

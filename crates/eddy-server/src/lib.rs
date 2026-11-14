@@ -13,14 +13,18 @@ use axum::extract::{DefaultBodyLimit, FromRequestParts, Path, Query, State};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
-use eddy_core::{Engine, EngineOptions, HistoryCallback};
+use eddy_core::{
+    Engine, EngineOptions, HistoryCallback, StartVideoJobOptions, TranscriptPolicy, VideoJobTarget,
+    VideoPipelineMode, record_to_remote,
+};
 use eddy_model::ids::sha256_hex;
 use eddy_store::Store;
 use eddy_sync::{
-    AccountInfo, AccountRequest, ConfigEntry, ErrorBody, PROTOCOL_VERSION, PairRequest,
-    PairResponse, PullResponse, PushRequest, PushResponse, SearchHit, ServerInfo,
+    AccountInfo, AccountRequest, ConfigEntry, CreateVideoJobRequest, ErrorBody, PROTOCOL_VERSION,
+    PairRequest, PairResponse, PullResponse, PushRequest, PushResponse, RemoteVideoJob, SearchHit,
+    ServerInfo,
 };
 use serde::Deserialize;
 use tokio::sync::broadcast;
@@ -36,6 +40,7 @@ pub struct AppState {
     pub store: Store,
     pub server_id: String,
     pub changes: broadcast::Sender<i64>,
+    pub video_events: broadcast::Sender<()>,
 }
 
 impl AppState {
@@ -65,11 +70,13 @@ impl AppState {
             }
         };
         let (changes, _) = broadcast::channel(64);
+        let (video_events, _) = broadcast::channel(64);
         Ok(Arc::new(AppState {
             engine,
             store,
             server_id,
             changes,
+            video_events,
         }))
     }
 
@@ -82,6 +89,7 @@ impl AppState {
                 username: a.username,
             }),
             cursor: self.engine.server_cursor().map_err(ApiError::internal)?,
+            video_capable: self.engine.server_video_capable(),
         })
     }
 
@@ -89,6 +97,11 @@ impl AppState {
         if let Ok(cursor) = self.engine.server_cursor() {
             let _ = self.changes.send(cursor);
         }
+    }
+
+    fn announce_video_job_event(&self) {
+        self.announce();
+        let _ = self.video_events.send(());
     }
 
     /// Pulls FreshRSS now; announces new ops to listening devices. Older
@@ -197,6 +210,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/config", get(config))
         .route("/v1/config/{key}", put(put_config).delete(delete_config))
         .route("/v1/search", get(search))
+        .route("/v1/video-jobs", get(list_video_jobs).post(create_video_job))
+        .route("/v1/video-jobs/{id}/retry", post(retry_video_job))
+        .route("/v1/video-jobs/{id}/cancel", post(cancel_video_job))
+        .route("/v1/video-jobs/{id}", delete(dismiss_video_job))
         .route("/v1/ws", get(ws))
         .layer(DefaultBodyLimit::max(80 * 1024 * 1024))
         .with_state(state)
@@ -439,8 +456,113 @@ async fn ws(State(s): State<Arc<AppState>>, _d: Device, upgrade: WebSocketUpgrad
     upgrade.on_upgrade(move |socket| live(socket, s))
 }
 
+async fn list_video_jobs(
+    State(s): State<Arc<AppState>>,
+    _d: Device,
+) -> Result<Json<Vec<RemoteVideoJob>>, ApiError> {
+    let jobs = s
+        .engine
+        .local_video_job_records(50)
+        .map_err(ApiError::internal)?;
+    Ok(Json(jobs.into_iter().map(record_to_remote).collect()))
+}
+
+async fn create_video_job(
+    State(s): State<Arc<AppState>>,
+    _d: Device,
+    Json(req): Json<CreateVideoJobRequest>,
+) -> Result<Json<RemoteVideoJob>, ApiError> {
+    let src = req.source.trim();
+    if !(src.starts_with("https://") || src.starts_with("http://")) {
+        return Err(ApiError::bad("Server video jobs only accept http:// or https:// URLs."));
+    }
+    let pipeline = match req.pipeline.as_deref() {
+        Some("gemini_two_stage") => Some(VideoPipelineMode::GeminiTwoStage),
+        Some("local_frames_two_stage") => Some(VideoPipelineMode::LocalFramesTwoStage),
+        Some("auto") => Some(VideoPipelineMode::Auto),
+        _ => None,
+    };
+    let policy = match req.transcript_policy.as_deref() {
+        Some("prefer_manual_subtitles") => Some(TranscriptPolicy::PreferManualSubtitles),
+        Some("always_asr") => Some(TranscriptPolicy::AlwaysAsr),
+        Some("prefer_any_subtitles") => Some(TranscriptPolicy::PreferAnySubtitles),
+        _ => None,
+    };
+
+    let state_cb = s.clone();
+    let notify: Arc<dyn Fn() + Send + Sync> = Arc::new(move || state_cb.announce_video_job_event());
+    let created = s
+        .engine
+        .enqueue_local_video_job(
+            StartVideoJobOptions {
+                source: src.to_string(),
+                target: VideoJobTarget::Local,
+                pipeline,
+                transcript_policy: policy,
+                target_language: req.target_language,
+                cookies_from_browser: None,
+            },
+            Some(notify),
+        )
+        .map_err(ApiError::bad)?;
+    s.announce_video_job_event();
+    let rec = s
+        .engine
+        .local_video_job_record(&created.id)
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::internal("created video job missing"))?;
+    Ok(Json(record_to_remote(rec)))
+}
+
+async fn retry_video_job(
+    State(s): State<Arc<AppState>>,
+    _d: Device,
+    Path(id): Path<String>,
+) -> Result<Json<RemoteVideoJob>, ApiError> {
+    let state_cb = s.clone();
+    let notify: Arc<dyn Fn() + Send + Sync> = Arc::new(move || state_cb.announce_video_job_event());
+    s.engine
+        .retry_local_video_job(&id, Some(notify))
+        .map_err(ApiError::bad)?;
+    s.announce_video_job_event();
+    let rec = s
+        .engine
+        .local_video_job_record(&id)
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "Job not found".into()))?;
+    Ok(Json(record_to_remote(rec)))
+}
+
+async fn cancel_video_job(
+    State(s): State<Arc<AppState>>,
+    _d: Device,
+    Path(id): Path<String>,
+) -> Result<Json<RemoteVideoJob>, ApiError> {
+    s.engine.cancel_local_video_job(&id).map_err(ApiError::bad)?;
+    s.announce_video_job_event();
+    let rec = s
+        .engine
+        .local_video_job_record(&id)
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "Job not found".into()))?;
+    Ok(Json(record_to_remote(rec)))
+}
+
+async fn dismiss_video_job(
+    State(s): State<Arc<AppState>>,
+    _d: Device,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    s.engine
+        .dismiss_local_video_job(&id)
+        .map_err(ApiError::internal)?;
+    s.announce_video_job_event();
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn live(mut socket: WebSocket, s: Arc<AppState>) {
     let mut rx = s.changes.subscribe();
+    let mut vrx = s.video_events.subscribe();
     if let Ok(cursor) = s.engine.server_cursor()
         && socket
             .send(Message::Text(
@@ -456,6 +578,15 @@ async fn live(mut socket: WebSocket, s: Arc<AppState>) {
             change = rx.recv() => match change {
                 Ok(cursor) => {
                     if socket.send(Message::Text(serde_json::json!({ "cursor": cursor }).to_string().into())).await.is_err() {
+                        break;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            },
+            v_ev = vrx.recv() => match v_ev {
+                Ok(()) => {
+                    if socket.send(Message::Text(serde_json::json!({ "video_jobs": true }).to_string().into())).await.is_err() {
                         break;
                     }
                 }

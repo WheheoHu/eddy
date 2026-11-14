@@ -5,13 +5,14 @@ import WebKit
 
 /// The settings pages; the command palette opens one by name.
 enum SettingsTab: String, CaseIterable, Identifiable {
-    case accounts = "Accounts", reading = "Reading", saving = "Saving", storage = "Storage", ai = "AI"
+    case accounts = "Accounts", reading = "Reading", saving = "Saving", storage = "Storage", ai = "AI", video = "Video"
     var id: String { rawValue }
 
     var icon: String {
         switch self {
         case .accounts: "person.crop.circle"
         case .ai: "sparkles"
+        case .video: "film.stack"
         case .reading: "textformat"
         case .saving: "square.and.arrow.down"
         case .storage: "internaldrive"
@@ -26,13 +27,14 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .saving: .green
         case .storage: .gray
         case .ai: .purple
+        case .video: .indigo
         }
     }
 
     var group: SettingsGroup {
         switch self {
         case .accounts, .reading, .saving, .storage: .general
-        case .ai: .intelligence
+        case .ai, .video: .intelligence
         }
     }
 }
@@ -85,6 +87,7 @@ struct SettingsView: View {
         switch tab {
         case .accounts: AccountsSettings()
         case .ai: AISettings()
+        case .video: VideoSettingsPage()
         case .reading: ReadingSettings()
         case .saving: SavingSettings()
         case .storage: StorageSettings()

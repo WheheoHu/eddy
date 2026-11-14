@@ -16,6 +16,7 @@ eddy-media = { workspace = true }
 eddy-model = { workspace = true }
 eddy-search = { path = "../eddy-search" }
 eddy-sync = { path = "../eddy-sync" }
+eddy-video = { workspace = true }
 eddy-source-greader = { workspace = true }
 eddy-store = { workspace = true }
 futures = { workspace = true }

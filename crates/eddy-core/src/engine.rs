@@ -112,6 +112,9 @@ pub(crate) struct Inner {
     pub media_pending: parking_lot::Mutex<std::collections::HashSet<String>>,
     /// PDFs whose figures are being rendered into the image cache.
     pub pdf_warming: parking_lot::Mutex<std::collections::HashSet<String>>,
+    pub video_cancels:
+        parking_lot::Mutex<std::collections::HashMap<String, Arc<std::sync::atomic::AtomicBool>>>,
+    pub video_listener: RwLock<Option<crate::video::VideoJobCallback>>,
 }
 
 /// Cheap to clone; all clones share one engine.
@@ -167,7 +170,10 @@ impl Engine {
             media_gate: tokio::sync::Semaphore::new(4),
             media_pending: parking_lot::Mutex::new(Default::default()),
             pdf_warming: parking_lot::Mutex::new(Default::default()),
+            video_cancels: parking_lot::Mutex::new(Default::default()),
+            video_listener: RwLock::new(None),
         });
+        let _ = inner.store.recover_interrupted_video_jobs(now_ms());
         inner.rebuild_fetcher()?;
         inner.store.upsert_source(&Source {
             id: ids::saved_source_id(),
