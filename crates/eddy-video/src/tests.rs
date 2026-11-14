@@ -2,7 +2,8 @@ use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::client::{
-    UserPart, build_http_client, call_stage_model, extract_json_object, test_stage_endpoint,
+    UserPart, build_streaming_http_client, call_gemini_generate_content_with_retries,
+    call_stage_model, extract_json_object, test_stage_endpoint,
 };
 use crate::epub_builder::build_epub_bytes;
 use crate::media::parse_vtt_or_srt;
@@ -149,7 +150,7 @@ async fn calls_gemini_token_relay_with_dual_headers_and_skips_thought() {
         model: "gemini-3.8-flash".into(),
         api_key: "sk-station-secret".into(),
     };
-    let http = build_http_client(15).unwrap();
+    let http = build_streaming_http_client(15, 30).unwrap();
     let out = call_stage_model(
         &http,
         &ep,
@@ -220,7 +221,7 @@ async fn retries_on_http_429_rate_limit_and_recovers() {
         model: "gpt-4.1-mini".into(),
         api_key: "sk-test".into(),
     };
-    let http = build_http_client(15).unwrap();
+    let http = build_streaming_http_client(15, 30).unwrap();
     let out = call_stage_model(
         &http,
         &ep,
@@ -243,4 +244,276 @@ fn video_settings_deserializes_legacy_json_with_default_vlm_slot() {
     assert!(parsed.vlm.url.is_empty());
     assert_eq!(VideoStageRole::Vlm.secret_key(), "video:vlm-key");
 }
+
+#[test]
+fn bare_relay_url_defaults_to_openai_even_when_model_contains_gemini() {
+    let bare_relay = StageEndpoint {
+        protocol: ProtocolKind::Auto,
+        url: "https://relay.example.com/".into(),
+        model: "gemini-3.5-flash-lite".into(),
+        api_key: "sk-relay".into(),
+    };
+    assert_eq!(bare_relay.resolved_protocol(), ResolvedProtocol::OpenAi);
+
+    let google_official = StageEndpoint {
+        protocol: ProtocolKind::Auto,
+        url: "https://generativelanguage.googleapis.com".into(),
+        model: "gemini-2.5-flash".into(),
+        api_key: "AIzaSyTestKey123456789012345".into(),
+    };
+    assert_eq!(google_official.resolved_protocol(), ResolvedProtocol::Gemini);
+
+    let google_openai_compat = StageEndpoint {
+        protocol: ProtocolKind::Auto,
+        url: "https://generativelanguage.googleapis.com/v1beta/openai".into(),
+        model: "gemini-2.5-flash".into(),
+        api_key: "AIzaSyTestKey123456789012345".into(),
+    };
+    assert_eq!(
+        google_openai_compat.resolved_protocol(),
+        ResolvedProtocol::OpenAi
+    );
+}
+
+#[tokio::test]
+async fn streams_gemini_sse_chunks_skipping_thoughts_and_reassembling_json() {
+    use wiremock::matchers::query_param;
+
+    let server = MockServer::start().await;
+    let sse_body = concat!(
+        "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"deep video reasoning...\",\"thought\":true}]}}]}\n\n",
+        "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"{\\\"article_\"}]}}]}\n\n",
+        "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"title\\\": \\\"Blurring at 20,000 FPS\\\"}\"}],\"role\":\"model\"},\"finishReason\":\"STOP\"}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+    Mock::given(method("POST"))
+        .and(path("/v1beta/models/gemini-4-hydrogen:streamGenerateContent"))
+        .and(query_param("alt", "sse"))
+        .and(header("x-goog-api-key", "sk-station-secret"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream; charset=utf-8")
+                .set_body_string(sse_body),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let ep = StageEndpoint {
+        protocol: ProtocolKind::Auto,
+        url: format!("{}/v1beta", server.uri()),
+        model: "gemini-4-hydrogen".into(),
+        api_key: "sk-station-secret".into(),
+    };
+    let http = build_streaming_http_client(15, 30).unwrap();
+    let out = call_stage_model(
+        &http,
+        &ep,
+        "Return JSON.",
+        &[UserPart::Text("Analyze clip".into())],
+        0.15,
+        16384,
+        true,
+    )
+    .await
+    .unwrap();
+    let parsed = extract_json_object(&out.text).unwrap();
+    assert_eq!(parsed["article_title"], "Blurring at 20,000 FPS");
+}
+
+#[tokio::test]
+async fn retries_mid_body_truncation_and_surfaces_underlying_cause_on_exhaustion() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    // Case 1: First response truncates mid-chunk (`error decoding response body`), second succeeds.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let hits_srv = hits.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                break;
+            };
+            let n = hits_srv.fetch_add(1, Ordering::SeqCst);
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 4096];
+                let _ = sock.read(&mut buf).await;
+                if n == 0 {
+                    let partial = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n10\r\ndata: {\"broken\"";
+                    let _ = sock.write_all(partial).await;
+                    drop(sock);
+                } else {
+                    let body = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"{\\\"recovered\\\": true}\"}]}}]}\n\n";
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                }
+            });
+        }
+    });
+
+    let ep = StageEndpoint {
+        protocol: ProtocolKind::Gemini,
+        url: format!("http://{addr}/v1beta"),
+        model: "gemini-4-hydrogen".into(),
+        api_key: "sk-secret-recover".into(),
+    };
+    let http = build_streaming_http_client(15, 30).unwrap();
+    let out = call_stage_model(
+        &http,
+        &ep,
+        "",
+        &[UserPart::Text("Test".into())],
+        0.1,
+        256,
+        true,
+    )
+    .await
+    .unwrap();
+    let json = extract_json_object(&out.text).unwrap();
+    assert_eq!(json["recovered"], true);
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+
+    // Case 2: Persistent mid-body truncation surfaces underlying cause chain and redacts key.
+    let fail_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fail_addr = fail_listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = fail_listener.accept().await {
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 4096];
+                let _ = sock.read(&mut buf).await;
+                let partial = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n20\r\n{\"incomplete\":";
+                let _ = sock.write_all(partial).await;
+                drop(sock);
+            });
+        }
+    });
+
+    let fail_ep = StageEndpoint {
+        protocol: ProtocolKind::Gemini,
+        url: format!("http://{fail_addr}/v1beta"),
+        model: "gemini-4-hydrogen".into(),
+        api_key: "sk-secret-exhausted".into(),
+    };
+    let err = call_gemini_generate_content_with_retries(
+        &http,
+        &fail_ep,
+        "",
+        &[UserPart::Text("Test".into())],
+        0.1,
+        256,
+        true,
+        0,
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(!err.contains("sk-secret-exhausted"));
+    // Must contain underlying transport cause (e.g., incomplete message / unexpected EOF),
+    // not just the bare outer `error decoding response body for url (...)` wrapper.
+    assert!(
+        err.to_ascii_lowercase().contains("incomplete")
+            || err.to_ascii_lowercase().contains("eof")
+            || err.to_ascii_lowercase().contains("closed"),
+        "expected detailed transport cause, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn streams_openai_sse_and_labels_mid_body_read_timeout() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let server = MockServer::start().await;
+    let openai_sse = concat!(
+        "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"title\\\": \"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"\\\"Box Blur\\\"}\"}}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(header("authorization", "Bearer sk-openai-stream"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(openai_sse),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let ep = StageEndpoint {
+        protocol: ProtocolKind::Auto,
+        url: format!("{}/v1", server.uri()),
+        model: "claude-opus-5-5".into(),
+        api_key: "sk-openai-stream".into(),
+    };
+    let http = build_streaming_http_client(10, 20).unwrap();
+    let out = call_stage_model(
+        &http,
+        &ep,
+        "Write JSON.",
+        &[UserPart::Text("Chapter 1".into())],
+        0.2,
+        1024,
+        true,
+    )
+    .await
+    .unwrap();
+    let parsed = extract_json_object(&out.text).unwrap();
+    assert_eq!(parsed["title"], "Box Blur");
+
+    // Verify mid-body stall surfaces `Request timed out` rather than bare `error decoding response body`.
+    let stall_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let stall_addr = stall_listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        if let Ok((mut sock, _)) = stall_listener.accept().await {
+            let mut buf = vec![0u8; 4096];
+            let _ = sock.read(&mut buf).await;
+            let _ = sock
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
+                .await;
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        }
+    });
+
+    let stall_ep = StageEndpoint {
+        protocol: ProtocolKind::Gemini,
+        url: format!("http://{stall_addr}/v1beta"),
+        model: "gemini-4-hydrogen".into(),
+        api_key: "sk-stall-secret".into(),
+    };
+    let short_http = build_streaming_http_client(1, 5).unwrap();
+    let stall_err = call_gemini_generate_content_with_retries(
+        &short_http,
+        &stall_ep,
+        "",
+        &[UserPart::Text("Ping".into())],
+        0.1,
+        256,
+        true,
+        0,
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(!stall_err.contains("sk-stall-secret"));
+    assert!(
+        stall_err.starts_with("Request timed out:"),
+        "expected Request timed out prefix, got: {stall_err}"
+    );
+    assert!(
+        stall_err.to_ascii_lowercase().contains("timed out"),
+        "expected timed out details, got: {stall_err}"
+    );
+}
+
 

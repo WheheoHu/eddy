@@ -18,7 +18,8 @@ use tokio::sync::Semaphore;
 
 use crate::VideoError;
 use crate::client::{
-    UserPart, build_http_client, call_gemini_generate_content, retry_delay_for_status,
+    UserPart, build_streaming_http_client, call_gemini_generate_content, collect_response_bytes,
+    format_network_error, retry_delay_for_status,
 };
 use crate::media::{merge_micro_segments, run_cmd};
 use crate::models::{TranscriptBundle, TranscriptSegment};
@@ -157,7 +158,7 @@ pub async fn transcribe_with_api(
     let total_chunks = windows.len();
     let sliced = slice_audio_windows(ffmpeg, audio_path, &windows, &chunks_dir).await?;
 
-    let http = build_http_client(240)?;
+    let http = build_streaming_http_client(120, 360)?;
     let sem = Arc::new(Semaphore::new(2));
     let done_count = Arc::new(AtomicUsize::new(0));
     let mut futs = FuturesUnordered::new();
@@ -363,10 +364,10 @@ async fn call_openai_chat_input_audio(
             Ok(r) => r,
             Err(_e) if attempt < 3 => {
                 attempt += 1;
-                tokio::time::sleep(Duration::from_secs(3 * attempt as u64)).await;
+                tokio::time::sleep(Duration::from_secs(2 * attempt as u64)).await;
                 continue;
             }
-            Err(e) => return Err(VideoError::Network(redact_text(&e.to_string(), &secrets))),
+            Err(e) => return Err(VideoError::Network(format_network_error(&e, &secrets))),
         };
 
         let status = resp.status();
@@ -389,10 +390,16 @@ async fn call_openai_chat_input_audio(
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
-        let raw = resp
-            .text()
-            .await
-            .map_err(|e| VideoError::Network(redact_text(&e.to_string(), &secrets)))?;
+        let raw_bytes = match collect_response_bytes(resp).await {
+            Ok(b) => b,
+            Err(_e) if attempt < 3 => {
+                attempt += 1;
+                tokio::time::sleep(Duration::from_secs(2 * attempt as u64)).await;
+                continue;
+            }
+            Err(e) => return Err(VideoError::Network(format_network_error(&e, &secrets))),
+        };
+        let raw = String::from_utf8_lossy(&raw_bytes).into_owned();
         break (status, headers, ct, raw);
     };
 
@@ -455,10 +462,10 @@ async fn call_openai_audio_transcriptions(
             Ok(r) => r,
             Err(_e) if attempt < 3 => {
                 attempt += 1;
-                tokio::time::sleep(Duration::from_secs(3 * attempt as u64)).await;
+                tokio::time::sleep(Duration::from_secs(2 * attempt as u64)).await;
                 continue;
             }
-            Err(e) => return Err(VideoError::Network(redact_text(&e.to_string(), &secrets))),
+            Err(e) => return Err(VideoError::Network(format_network_error(&e, &secrets))),
         };
 
         let status = resp.status();
@@ -473,10 +480,16 @@ async fn call_openai_audio_transcriptions(
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
-        let raw = resp
-            .text()
-            .await
-            .map_err(|e| VideoError::Network(redact_text(&e.to_string(), &secrets)))?;
+        let raw_bytes = match collect_response_bytes(resp).await {
+            Ok(b) => b,
+            Err(_e) if attempt < 3 => {
+                attempt += 1;
+                tokio::time::sleep(Duration::from_secs(2 * attempt as u64)).await;
+                continue;
+            }
+            Err(e) => return Err(VideoError::Network(format_network_error(&e, &secrets))),
+        };
+        let raw = String::from_utf8_lossy(&raw_bytes).into_owned();
         break (status, headers, ct, raw);
     };
 
