@@ -59,8 +59,11 @@ pub(crate) async fn run_cmd(
     args: &[&str],
     secrets: &[&str],
 ) -> Result<(String, String), VideoError> {
+    let bin_parent = Path::new(bin).parent().unwrap_or_else(|| Path::new(""));
+    let child_path = crate::toolchain::augmented_child_path(&[bin_parent]);
     let output = Command::new(bin)
         .args(args)
+        .env("PATH", child_path)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -226,7 +229,14 @@ async fn probe_remote_url(
     }
     args.push(url);
 
-    let (stdout, _) = run_cmd(yt_dlp, &args, &[]).await?;
+    let (stdout, _) = match run_cmd(yt_dlp, &args, &[]).await {
+        Ok(res) => res,
+        Err(_) if cookies_from_browser.is_some() => {
+            // Retry without cookies if a logged-in YouTube cookie jar triggered a format/n-sig mismatch
+            run_cmd(yt_dlp, &["--dump-single-json", "--no-warnings", "--no-playlist", url], &[]).await?
+        }
+        Err(e) => return Err(e),
+    };
     let raw: Value = serde_json::from_str(&stdout)
         .map_err(|e| VideoError::Media(format!("Invalid yt-dlp metadata JSON: {e}")))?;
 
@@ -708,7 +718,28 @@ pub async fn ensure_local_video(
         args.push(browser);
     }
     args.push(source_url);
-    run_cmd(yt_dlp, &args, &[]).await?;
+    if let Err(e) = run_cmd(yt_dlp, &args, &[]).await {
+        if cookies_from_browser.is_some() {
+            run_cmd(
+                yt_dlp,
+                &[
+                    "--no-warnings",
+                    "--no-playlist",
+                    "-f",
+                    fmt,
+                    "--merge-output-format",
+                    "mp4",
+                    "-o",
+                    &out_str,
+                    source_url,
+                ],
+                &[],
+            )
+            .await?;
+        } else {
+            return Err(e);
+        }
+    }
 
     if !cached.is_file() {
         for entry in std::fs::read_dir(work_dir)?.flatten() {
@@ -757,7 +788,13 @@ pub async fn ensure_local_audio(
             args.push(browser);
         }
         args.push(url);
-        run_cmd(yt_dlp, &args, &[]).await?;
+        if let Err(e) = run_cmd(yt_dlp, &args, &[]).await {
+            if cookies_from_browser.is_some() {
+                run_cmd(yt_dlp, &["--no-warnings", "--no-playlist", "-f", "bestaudio/best", "-o", &tpl, url], &[]).await?;
+            } else {
+                return Err(e);
+            }
+        }
         std::fs::read_dir(work_dir)?
             .flatten()
             .map(|e| e.path())

@@ -112,6 +112,59 @@ fn read_version_line(bin: &Path, arg: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Builds an augmented `PATH` for child media processes (`yt-dlp`, `ffmpeg`) so GUI apps
+/// launched by macOS `launchd` (whose default `PATH` is only `/usr/bin:/bin`) still find
+/// Homebrew `deno`, `ffmpeg`, and `node` runtimes needed for YouTube JS challenge solving.
+pub fn augmented_child_path(extra_bin_dirs: &[&Path]) -> std::ffi::OsString {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for extra in extra_bin_dirs {
+        if !extra.as_os_str().is_empty() && !dirs.iter().any(|d| d == extra) {
+            dirs.push(extra.to_path_buf());
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        let home_p = PathBuf::from(&home);
+        for rel in [".deno/bin", ".local/bin", ".cargo/bin"] {
+            let p = home_p.join(rel);
+            if p.is_dir() && !dirs.contains(&p) {
+                dirs.push(p);
+            }
+        }
+        // Include latest nvm node bin if installed
+        let nvm_versions = home_p.join(".nvm/versions/node");
+        if let Ok(entries) = std::fs::read_dir(nvm_versions) {
+            let mut versions: Vec<PathBuf> = entries.flatten().map(|e| e.path().join("bin")).filter(|p| p.is_dir()).collect();
+            versions.sort();
+            if let Some(latest) = versions.pop()
+                && !dirs.contains(&latest)
+            {
+                dirs.push(latest);
+            }
+        }
+    }
+    for std_dir in [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+    ] {
+        let p = PathBuf::from(std_dir);
+        if !dirs.contains(&p) {
+            dirs.push(p);
+        }
+    }
+    if let Some(existing) = std::env::var_os("PATH") {
+        for p in std::env::split_paths(&existing) {
+            if !dirs.contains(&p) {
+                dirs.push(p);
+            }
+        }
+    }
+    std::env::join_paths(dirs).unwrap_or_default()
+}
 /// Probes local availability and versions of `ffmpeg`, `ffprobe`, and `yt-dlp`.
 pub fn detect_toolchain(ffmpeg_override: Option<&str>, yt_dlp_override: Option<&str>) -> ToolchainStatus {
     let ffmpeg = resolve_binary("ffmpeg", ffmpeg_override);

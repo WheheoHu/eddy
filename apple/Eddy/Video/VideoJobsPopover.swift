@@ -1,37 +1,45 @@
 import EddyKit
 import SwiftUI
 
-/// Toolbar button & popover showing active, failed, and recently completed Video-to-Book jobs.
-struct VideoJobsToolbarItem: ToolbarContent {
+/// Title bar button & popover showing active, failed, and recently completed Video-to-Book jobs.
+/// Installed inside `ModeSwitchInstaller`'s `NSTitlebarAccessoryViewController` rather than
+/// SwiftUI's dynamic `ToolbarContent`, avoiding macOS 15 AppKit/SwiftUI `NSToolbar` layout
+/// invalidation loops (`_postWindowNeedsUpdateConstraints` recursion) when job state updates.
+struct VideoJobsStatusButton: View {
     @Environment(AppModel.self) private var model
 
-    var body: some ToolbarContent {
+    var body: some View {
+        @Bindable var model = model
         if !model.videoJobs.isEmpty {
-            ToolbarItem {
-                @Bindable var model = model
-                let active = model.activeVideoJobsCount
-                let hasFailed = model.videoJobs.contains { $0.status == "failed" }
-                Button {
-                    model.showingVideoJobs.toggle()
-                } label: {
-                    HStack(spacing: 5) {
-                        if active > 0 {
-                            ProgressView().controlSize(.small)
-                            Text("\(active)")
-                                .font(.caption.monospacedDigit())
-                        } else if hasFailed {
-                            Image(systemName: "exclamationmark.circle.fill")
-                                .foregroundStyle(.orange)
-                        } else {
-                            Image(systemName: "checkmark.circle")
-                        }
+            let active = model.activeVideoJobsCount
+            let hasFailed = model.videoJobs.contains { $0.status == "failed" }
+            Button {
+                model.showingVideoJobs.toggle()
+            } label: {
+                HStack(spacing: 5) {
+                    if active > 0 {
+                        Image(systemName: "film.stack.fill")
+                            .symbolEffect(.pulse, options: .repeating)
+                            .foregroundStyle(.tint)
+                        Text("\(active)")
+                            .font(.caption.monospacedDigit().weight(.semibold))
+                    } else if hasFailed {
+                        Image(systemName: "exclamationmark.circle.fill")
+                            .foregroundStyle(.orange)
+                    } else {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.secondary)
                     }
                 }
-                .help(active > 0 ? "\(active) video conversion(s) in progress" : "Video conversion tasks")
-                .popover(isPresented: $model.showingVideoJobs, arrowEdge: .bottom) {
-                    VideoJobsPopover()
-                        .environment(model)
-                }
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(.quaternary.opacity(0.5), in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .help(active > 0 ? "\(active) video conversion(s) in progress" : "Video conversion tasks")
+            .popover(isPresented: $model.showingVideoJobs, arrowEdge: .bottom) {
+                VideoJobsPopover()
+                    .environment(model)
             }
         }
     }
@@ -78,7 +86,6 @@ struct VideoJobsPopover: View {
         }
         .frame(width: 380)
         .task {
-            // Poll server job updates smoothly while the popover or active server jobs are running
             while !Task.isCancelled {
                 await model.refreshVideoJobs(initial: false)
                 try? await Task.sleep(for: .seconds(3))

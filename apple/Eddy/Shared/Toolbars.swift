@@ -58,6 +58,5 @@ struct AddToolbar: ToolbarContent {
             }
             .help("Save a page (⌘L), convert a presentation video, or import a file (⌘O)")
         }
-        VideoJobsToolbarItem()
     }
 }
