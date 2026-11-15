@@ -6,19 +6,21 @@ mod guess;
 mod highlight;
 mod locate;
 mod math;
+mod typo;
 
 pub use convert::{ConvertOptions, html_to_document};
 pub use guess::guess_language;
 pub use highlight::{highlight, highlight_languages, knows_language};
 pub use locate::{locator_at, progression_at, remap_locator};
 pub use math::{normalize_tex, tex_from_data_mw, translated_runs};
+pub use typo::{TypoKind, TypoSpan, analyze as typography_spans};
 
 use eddy_model::{BlockKind, Document, runs_plain_text};
 
 /// Version of the document model produced by this crate. Bump it whenever the
 /// conversion output changes so stored documents are regenerated from their
 /// raw source.
-pub const SCHEMA_VERSION: u32 = 12;
+pub const SCHEMA_VERSION: u32 = 13;
 
 /// A unit of text sent for translation, keyed so results map back to blocks.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]

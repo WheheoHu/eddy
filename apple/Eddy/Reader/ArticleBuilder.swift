@@ -6,14 +6,15 @@ import SwiftUI
 /// Reader typography. Stored in user defaults by the reading settings.
 struct ReaderStyle: Equatable {
     var fontSize: CGFloat = 17
-    var serif = false
+    var fonts = ReaderFonts()
+    /// Body paragraphs and list items fill the line.
+    var justify = false
     var lineHeight: CGFloat = 1.45
     var maxWidth: CGFloat = 700
 
+    /// The Latin font; `fonts.typeset` puts the Chinese in its own.
     func font(size: CGFloat? = nil, weight: NSFont.Weight = .regular) -> NSFont {
-        let base = NSFont.systemFont(ofSize: size ?? fontSize, weight: weight)
-        guard serif, let descriptor = base.fontDescriptor.withDesign(.serif) else { return base }
-        return NSFont(descriptor: descriptor, size: size ?? fontSize) ?? base
+        fonts.latinFont(size: size ?? fontSize, weight: weight)
     }
 
     func mono(scale: CGFloat = 0.86) -> NSFont {
@@ -65,7 +66,11 @@ enum ReadingMode: String, CaseIterable, Identifiable {
 extension NSAttributedString.Key {
     /// Paragraph decoration drawn by `DecoratedFragment`.
     static let eddyCode = NSAttributedString.Key("eddy.code")
+    /// How deep in block quotes a paragraph is, and how deep the paragraph
+    /// after it is: a bar runs on through the gap to a paragraph that is
+    /// still inside its quote.
     static let eddyQuote = NSAttributedString.Key("eddy.quote")
+    static let eddyQuoteNext = NSAttributedString.Key("eddy.quoteNext")
 }
 
 /// The article as one attributed string plus where each source block lives
@@ -132,7 +137,15 @@ enum ArticleBuilder {
     ) -> BuiltArticle {
         var b = Builder(style: style, translations: mode == .original ? [:] : translations, mode: mode, translatedRuns: translatedRuns)
         if let item { b.header(item, translatedTitle: mode == .original ? nil : b.translation("title", original: item.title)) }
-        for block in doc.blocks { b.block(block) }
+        for (i, block) in doc.blocks.enumerated() {
+            let start = b.out.length
+            b.block(block)
+            // Everything the block put in, markers and translations too.
+            let quote = Int(block.quoteDepth)
+            guard quote > 0, b.out.length > start else { continue }
+            let next = i + 1 < doc.blocks.count ? Int(doc.blocks[i + 1].quoteDepth) : 0
+            b.out.addAttributes([.eddyQuote: quote, .eddyQuoteNext: next], range: NSRange(location: start, length: b.out.length - start))
+        }
         return BuiltArticle(text: b.out, blocks: b.ranges, translations: b.translationRanges, images: b.images)
     }
 }
@@ -177,6 +190,7 @@ private struct Builder {
         p.headIndent = indent
         p.firstLineHeadIndent = firstIndent ?? indent
         p.alignment = align
+        if align == .justified { p.hyphenationFactor = 1 }
         if indent > 0 { p.tabStops = [NSTextTab(textAlignment: .left, location: indent)] }
         return p
     }
@@ -193,9 +207,13 @@ private struct Builder {
             .font: small, .foregroundColor: NSColor.controlAccentColor, .kern: 0.8,
             .paragraphStyle: paragraph(spacing: 6),
         ]))
-        out.append(NSAttributedString(string: item.title + "\n", attributes: base(style.font(size: style.fontSize * 1.9, weight: .bold), paragraph(spacing: 8, lineHeight: 1.1))))
+        let title = NSMutableAttributedString(string: item.title + "\n", attributes: base(style.font(size: style.fontSize * 1.9, weight: .bold), paragraph(spacing: 8, lineHeight: 1.1)))
+        style.fonts.typeset(title)
+        out.append(title)
         if let translatedTitle {
-            out.append(NSAttributedString(string: translatedTitle + "\n", attributes: base(style.font(size: style.fontSize * 1.3, weight: .semibold), paragraph(spacing: 8, lineHeight: 1.15), color: .secondaryLabelColor)))
+            let translated = NSMutableAttributedString(string: translatedTitle + "\n", attributes: base(style.font(size: style.fontSize * 1.3, weight: .semibold), paragraph(spacing: 8, lineHeight: 1.15), color: .secondaryLabelColor))
+            style.fonts.typeset(translated)
+            out.append(translated)
         }
         var meta: [String] = []
         if let author = item.author, !author.isEmpty { meta.append(author) }
@@ -213,49 +231,50 @@ private struct Builder {
         case let .heading(level, runs):
             let scale: CGFloat = [1.6, 1.38, 1.2, 1.08, 1.0, 1.0][Int(min(max(level, 1), 6)) - 1]
             let font = style.font(size: style.fontSize * scale, weight: .bold)
-            textBlock(block.id, runs, font: font, p: paragraph(spacingBefore: style.fontSize * (level <= 2 ? 1.2 : 0.7), spacing: style.fontSize * 0.45, indent: quoteIndent, lineHeight: 1.2), quote: quote)
+            textBlock(block.id, runs, font: font, p: paragraph(spacingBefore: style.fontSize * (level <= 2 ? 1.2 : 0.7), spacing: style.fontSize * 0.45, indent: quoteIndent, lineHeight: 1.2))
         case let .paragraph(runs):
-            textBlock(block.id, runs, font: style.font(), p: paragraph(indent: quoteIndent), quote: quote)
+            textBlock(block.id, runs, font: style.font(), p: paragraph(indent: quoteIndent, align: bodyAlignment(runs)))
         case let .listItem(ordered, depth, index, marker, runs):
             let indent = quoteIndent + CGFloat(depth + 1) * 26
-            let p = paragraph(spacing: style.fontSize * 0.35, indent: indent, firstIndent: indent - 22)
+            let p = paragraph(spacing: style.fontSize * 0.35, indent: indent, firstIndent: indent - 22, align: bodyAlignment(runs))
             let prefix = marker ? (ordered ? "\(index).\t" : "•\t") : "\t"
             out.append(NSAttributedString(string: prefix, attributes: base(style.font(), p, color: .secondaryLabelColor)))
-            textBlock(block.id, runs, font: style.font(), p: p, quote: quote)
+            textBlock(block.id, runs, font: style.font(), p: p)
         case let .code(language, text, highlights):
             codeBlock(block.id, language: language, text: text, highlights: highlights, indent: quoteIndent)
         case let .math(tex):
             let start = out.length
             let attachment = MathRenderer.attachment(tex, size: style.fontSize * 1.15, display: true)
             let s = NSMutableAttributedString(attachment: attachment)
-            s.addAttributes([.paragraphStyle: paragraph(spacingBefore: 4, spacing: style.fontSize * 0.9, align: .center)], range: NSRange(location: 0, length: s.length))
+            s.addAttributes([.paragraphStyle: paragraph(spacingBefore: 4, spacing: style.fontSize * 0.9, indent: quoteIndent, align: .center)], range: NSRange(location: 0, length: s.length))
             out.append(s)
-            out.append(NSAttributedString(string: "\n", attributes: [.paragraphStyle: paragraph(align: .center)]))
+            out.append(NSAttributedString(string: "\n", attributes: [.paragraphStyle: paragraph(indent: quoteIndent, align: .center)]))
             ranges.append((block.id, NSRange(location: start, length: 1)))
         case let .image(src, alt, width, height, caption):
             let start = out.length
             let attachment = ImageAttachment(url: src, alt: alt, width: width.map { CGFloat($0) }, height: height.map { CGFloat($0) })
             images.append(attachment)
             let s = NSMutableAttributedString(attachment: attachment)
-            s.addAttributes([.paragraphStyle: paragraph(spacingBefore: 4, spacing: caption.isEmpty ? style.fontSize : 6, align: .center)], range: NSRange(location: 0, length: s.length))
+            s.addAttributes([.paragraphStyle: paragraph(spacingBefore: 4, spacing: caption.isEmpty ? style.fontSize : 6, indent: quoteIndent, align: .center)], range: NSRange(location: 0, length: s.length))
             out.append(s)
-            out.append(NSAttributedString(string: "\n", attributes: [.paragraphStyle: paragraph(align: .center)]))
+            out.append(NSAttributedString(string: "\n", attributes: [.paragraphStyle: paragraph(indent: quoteIndent, align: .center)]))
             ranges.append((block.id, NSRange(location: start, length: 1)))
             if !caption.isEmpty {
                 let captionFont = style.font(size: style.fontSize * 0.8)
-                out.append(inline(caption, font: captionFont, color: .secondaryLabelColor, p: paragraph(spacing: style.fontSize, align: .center)))
-                out.append(NSAttributedString(string: "\n"))
+                let captionStyle = paragraph(spacing: style.fontSize, indent: quoteIndent, align: .center)
+                out.append(inline(caption, font: captionFont, color: .secondaryLabelColor, p: captionStyle))
+                out.append(NSAttributedString(string: "\n", attributes: [.paragraphStyle: captionStyle]))
                 if let text = translation("\(block.id)#caption", original: caption) {
-                    translation(text, for: "\(block.id)#caption", font: captionFont, p: paragraph(spacing: style.fontSize, align: .center))
+                    translation(text, for: "\(block.id)#caption", font: captionFont, p: captionStyle)
                 }
             }
         case let .table(rows):
             let start = out.length
             let attachment = TableAttachment(rows: rows, style: style)
             let s = NSMutableAttributedString(attachment: attachment)
-            s.addAttributes([.paragraphStyle: paragraph(spacing: style.fontSize)], range: NSRange(location: 0, length: s.length))
+            s.addAttributes([.paragraphStyle: paragraph(spacing: style.fontSize, indent: quoteIndent)], range: NSRange(location: 0, length: s.length))
             out.append(s)
-            out.append(NSAttributedString(string: "\n"))
+            out.append(NSAttributedString(string: "\n", attributes: [.paragraphStyle: paragraph(spacing: style.fontSize, indent: quoteIndent)]))
             ranges.append((block.id, NSRange(location: start, length: 1)))
         case let .media(kind, src, poster, title):
             let start = out.length
@@ -266,19 +285,21 @@ private struct Builder {
                 let attachment = ImageAttachment(url: poster, alt: label, width: nil, height: nil)
                 images.append(attachment)
                 let s = NSMutableAttributedString(attachment: attachment)
-                var attrs: [NSAttributedString.Key: Any] = [.paragraphStyle: paragraph(spacingBefore: 4, spacing: 4, align: .center)]
+                var attrs: [NSAttributedString.Key: Any] = [.paragraphStyle: paragraph(spacingBefore: 4, spacing: 4, indent: quoteIndent, align: .center)]
                 if let link { attrs[.link] = link }
                 s.addAttributes(attrs, range: NSRange(location: 0, length: s.length))
                 out.append(s)
-                out.append(NSAttributedString(string: "\n", attributes: [.paragraphStyle: paragraph(align: .center)]))
+                out.append(NSAttributedString(string: "\n", attributes: [.paragraphStyle: paragraph(indent: quoteIndent, align: .center)]))
             }
-            var attrs = base(style.font(weight: .medium), paragraph(align: kind != .audio && poster != nil ? .center : .natural))
+            var attrs = base(style.font(weight: .medium), paragraph(indent: quoteIndent, align: kind != .audio && poster != nil ? .center : .natural))
             if let link { attrs[.link] = link }
-            out.append(NSAttributedString(string: label + "\n", attributes: attrs))
+            let line = NSMutableAttributedString(string: label + "\n", attributes: attrs)
+            style.fonts.typeset(line)
+            out.append(line)
             ranges.append((block.id, NSRange(location: start, length: out.length - start - 1)))
         case .rule:
             let start = out.length
-            out.append(NSAttributedString(string: "⁂\n", attributes: base(style.font(), paragraph(spacingBefore: 6, spacing: style.fontSize, align: .center), color: .tertiaryLabelColor)))
+            out.append(NSAttributedString(string: "⁂\n", attributes: base(style.font(), paragraph(spacingBefore: 6, spacing: style.fontSize, indent: quoteIndent, align: .center), color: .tertiaryLabelColor)))
             ranges.append((block.id, NSRange(location: start, length: 1)))
         }
     }
@@ -295,7 +316,14 @@ private struct Builder {
         return components.url
     }
 
-    mutating func textBlock(_ id: String, _ runs: [RunView], font: NSFont, p: NSParagraphStyle, quote: Int) {
+    /// Justified when the reader wants it, except text with line breaks of
+    /// its own (verse, addresses): a justified line that ends in a break
+    /// is stretched to the margin.
+    func bodyAlignment(_ runs: [RunView]) -> NSTextAlignment {
+        style.justify && !runs.contains { !$0.math && $0.text.contains("\n") } ? .justified : .natural
+    }
+
+    mutating func textBlock(_ id: String, _ runs: [RunView], font: NSFont, p: NSParagraphStyle) {
         let translated = translation(id, original: runs)
         let start = out.length
         if mode == .translation, let translated {
@@ -304,7 +332,6 @@ private struct Builder {
             out.append(inline(runs, font: font, color: .labelColor, p: p))
         }
         let range = NSRange(location: start, length: out.length - start)
-        if quote > 0 { out.addAttribute(.eddyQuote, value: quote, range: range) }
         ranges.append((id, range))
         out.append(NSAttributedString(string: "\n", attributes: [.paragraphStyle: p]))
         if mode == .bilingual, let translated {
@@ -378,8 +405,11 @@ private struct Builder {
             if run.style & 256 != 0 { attrs[.backgroundColor] = NSColor.systemYellow.withAlphaComponent(0.3) }
             if let link = run.link, let url = URL(string: link) { attrs[.link] = url }
             attrs[.font] = f
-            s.append(NSAttributedString(string: run.text, attributes: attrs))
+            // A line break inside a block stays inside its paragraph: a
+            // new paragraph would get the space between paragraphs.
+            s.append(NSAttributedString(string: run.text.replacingOccurrences(of: "\n", with: "\u{2028}"), attributes: attrs))
         }
+        style.fonts.typeset(s)
         return s
     }
 }
