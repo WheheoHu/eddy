@@ -245,7 +245,7 @@ async fn standalone_client_migrates_and_a_second_device_joins() {
     );
 
     // Disconnecting keeps local data.
-    b.disconnect_server().unwrap();
+    b.disconnect_server().await.unwrap();
     assert_eq!(b.status().unwrap().mode, Mode::Unconfigured);
     assert_eq!(b.items(&ItemQuery::default()).unwrap().len(), 5);
 }

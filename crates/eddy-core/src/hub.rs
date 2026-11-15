@@ -663,10 +663,12 @@ impl Engine {
 
     /// Leaves server mode. Local data stays, and with a FreshRSS account on
     /// this device it carries on in standalone mode: read/star changes the
-    /// server never received go to FreshRSS instead.
-    pub fn disconnect_server(&self) -> Result<()> {
+    /// server never received go to FreshRSS instead. The server is asked to
+    /// forget the device, which it does when it is reachable.
+    pub async fn disconnect_server(&self) -> Result<()> {
         let inner = &self.inner;
         self.stop_live_sync();
+        self.forget_on_server(Duration::from_secs(5)).await;
         inner.platform.secret_delete(TOKEN_KEY);
         inner.store.meta_delete(URL_META)?;
         inner.store.meta_delete(CURSOR_META)?;

@@ -245,6 +245,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/v1/health", get(health))
         .route("/v1/pair", post(pair))
+        .route("/v1/device", delete(unpair))
         .route("/v1/info", get(info))
         .route("/v1/account", post(set_account))
         .route("/v1/refresh", post(refresh))
@@ -423,6 +424,18 @@ async fn push(
             .map(|(op_id, reason)| RejectedOp { op_id, reason })
             .collect(),
     }))
+}
+
+/// A device signing out or disconnecting: its token stops working and it
+/// leaves the device list.
+async fn unpair(
+    State(s): State<Arc<AppState>>,
+    Device(device): Device,
+) -> Result<StatusCode, ApiError> {
+    let name = s.device_name(&device);
+    s.revoke_device(&device).map_err(ApiError::internal)?;
+    tracing::info!("device {name} signed out");
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]

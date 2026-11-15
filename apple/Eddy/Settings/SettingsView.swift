@@ -208,6 +208,10 @@ private struct AccountsSettings: View {
     @State private var working = false
     /// What the server says about itself; nil while unknown or unreachable.
     @State private var server: ServerStatusView?
+    @State private var confirmingSignOut = false
+    /// Changes that could not be sent when signing out was tried; the
+    /// question is then whether to lose them.
+    @State private var unsentOnSignOut: UInt32?
 
     private var status: StatusView? { model.status }
     private var serverMode: Bool { status?.mode == .server }
@@ -280,10 +284,15 @@ private struct AccountsSettings: View {
             Section {
                 if serverMode {
                     Button("Disconnect from Server", role: .destructive) {
-                        try? model.engine?.disconnectServer()
-                        server = nil
-                        model.reload()
+                        working = true
+                        Task {
+                            defer { working = false }
+                            try? await model.engine?.disconnectServer()
+                            server = nil
+                            model.reload()
+                        }
                     }
+                    .disabled(working)
                 } else {
                     TextField("Address", text: $serverURL)
                     TextField("Pairing code", text: $pairingCode, prompt: Text("ABCD-EFGH"))
@@ -297,12 +306,77 @@ private struct AccountsSettings: View {
                     : "Pairing gives your eddy-server your FreshRSS account and uploads everything you read and saved on this Mac. The account also stays here, so new articles still arrive while the server is offline. Create a code with “eddy-server pairing-code”.")
                     .foregroundStyle(.secondary)
             }
+            Section {
+                Button("Sign Out and Erase Data…", role: .destructive) { confirmingSignOut = true }
+                    .disabled(working || model.engine == nil)
+            } footer: {
+                Text("Removes your accounts, library, downloaded articles, API keys and website sign-ins from this Mac, then restarts Eddy as new. Appearance and layout settings are kept.")
+                    .foregroundStyle(.secondary)
+            }
             if !note.isEmpty {
                 Text(note).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
         .task(id: status?.mode) { await loadServer() }
+        .confirmationDialog("Sign out and erase everything Eddy keeps on this Mac?", isPresented: $confirmingSignOut) {
+            Button("Sign Out and Erase", role: .destructive) { signOut(discardUnsent: false) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(signOutWarning)
+        }
+        .confirmationDialog(
+            Text("\(unsentOnSignOut ?? 0) changes could not be sent"),
+            isPresented: Binding(get: { unsentOnSignOut != nil }, set: { if !$0 { unsentOnSignOut = nil } })
+        ) {
+            Button("Erase Anyway", role: .destructive) { signOut(discardUnsent: true) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(serverMode
+                ? "They exist only on this Mac because the sync server could not be reached. Erasing now loses them. Nothing has been removed yet."
+                : "They are read and starred changes FreshRSS has not received. Erasing now loses them. Nothing has been removed yet.")
+        }
+    }
+
+    /// What is lost and what is kept elsewhere, for the mode this Mac is in.
+    private var signOutWarning: String {
+        switch status?.mode {
+        case .server:
+            let waiting = status?.pendingUploads ?? 0
+            return "What has synced stays on your server and comes back when you pair again."
+                + (waiting > 0 ? " \(waiting) changes are still waiting to upload; Eddy sends them first." : "")
+                + " This Mac is removed from the server’s devices."
+        case .standalone:
+            return "Subscriptions and what you read or starred stay in FreshRSS. Saved pages, books, highlights, tags and reading progress exist only on this Mac and can’t be recovered."
+        default:
+            return "Saved pages, books, highlights, tags and reading progress exist only on this Mac and can’t be recovered."
+        }
+    }
+
+    private func signOut(discardUnsent: Bool) {
+        guard let engine = model.engine else { return }
+        working = true
+        note = "Signing out…"
+        Task {
+            do {
+                let outcome = try await engine.signOutAndErase(discardUnsent: discardUnsent)
+                guard outcome.erased else {
+                    // Nothing was removed; ask whether to lose what is unsent.
+                    working = false
+                    note = ""
+                    model.reload()
+                    unsentOnSignOut = outcome.unsent
+                    return
+                }
+                // The library goes when Eddy next opens it; what the app
+                // keeps outside the library goes now.
+                await AppReset.eraseAppData()
+                AppReset.restart()
+            } catch {
+                working = false
+                note = error.localizedDescription
+            }
+        }
     }
 
     /// Server mode: the account the server reads, and whether this Mac can
@@ -419,6 +493,43 @@ private struct AccountsSettings: View {
             } catch {
                 note = error.localizedDescription
                 model.reload()
+            }
+        }
+    }
+}
+
+/// The app's side of signing out: what it keeps outside the data
+/// directory, and starting again as new.
+@MainActor
+enum AppReset {
+    /// Website sign-ins and cached pages and images. Appearance and layout
+    /// preferences stay.
+    static func eraseAppData() async {
+        // With `EDDY_DATA_DIR` these belong to the real installation too.
+        guard !EddyPaths.isOverridden else { return }
+        await WKWebsiteDataStore.default().removeData(
+            ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast
+        )
+        URLCache.shared.removeAllCachedResponses()
+    }
+
+    /// Opens a new instance, which erases the library before opening it,
+    /// and quits this one.
+    static func restart() {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        if let dir = ProcessInfo.processInfo.environment["EDDY_DATA_DIR"], !dir.isEmpty {
+            configuration.environment = ["EDDY_DATA_DIR": dir]
+        }
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, error in
+            DispatchQueue.main.async {
+                if error != nil {
+                    let alert = NSAlert()
+                    alert.messageText = "Eddy has signed out"
+                    alert.informativeText = "Open Eddy again to start fresh."
+                    alert.runModal()
+                }
+                NSApp.terminate(nil)
             }
         }
     }

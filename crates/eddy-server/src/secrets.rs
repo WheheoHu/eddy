@@ -94,6 +94,12 @@ impl Platform for EncryptedSecrets {
         }
     }
 
+    fn secret_clear(&self) {
+        let mut values = self.values.lock();
+        values.clear();
+        self.persist(&values);
+    }
+
     fn log(&self, level: LogLevel, message: &str) {
         match level {
             LogLevel::Error => tracing::error!("{message}"),

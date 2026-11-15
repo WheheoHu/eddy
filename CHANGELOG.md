@@ -18,6 +18,8 @@ Sync protocol 2. Servers and devices on protocol 1 must be updated together.
 - Server: `EDDY_PUBLISH_ADDRESS` in `deploy/.env` chooses the host address the port is published on, for devices on the local network. The default stays `127.0.0.1`.
 - A long sync (the first one after pairing, or after a long time offline) reports how far it is: uploading, downloading, fetching articles. `eddy-cli` prints it.
 - Server: the log says when a device starts catching up, how far it is, and when it is up to date, and counts each upload. The admin page shows for each device whether it is up to date or how many changes behind.
+- Signing a device out and erasing it (`sign_out_and_erase`, `eddy-cli sign-out`): changes not sent yet are sent first, and when some cannot be nothing happens unless losing them is accepted; the server forgets the device; library, downloaded content, search index, rule packs, accounts and every stored secret are erased the next time the data directory is opened.
+- Server: `DELETE /v1/device` lets a device remove itself. This needs no protocol change; a device leaving an older server is simply not removed from its list.
 - `eddy-cli`: `status`, `disconnect`, `freshrss`, `server-account`, `tag`, `tags`, `star`, `--version`.
 
 ### Changed
@@ -27,6 +29,7 @@ Sync protocol 2. Servers and devices on protocol 1 must be updated together.
 - Pairing keeps the FreshRSS account on the device and refuses a server that manages a different account.
 - The server refreshes FreshRSS right after starting instead of one interval later.
 - Data written by a newer version is refused instead of being opened.
+- Disconnecting from a server asks it to forget the device, so the device no longer stays listed with a token that still works.
 - A first sync is several times faster: pages are larger and compressed, each is stored in one step, and the next downloads while the current one is applied. Pulled pages now say how many changes the server has; this needs no protocol change, and older servers and devices ignore it.
 - After a long sync the articles fetched for offline reading are the newest, several at a time.
 

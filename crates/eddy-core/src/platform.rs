@@ -4,6 +4,8 @@ pub trait Platform: Send + Sync {
     fn secret_get(&self, key: &str) -> Option<String>;
     fn secret_set(&self, key: &str, value: &str) -> bool;
     fn secret_delete(&self, key: &str);
+    /// Forgets every secret, for signing out.
+    fn secret_clear(&self);
     fn log(&self, _level: LogLevel, _message: &str) {}
 }
 
@@ -35,6 +37,10 @@ impl Platform for MemoryPlatform {
 
     fn secret_delete(&self, key: &str) {
         self.secrets.lock().remove(key);
+    }
+
+    fn secret_clear(&self) {
+        self.secrets.lock().clear();
     }
 }
 

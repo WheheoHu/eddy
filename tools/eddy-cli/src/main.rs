@@ -9,6 +9,7 @@
 //! eddy-cli [--data DIR] fulltext ITEM_ID
 //! eddy-cli [--data DIR] import FILE.epub|FILE.pdf
 //! eddy-cli [--data DIR] connect URL CODE | disconnect | sync | status
+//! eddy-cli [--data DIR] sign-out [--discard-unsent]
 //! eddy-cli [--data DIR] freshrss URL USER PASSWORD
 //! eddy-cli [--data DIR] server-account URL USER PASSWORD
 //! eddy-cli [--data DIR] tag NAME | tags | star ITEM_ID
@@ -63,6 +64,10 @@ impl Platform for FileSecrets {
         let mut map = self.load();
         map.remove(key);
         self.save(&map);
+    }
+
+    fn secret_clear(&self) {
+        self.save(&Default::default());
     }
 }
 
@@ -184,7 +189,17 @@ async fn main() {
                 s.url, s.server_id, s.cursor
             );
         }),
-        ["disconnect"] => engine.disconnect_server(),
+        ["disconnect"] => engine.disconnect_server().await,
+        // `--discard-unsent` also gives up changes that could not be sent.
+        ["sign-out", rest @ ..] => engine
+            .sign_out_and_erase(rest.contains(&"--discard-unsent"))
+            .await
+            .map(|outcome| match outcome {
+                eddy_core::SignOut::Erased => println!("signed out and erased"),
+                eddy_core::SignOut::Unsent(n) => println!(
+                    "not signed out: {n} changes could not be sent (sign-out --discard-unsent loses them)"
+                ),
+            }),
         // Standalone: this device's FreshRSS account. Server mode: the same
         // account, kept here for refreshing while the server is offline.
         ["freshrss", url, user, password] => engine
@@ -338,7 +353,7 @@ async fn main() {
         }
         _ => {
             eprintln!(
-                "usage: eddy-cli [--data DIR] save URL | items | doc ID | text ID | fulltext ID | connect URL CODE | disconnect | sync | status | freshrss URL USER PASSWORD | server-account URL USER PASSWORD | tag NAME | tags | star ID | search QUERY | import FILE | media ID | gallery FOLDER COUNT | --version"
+                "usage: eddy-cli [--data DIR] save URL | items | doc ID | text ID | fulltext ID | connect URL CODE | disconnect | sign-out [--discard-unsent] | sync | status | freshrss URL USER PASSWORD | server-account URL USER PASSWORD | tag NAME | tags | star ID | search QUERY | import FILE | media ID | gallery FOLDER COUNT | --version"
             );
             std::process::exit(2);
         }

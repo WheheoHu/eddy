@@ -334,6 +334,14 @@ impl SyncClient {
         self.json(self.http.post(self.url("pair")).json(req)).await
     }
 
+    /// Asks the server to forget this device: its token stops working and
+    /// it leaves the device list. Servers that predate this answer 404 or
+    /// 405.
+    pub async fn unpair(&self) -> Result<()> {
+        self.send(self.http.delete(self.url("device"))).await?;
+        Ok(())
+    }
+
     pub async fn info(&self) -> Result<ServerInfo> {
         self.json(self.http.get(self.url("info"))).await
     }

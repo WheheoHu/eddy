@@ -183,6 +183,8 @@ impl Engine {
         platform: Arc<dyn Platform>,
         options: EngineOptions,
     ) -> Result<Engine> {
+        // A device that signed out is erased before anything is opened.
+        crate::erase::finish_pending(data_dir, platform.as_ref())?;
         let store = Store::open(data_dir)?;
         let device_id = store.device_id()?;
         let http = reqwest::Client::builder()

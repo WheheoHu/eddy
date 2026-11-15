@@ -169,6 +169,32 @@ public final class KeychainPlatform: PlatformServices, @unchecked Sendable {
         if !persist() { secrets[key] = previous }
     }
 
+    /// Signing out: removes every item of this service, the single item
+    /// and any left over from the earlier one-item-per-secret layout.
+    public func secretClear() {
+        lock.lock()
+        defer { lock.unlock() }
+        secrets = [:]
+        let all: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrSynchronizable as String: false,
+        ]
+        // One call may remove a single match; repeat until none is left.
+        var status = SecItemDelete(all as CFDictionary)
+        var passes = 0
+        while status == errSecSuccess, passes < 200 {
+            status = SecItemDelete(all as CFDictionary)
+            passes += 1
+        }
+        if status == errSecItemNotFound {
+            // Known to be empty now, whatever the earlier read said.
+            loaded = true
+        } else {
+            logger.error("Keychain clear failed (\(status, privacy: .public))")
+        }
+    }
+
     public func log(level: String, message: String) {
         switch level {
         case "error": logger.error("\(message, privacy: .public)")
@@ -196,6 +222,13 @@ public enum EddyPaths {
             hash = (hash ^ UInt64(byte)) &* 0x100_0000_01b3
         }
         return "\(standard).dev.\(String(hash, radix: 16))"
+    }
+
+    /// The data directory was chosen with `EDDY_DATA_DIR`. What the app
+    /// keeps outside it (website sign-ins, the HTTP cache) is then shared
+    /// with the real installation and is left alone.
+    public static var isOverridden: Bool {
+        ProcessInfo.processInfo.environment["EDDY_DATA_DIR"]?.isEmpty == false
     }
 
     /// `~/Library/Application Support/Eddy`, created on first use.

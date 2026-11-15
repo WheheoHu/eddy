@@ -6,6 +6,7 @@ mod collection;
 mod content;
 mod engine;
 mod epub_export;
+mod erase;
 mod export;
 mod fulltext;
 mod hub;
@@ -47,6 +48,7 @@ pub use engine::{
     Engine, EngineOptions, EngineStatus, Mode, RefreshSummary, SourceInfo, SourceStats, SyncPhase,
     SyncProgress,
 };
+pub use erase::SignOut;
 pub use export::{
     ExportContentMode, ExportFormat, ExportOptions, ExportProgress, ExportProgressCallback,
     ExportRequest, ExportScope, PdfExportOutcome, PreparedExportChapter, PreparedPdfExport,
