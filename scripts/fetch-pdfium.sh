@@ -7,7 +7,7 @@
 # PDFIUM_STATIC_LIB_PATH_* at the unpacked lib directory, so every cargo
 # command finds it without extra flags.
 #
-# Usage: scripts/fetch-pdfium.sh [macos]
+# Usage: scripts/fetch-pdfium.sh [macos|windows]
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -16,11 +16,18 @@ RELEASE="8046d"
 
 case "$PLATFORM" in
   macos) SHA256="1f718f8aeee279c8021de5d61ea9a604613fbfa2d83d79172d9086d711778554" ;;
+  windows) SHA256="14d4a3e2bb90b6346877a26aeaac412401f16c5210d890f4f5819ec82903cc56" ;;
   *) echo "unknown platform: $PLATFORM" >&2; exit 1 ;;
 esac
 
+# macOS ships a static libpdfium.a; the Windows build from pdfium-lib only
+# ships pdfium.dll plus an import library (under lib/x64), so eddy-pdf links
+# dynamically there (see .cargo/config.toml for the matching paths).
 DEST="$ROOT/build/pdfium/$PLATFORM"
-LIB="$DEST/release/lib/libpdfium.a"
+case "$PLATFORM" in
+  macos) LIB="$DEST/release/lib/libpdfium.a" ;;
+  windows) LIB="$DEST/release/lib/x64/pdfium.lib" ;;
+esac
 STAMP="$DEST/.release"
 
 if [[ -f "$LIB" && -f "$STAMP" && "$(cat "$STAMP")" == "$RELEASE" ]]; then

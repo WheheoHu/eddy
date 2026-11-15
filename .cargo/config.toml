@@ -4,3 +4,5 @@
 [env]
 PDFIUM_STATIC_LIB_PATH_aarch64_apple_darwin = { value = "build/pdfium/macos/release/lib", relative = true }
 PDFIUM_STATIC_LIB_PATH_x86_64_apple_darwin = { value = "build/pdfium/macos/release/lib", relative = true }
+# Windows: dynamic pdfium (pdfium.dll + import lib from pdfium-lib release 8046d).
+PDFIUM_DYNAMIC_LIB_PATH_x86_64_pc_windows_msvc = { value = "build/pdfium/windows/release/lib/x64", relative = true }

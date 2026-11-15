@@ -204,9 +204,19 @@ fn pdfium() -> Option<&'static Pdfium> {
     static PDFIUM: OnceLock<Option<Pdfium>> = OnceLock::new();
     PDFIUM
         .get_or_init(|| {
-            Pdfium::bind_to_statically_linked_library()
-                .ok()
-                .map(Pdfium::new)
+            let bindings = {
+                #[cfg(target_vendor = "apple")]
+                {
+                    // Linked against the static pdfium from fetch-pdfium.sh.
+                    Pdfium::bind_to_statically_linked_library().ok()
+                }
+                #[cfg(not(target_vendor = "apple"))]
+                {
+                    // Windows/Linux ship pdfium as a shared library.
+                    Pdfium::bind_to_system_library().ok()
+                }
+            };
+            bindings.map(Pdfium::new)
         })
         .as_ref()
 }

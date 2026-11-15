@@ -34,15 +34,17 @@ impl FileSecrets {
     }
 
     fn save(&self, map: &std::collections::HashMap<String, String>) -> bool {
-        use std::os::unix::fs::OpenOptionsExt;
         let Ok(bytes) = serde_json::to_vec(map) else {
             return false;
         };
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options
             .open(&self.0)
             .and_then(|mut f| std::io::Write::write_all(&mut f, &bytes))
             .is_ok()
