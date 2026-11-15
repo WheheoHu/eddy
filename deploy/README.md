@@ -1,43 +1,43 @@
-# eddy-server 部署
+# Deploying eddy-server
 
-服务端是可选的：不部署时每个客户端都能直连 FreshRSS 单机使用。部署后它负责跨设备同步、全量历史搜索，以及私有规则包和 AI 设置的下发；FreshRSS 账号也由它接管。
+The server is optional: without it, every client connects to FreshRSS directly and works on its own. Once deployed, it handles cross-device sync, search over the full history, and distribution of private rule packs and AI settings. It also takes over the FreshRSS account.
 
-## 本机运行（OrbStack 或 Docker Desktop）
+## Running locally (OrbStack or Docker Desktop)
 
 ```sh
 cd deploy
 cp .env.example .env
-# 生成主密钥写进 .env（只需一次，和数据一起备份）
+# Generate the master key and write it into .env (once; back it up with the data)
 sed -i '' "s|^EDDY_MASTER_KEY=.*|EDDY_MASTER_KEY=$(openssl rand -base64 32)|" .env
 docker compose up -d --build
 curl http://127.0.0.1:8787/v1/health
 ```
 
-端口只映射到 `127.0.0.1:8787`。
+The port is mapped to `127.0.0.1:8787` only.
 
-## 配对设备
+## Pairing devices
 
-每台设备需要一个一次性配对码（默认 15 分钟有效）：
+Each device needs a one-time pairing code (valid for 15 minutes by default):
 
 ```sh
 docker compose exec eddy-server eddy-server pairing-code
 ```
 
-在 Eddy 的设置里填服务端地址和配对码。第一台连接的设备如果已经在单机模式下连着 FreshRSS，账号会交给服务端，本地的已读、收藏、阅读进度、保存的网页、标签都会上传合并。
+Enter the server address and the pairing code in Eddy's settings. If the first device to connect is already using FreshRSS in standalone mode, the account is handed over to the server, and its local read state, stars, reading progress, saved pages and tags are uploaded and merged.
 
-管理设备：
+Managing devices:
 
 ```sh
 docker compose exec eddy-server eddy-server devices
-docker compose exec eddy-server eddy-server remove-device <设备 ID>
+docker compose exec eddy-server eddy-server remove-device <device ID>
 ```
 
-## 数据与备份
+## Data and backups
 
-- 数据在命名卷 `eddy-data`（容器内 `/data`）：SQLite 数据库、内容 blob、搜索索引、加密后的 FreshRSS 密码（`secrets.json`）。
-- `EDDY_MASTER_KEY` 丢失后无法解密 FreshRSS 密码，只需在客户端重新填写账号；其他数据不受影响。
-- 若要在服务端后台托管“视频转多章图书”任务（客户端合盖离线等待），在 `.env` 中配置 `EDDY_VIDEO_STAGE2_*`（以及可选的 `EDDY_VIDEO_STAGE1_*`、`EDDY_VIDEO_ASR_*`）；密钥只留在服务端环境变量里，客户端只读取布尔状态 `video_capable`。
+- Data lives in the named volume `eddy-data` (`/data` inside the container): the SQLite database, content blobs, the search index and the encrypted FreshRSS password (`secrets.json`).
+- If `EDDY_MASTER_KEY` is lost, the FreshRSS password can no longer be decrypted; re-enter the account on a client. Other data is unaffected.
+- To run video-to-book jobs in the background on the server (so a client can close its lid and go offline while waiting), set `EDDY_VIDEO_STAGE2_*` in `.env`, and optionally `EDDY_VIDEO_STAGE1_*` and `EDDY_VIDEO_ASR_*`. The keys stay in the server's environment; clients only read the boolean `video_capable`.
 
-## 迁到服务器
+## Moving to a server
 
-同一个镜像可以在 FreshRSS 所在的服务器上运行（`linux/amd64` 和 `linux/arm64`）。远程访问方式（公网 HTTPS 加反向代理，或私有网络）到 iOS 阶段再定；在那之前保持只监听回环地址。
+The same image runs on the machine that hosts FreshRSS (`linux/amd64` and `linux/arm64`). How to reach it remotely (public HTTPS behind a reverse proxy, or a private network) will be decided at the iOS stage; until then, keep it listening on the loopback address only.

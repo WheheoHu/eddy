@@ -1,25 +1,25 @@
-# Eddy macOS 图标
+# Eddy macOS icon
 
-图形是隐约呈现小写 e 的漩涡，采用靛蓝、米白和浅蓝色块，借用浮世绘木版画的配色与纸感。主体保持抽象，不包含海浪、浪尖或文字。
+The mark is a whirlpool that faintly reads as a lowercase e, in indigo, ivory and pale blue shapes that borrow the palette and paper feel of ukiyo-e woodblock prints. It stays abstract: no waves, wave crests or lettering.
 
-- `AppIcon.png`：经用户确认的设计去除展示背景后的 1254 × 1254 RGBA 母版；圆角底座外透明，留白已包含在画布中。
-- `../Eddy/Assets.xcassets/AppIcon.appiconset/`：16、32、128、256、512 pt 的 1× / 2× PNG，共十个资源槽位。
-- `../project.yml`：通过 `ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon` 绑定应用图标。
+- `AppIcon.png`: the 1254 × 1254 RGBA master, made from the approved design with its presentation background removed. Everything outside the rounded tile is transparent, and the padding is part of the canvas.
+- `../Eddy/Assets.xcassets/AppIcon.appiconset/`: 1× and 2× PNGs at 16, 32, 128, 256 and 512 pt, ten asset slots in total.
+- `../project.yml`: binds the app icon through `ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon`.
 
-资源格式参考 [Apple App Icon Type](https://developer.apple.com/library/archive/documentation/Xcode/Reference/xcode_ref-Asset_Catalog_Format/AppIconType.html)。
+The asset format follows [Apple's App Icon Type](https://developer.apple.com/library/archive/documentation/Xcode/Reference/xcode_ref-Asset_Catalog_Format/AppIconType.html).
 
-在仓库根目录运行：
+From the repository root:
 
 ```sh
 scripts/generate-app-icon.sh
 scripts/build-mac-app.sh
 ```
 
-生成脚本使用 macOS 自带的 `sips` 和 `iconutil`，直接从母版导出各尺寸，并额外生成 `build/icons/Eddy.icns` 和 `build/icons/Eddy.iconset/`。母版与资源目录入库；`build/` 下的导出文件不入库。日常构建直接使用已提交的资源，无需重新生成图片。
+The generator uses `sips` and `iconutil`, which ship with macOS, to export every size straight from the master. It also writes `build/icons/Eddy.icns` and `build/icons/Eddy.iconset/`. The master and the asset catalog are checked in; the exports under `build/` are not. Everyday builds use the committed assets, so the images do not need regenerating.
 
-增量构建可能只更新 `.app` 内的文件而不更新应用包目录的修改时间，使 Finder / Dock 继续显示旧图标。`build-mac-app.sh` 在构建成功后会更新应用包目录的修改时间，触发图标刷新。
+An incremental build may update files inside the `.app` without touching the bundle directory's modification time, which leaves Finder and the Dock showing the old icon. `build-mac-app.sh` touches the bundle directory after a successful build to trigger a refresh.
 
-母版通过内置 imagegen 工具从选定概念稿移除外围展示背景得到。后续导出使用本地母版，不依赖对话或生成服务。最终背景提取提示词如下：
+The master was produced with the built-in imagegen tool by removing the surrounding presentation background from the chosen concept. Later exports use the local master and do not depend on a conversation or a generation service. The final background-extraction prompt was:
 
 ```text
 Use case: background-extraction.

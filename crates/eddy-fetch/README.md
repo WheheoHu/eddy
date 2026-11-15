@@ -1,37 +1,37 @@
 # eddy-fetch
 
-通用抓取策略流水线和规则包格式。这个仓库只包含引擎本身和格式说明，不包含任何站点规则。规则包由用户自己维护，放在本机的 `~/Library/Application Support/Eddy/rulepacks/`，或由自己的 eddy-server 下发（见 `docs/adr/0004`）。
+A generic page-fetching pipeline and the rule pack format. This repository contains only the engine and the format description, and no site rules. Rule packs are maintained by the user and live on their own machine in `~/Library/Application Support/Eddy/rulepacks/`, or are distributed by their own eddy-server (see `docs/adr/0004`).
 
-## 抓取策略
+## Fetch strategies
 
-对一个网址，流水线先直接请求；结果不被接受（例如提取出的正文太短）时，按规则里 `strategies` 的顺序依次尝试：
+For a given URL the pipeline makes a direct request first. When the result is not accepted (for example, the extracted body is too short), it tries the strategies listed in the rule's `strategies`, in order:
 
-| 名称 | 作用 |
+| Name | What it does |
 | --- | --- |
-| `headers` | 使用规则里的 `user_agent`、`referer`、`headers` 重新请求 |
-| `cookies` | 带上规则里你自己的 Cookie（例如你订阅的站点的登录会话） |
-| `archive` | 查询 Internet Archive 是否有存档，取存档里的原始页面 |
-| `webview` | 交给平台的 WebView 渲染后取页面（需要应用提供） |
+| `headers` | Requests again with the rule's `user_agent`, `referer` and `headers` |
+| `cookies` | Sends your own cookies from the rule (for example, the login session of a site you subscribe to) |
+| `archive` | Asks the Internet Archive for a snapshot and takes the original page from it |
+| `webview` | Hands the URL to the platform's WebView and takes the rendered page (provided by the app) |
 
-## 规则包格式（TOML）
+## Rule pack format (TOML)
 
 ```toml
-name = "我的规则"
+name = "My rules"
 version = 1
 
 [[site]]
-# 前面带点表示所有子域名
+# A leading dot matches every subdomain
 domains = ["example.com", ".example.org"]
 strategies = ["headers", "webview"]
 user_agent = "Mozilla/5.0 ..."
 referer = "https://example.com/"
-headers = { "Accept-Language" = "zh-CN" }
-cookies = { "session" = "你自己的会话值" }
+headers = { "Accept-Language" = "en-US" }
+cookies = { "session" = "your own session value" }
 
-# 正文提取覆盖：CSS 选择器，或常见的 XPath 写法
+# Body extraction overrides: CSS selectors, or common XPath forms
 body = ["article .post-content"]
 strip = [".newsletter-signup", "//aside"]
 next_page = "a.next"
 ```
 
-也可以把 Full-Text RSS 格式（ftr-site-config）的站点文件放进 `rulepacks/ftr/`，文件名是域名，例如 `example.com.txt`。支持的指令：`body`、`strip`、`strip_id_or_class`、`title`、`next_page_link`、`single_page_link`、`http_header(user-agent)`、`http_header(referer)`、`http_header(cookie)`。XPath 只支持能直接换成 CSS 选择器的常见写法，其余条目会被跳过。
+Site files in the Full-Text RSS format (ftr-site-config) can also be dropped into `rulepacks/ftr/`, named after the domain, for example `example.com.txt`. Supported directives: `body`, `strip`, `strip_id_or_class`, `title`, `next_page_link`, `single_page_link`, `http_header(user-agent)`, `http_header(referer)`, `http_header(cookie)`. Only XPath expressions that translate directly into a CSS selector are supported; other entries are skipped.
