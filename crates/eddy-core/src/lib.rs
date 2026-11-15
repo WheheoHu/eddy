@@ -44,7 +44,8 @@ pub use eddy_video::{
     VideoPipelineMode, VideoProbe, VideoSettings, VideoStageRole, is_video_file_path, is_video_url,
 };
 pub use engine::{
-    Engine, EngineOptions, EngineStatus, Mode, RefreshSummary, SourceInfo, SourceStats,
+    Engine, EngineOptions, EngineStatus, Mode, RefreshSummary, SourceInfo, SourceStats, SyncPhase,
+    SyncProgress,
 };
 pub use export::{
     ExportContentMode, ExportFormat, ExportOptions, ExportProgress, ExportProgressCallback,
@@ -63,7 +64,7 @@ pub use platform::{LogLevel, MemoryPlatform, Platform};
 pub use progress::{ResumePoint, SeriesInfo};
 pub use rules::RulePackSummary;
 pub use search::SearchResult;
-pub use server::{AppliedOps, ServerOverview};
+pub use server::{AppliedOps, OpsPage, ServerOverview};
 pub use upstream::HistoryCallback;
 pub use video::{
     StartVideoJobOptions, VideoJobCallback, VideoJobInfo, VideoJobTarget, record_to_remote,

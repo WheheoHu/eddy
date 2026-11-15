@@ -832,10 +832,12 @@ impl Store {
 }
 
 pub(crate) fn insert_item(c: &rusqlite::Connection, item: &Item) -> rusqlite::Result<usize> {
-    c.execute(
+    c.prepare_cached(
         "INSERT OR IGNORE INTO items(id,source_id,account_id,upstream_id,kind,url,title,author,published_at,added_at,
             read,starred,series_id,chapter_index,current_version,excerpt,lang,text_len,progress,finished,last_read_at,chapter_level)
          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    )?
+    .execute(
         params![
             item.id, item.source_id, item.account_id, item.upstream_id, item.kind.as_str(), item.url, item.title,
             item.author, item.published_at, item.added_at, item.read, item.starred, item.series_id, item.chapter_index,

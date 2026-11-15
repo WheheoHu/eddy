@@ -118,6 +118,28 @@ async fn main() {
     std::fs::create_dir_all(&data).expect("data dir");
     let secrets = Arc::new(FileSecrets(data.join("cli-secrets.json")));
     let engine = Engine::open(&data, secrets, EngineOptions::default()).expect("open engine");
+    // A long sync says how far it is, about once a second.
+    let watched = engine.clone();
+    let printed = std::sync::Mutex::new(None::<std::time::Instant>);
+    engine.set_progress_listener(Some(Arc::new(move || {
+        let Ok(Some(p)) = watched.status().map(|s| s.sync) else {
+            return;
+        };
+        let mut printed = printed.lock().unwrap();
+        if printed.is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(1)) {
+            return;
+        }
+        *printed = Some(std::time::Instant::now());
+        let phase = match p.phase {
+            eddy_core::SyncPhase::Uploading => "uploading",
+            eddy_core::SyncPhase::Downloading => "downloading",
+            eddy_core::SyncPhase::FetchingContent => "fetching articles",
+        };
+        match p.total {
+            Some(total) => eprintln!("{phase}: {} of {total}", p.done),
+            None => eprintln!("{phase}: {}", p.done),
+        }
+    })));
     engine.set_pdf_reader(Some(Arc::new(eddy_pdf::PdfiumReader::new())));
     let result = match args
         .iter()

@@ -230,6 +230,9 @@ async fn devices_are_paired_and_revoked_from_the_page() {
     let state = browser.state().await;
     assert_eq!(state["devices"][0]["name"], "Mac A");
     assert!(state["devices"][0]["last_seen"].is_i64());
+    // It synced when it paired, so the page knows it has everything.
+    assert_eq!(state["devices"][0]["behind"], 0);
+    assert!(state["devices"][0]["synced_at"].is_i64());
     assert_eq!(state["service"]["live_connections"], 1);
 
     // Revoking stops the device and drops its open connection.

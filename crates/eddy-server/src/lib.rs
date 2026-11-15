@@ -3,6 +3,7 @@
 //! distributes private configuration and searches the full history.
 
 pub mod admin;
+pub mod progress;
 pub mod secrets;
 
 use std::path::PathBuf;
@@ -57,6 +58,8 @@ pub struct AppState {
     /// Seconds between scheduled refreshes; 0 until the poller starts.
     pub refresh_interval: std::sync::atomic::AtomicU64,
     pub admin: Option<admin::Admin>,
+    /// Where each device is in the change feed.
+    pub sync_log: progress::SyncLog,
 }
 
 impl AppState {
@@ -105,6 +108,7 @@ impl AppState {
                 .as_deref()
                 .filter(|p| !p.is_empty())
                 .map(admin::Admin::new),
+            sync_log: progress::SyncLog::default(),
         }))
     }
 
@@ -121,6 +125,17 @@ impl AppState {
             min_protocol: MIN_PROTOCOL,
             version: eddy_core::core_version(),
         })
+    }
+
+    /// A device's name for the log; its ID when it has none.
+    fn device_name(&self, id: &str) -> String {
+        self.store
+            .devices()
+            .ok()
+            .and_then(|all| all.into_iter().find(|d| d.id == id))
+            .map(|d| d.name)
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| id.to_string())
     }
 
     fn announce(&self) {
@@ -255,6 +270,13 @@ pub fn router(state: Arc<AppState>) -> Router {
         .merge(admin::routes())
         .layer(DefaultBodyLimit::max(80 * 1024 * 1024))
         .layer(axum::middleware::from_fn(require_protocol))
+        // A first sync is hundreds of megabytes of JSON, which shrinks
+        // several times over; the fastest level keeps the server from
+        // becoming the slow part on a quick network.
+        .layer(
+            tower_http::compression::CompressionLayer::new()
+                .quality(tower_http::CompressionLevel::Fastest),
+        )
         .with_state(state)
 }
 
@@ -378,12 +400,19 @@ async fn push(
     Device(device): Device,
     Json(req): Json<RawPushRequest>,
 ) -> Result<Json<PushResponse>, ApiError> {
-    let outcome = s
-        .engine
-        .server_apply_ops(&device, &req.ops)
-        .map_err(ApiError::internal)?;
+    let sent = req.ops.len();
+    let state = s.clone();
+    let from = device.clone();
+    let outcome = blocking(move || state.engine.server_apply_ops(&from, &req.ops)).await?;
     if outcome.applied > 0 {
         s.announce();
+    }
+    if sent > 0 {
+        let name = s.device_name(&device);
+        match outcome.rejected.len() {
+            0 => tracing::info!("device {name} uploaded {sent} changes"),
+            refused => tracing::warn!("device {name} uploaded {sent} changes ({refused} refused)"),
+        }
     }
     Ok(Json(PushResponse {
         applied: outcome.applied,
@@ -410,14 +439,39 @@ fn default_limit() -> u32 {
 
 async fn pull(
     State(s): State<Arc<AppState>>,
-    _d: Device,
+    Device(device): Device,
     Query(q): Query<PullQuery>,
 ) -> Result<Json<PullResponse>, ApiError> {
-    let (ops, cursor, more) = s
-        .engine
-        .server_ops_since(q.since, q.limit)
-        .map_err(ApiError::internal)?;
-    Ok(Json(PullResponse { ops, cursor, more }))
+    let state = s.clone();
+    let page = blocking(move || state.engine.server_ops_since(q.since, q.limit)).await?;
+    s.sync_log.pulled(progress::Pulled {
+        device_id: &device,
+        device_name: &s.device_name(&device),
+        since: q.since,
+        sent: page.ops.len(),
+        cursor: page.cursor,
+        more: page.more,
+        head: page.head,
+    });
+    Ok(Json(PullResponse {
+        ops: page.ops,
+        cursor: page.cursor,
+        more: page.more,
+        head: Some(page.head),
+    }))
+}
+
+/// Runs database and file work off the async runtime, so a large page or
+/// blob for one device does not hold up the others.
+async fn blocking<T, E>(work: impl FnOnce() -> Result<T, E> + Send + 'static) -> Result<T, ApiError>
+where
+    T: Send + 'static,
+    E: std::fmt::Display + Send + 'static,
+{
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(ApiError::internal)?
+        .map_err(ApiError::internal)
 }
 
 async fn get_blob(
@@ -425,7 +479,12 @@ async fn get_blob(
     _d: Device,
     Path(key): Path<String>,
 ) -> Result<Response, ApiError> {
-    match s.engine.server_blob(&key).map_err(ApiError::bad)? {
+    let state = s.clone();
+    let blob = tokio::task::spawn_blocking(move || state.engine.server_blob(&key))
+        .await
+        .map_err(ApiError::internal)?
+        .map_err(ApiError::bad)?;
+    match blob {
         Some((bytes, mime)) => Ok(([(header::CONTENT_TYPE, mime)], bytes).into_response()),
         None => Err(ApiError(StatusCode::NOT_FOUND, "没有这个内容".into())),
     }
@@ -453,9 +512,12 @@ async fn put_blob(
     let mime = headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .unwrap_or("application/octet-stream");
-    s.engine
-        .server_put_blob(&key, &body, mime)
+        .unwrap_or("application/octet-stream")
+        .to_string();
+    let state = s.clone();
+    tokio::task::spawn_blocking(move || state.engine.server_put_blob(&key, &body, &mime))
+        .await
+        .map_err(ApiError::internal)?
         .map_err(ApiError::bad)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -682,6 +744,7 @@ impl AppState {
     /// closes.
     pub fn revoke_device(&self, id: &str) -> Result<(), String> {
         self.store.remove_device(id).map_err(|e| e.to_string())?;
+        self.sync_log.forget(id);
         let _ = self.revoked.send(id.to_string());
         Ok(())
     }

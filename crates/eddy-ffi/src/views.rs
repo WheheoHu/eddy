@@ -32,6 +32,27 @@ pub struct StatusView {
     /// Server mode: new articles still arrive (from FreshRSS directly)
     /// while the server is offline.
     pub offline_refresh: bool,
+    /// A sync with the server long enough to show; `None` otherwise.
+    pub sync: Option<SyncProgressView>,
+}
+
+/// How far a long sync with the server has got.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct SyncProgressView {
+    pub phase: SyncPhase,
+    pub done: u64,
+    /// Unknown against an older server.
+    pub total: Option<u64>,
+}
+
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncPhase {
+    /// Sending this device's changes.
+    Uploading,
+    /// Receiving the server's changes.
+    Downloading,
+    /// Downloading articles to read offline.
+    FetchingContent,
 }
 
 impl From<EngineStatus> for StatusView {
@@ -52,6 +73,15 @@ impl From<EngineStatus> for StatusView {
             pending_uploads: s.pending_uploads,
             rejected_uploads: s.rejected_uploads,
             offline_refresh: s.offline_refresh,
+            sync: s.sync.map(|p| SyncProgressView {
+                phase: match p.phase {
+                    eddy_core::SyncPhase::Uploading => SyncPhase::Uploading,
+                    eddy_core::SyncPhase::Downloading => SyncPhase::Downloading,
+                    eddy_core::SyncPhase::FetchingContent => SyncPhase::FetchingContent,
+                },
+                done: p.done,
+                total: p.total,
+            }),
         }
     }
 }

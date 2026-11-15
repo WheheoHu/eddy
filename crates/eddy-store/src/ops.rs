@@ -16,6 +16,15 @@ pub struct StoredOp {
     pub op: Op,
 }
 
+/// What applying one op of a pulled page did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RemoteApplied {
+    /// It won the last-writer-wins comparison for its field.
+    pub applied: bool,
+    /// An item CREATE for an item this device already had.
+    pub known: bool,
+}
+
 impl Store {
     /// Records a local change in the log and applies it. `upstream_pending`
     /// marks changes that the direct upstream (FreshRSS) still has to receive.
@@ -50,22 +59,84 @@ impl Store {
         })
     }
 
+    /// Applies a page of ops received from the server in one transaction,
+    /// and moves the pull cursor (`cursor`: meta key and value) with it, so
+    /// a page is either wholly applied and counted or not at all.
+    ///
+    /// Per op: whether it won, and for an item CREATE whether the item was
+    /// already here.
+    pub fn apply_remote_page(
+        &self,
+        ops: &[Op],
+        cursor: Option<(&str, &str)>,
+    ) -> Result<Vec<RemoteApplied>> {
+        self.with(|c| {
+            let tx = c.transaction()?;
+            let mut out = Vec::with_capacity(ops.len());
+            for op in ops {
+                let known = op.entity == Entity::Item
+                    && op.field == fields::CREATE
+                    && tx
+                        .prepare_cached("SELECT 1 FROM items WHERE id=?")?
+                        .exists([&op.entity_id])?;
+                let applied = apply(&tx, op, OpOrigin::Remote, false, None)?;
+                out.push(RemoteApplied { applied, known });
+            }
+            if let Some((key, value)) = cursor {
+                tx.execute(
+                    "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    params![key, value],
+                )?;
+            }
+            tx.commit()?;
+            Ok(out)
+        })
+    }
+
     /// The change feed: ops after `seq`, with the device each came from.
     pub fn ops_since(&self, seq: i64, limit: u32) -> Result<Vec<(StoredOp, Option<String>)>> {
-        let devices: std::collections::HashMap<i64, Option<String>> = self.with(|c| {
-            let mut stmt =
-                c.prepare("SELECT seq, device FROM ops WHERE seq>? ORDER BY seq LIMIT ?")?;
-            let rows = stmt.query_map(params![seq, limit], |r| Ok((r.get(0)?, r.get(1)?)))?;
-            Ok(rows.collect::<rusqlite::Result<_>>()?)
-        })?;
-        let ops = self.query_ops(&format!("WHERE seq>{seq} ORDER BY seq"), limit)?;
-        Ok(ops
-            .into_iter()
-            .map(|o| {
-                let device = devices.get(&o.seq).cloned().flatten();
-                (o, device)
-            })
-            .collect())
+        self.ops_since_capped(seq, limit, usize::MAX)
+    }
+
+    /// `ops_since`, stopping once the values add up to `max_bytes` (always
+    /// returning at least one op), so one page stays a reasonable size.
+    pub fn ops_since_capped(
+        &self,
+        seq: i64,
+        limit: u32,
+        max_bytes: usize,
+    ) -> Result<Vec<(StoredOp, Option<String>)>> {
+        self.with(|c| {
+            let mut stmt = c.prepare_cached(
+                "SELECT seq, op_id, hlc, entity, entity_id, field, value, device FROM ops WHERE seq>? ORDER BY seq LIMIT ?",
+            )?;
+            let mut rows = stmt.query(params![seq, limit])?;
+            let mut out = Vec::new();
+            let mut bytes = 0usize;
+            while let Some(r) = rows.next()? {
+                if bytes >= max_bytes && !out.is_empty() {
+                    break;
+                }
+                let value: String = r.get(6)?;
+                bytes += value.len();
+                let (Ok(hlc), Some(entity)) = (
+                    r.get::<_, String>(2)?.parse(),
+                    Entity::parse(&r.get::<_, String>(3)?),
+                ) else {
+                    continue;
+                };
+                let op = Op {
+                    op_id: r.get(1)?,
+                    hlc,
+                    entity,
+                    entity_id: r.get(4)?,
+                    field: r.get(5)?,
+                    value: serde_json::from_str(&value)?,
+                };
+                out.push((StoredOp { seq: r.get(0)?, op }, r.get(7)?));
+            }
+            Ok(out)
+        })
     }
 
     pub fn max_op_seq(&self) -> Result<i64> {
@@ -228,9 +299,12 @@ fn apply(
     upstream_pending: bool,
     device: Option<&str>,
 ) -> Result<bool> {
-    let inserted = tx.execute(
+    // The statements every op runs are compiled once per connection, not
+    // once per op: a first sync applies hundreds of thousands.
+    let inserted = tx.prepare_cached(
         "INSERT OR IGNORE INTO ops(op_id,hlc,entity,entity_id,field,value,origin,uploaded,upstream_pending,device)
          VALUES(?,?,?,?,?,?,?,?,?,?)",
+    )?.execute(
         params![
             op.op_id,
             op.hlc.to_string(),
@@ -248,27 +322,26 @@ fn apply(
         return Ok(false);
     }
     let current: Option<String> = tx
-        .query_row(
-            "SELECT hlc FROM field_clock WHERE entity=? AND entity_id=? AND field=?",
-            params![op.entity.as_str(), op.entity_id, op.field],
-            |r| r.get(0),
-        )
+        .prepare_cached("SELECT hlc FROM field_clock WHERE entity=? AND entity_id=? AND field=?")?
+        .query_row(params![op.entity.as_str(), op.entity_id, op.field], |r| {
+            r.get(0)
+        })
         .optional()?;
     if let Some(current) = current.and_then(|s| s.parse::<Hlc>().ok())
         && current >= op.hlc
     {
         return Ok(false);
     }
-    tx.execute(
+    tx.prepare_cached(
         "INSERT INTO field_clock(entity,entity_id,field,hlc) VALUES(?,?,?,?)
          ON CONFLICT(entity,entity_id,field) DO UPDATE SET hlc=excluded.hlc",
-        params![
-            op.entity.as_str(),
-            op.entity_id,
-            op.field,
-            op.hlc.to_string()
-        ],
-    )?;
+    )?
+    .execute(params![
+        op.entity.as_str(),
+        op.entity_id,
+        op.field,
+        op.hlc.to_string()
+    ])?;
     effect(tx, op)?;
     // Only the winning value is owed to FreshRSS: a late, older change must
     // not reach it and come back as the newest state.
@@ -330,10 +403,8 @@ fn effect(tx: &Transaction, op: &Op) -> Result<()> {
             )?;
         }
         (Entity::Item, fields::VERSION) => {
-            tx.execute(
-                "UPDATE items SET current_version=? WHERE id=?",
-                params![str_value(v)?, id],
-            )?;
+            tx.prepare_cached("UPDATE items SET current_version=? WHERE id=?")?
+                .execute(params![str_value(v)?, id])?;
         }
         (Entity::Item, fields::SERIES) => {
             let series = v.get("series_id").and_then(Value::as_str);
@@ -468,22 +539,23 @@ fn effect(tx: &Transaction, op: &Op) -> Result<()> {
         }
         (Entity::ContentVersion, fields::CREATE) => {
             let cv: eddy_model::ContentVersion = serde_json::from_value(v.clone())?;
-            tx.execute(
+            tx.prepare_cached(
                 "INSERT OR IGNORE INTO content_versions(hash,item_id,origin,source_url,raw_blob,raw_mime,doc_blob,doc_schema,text_len,created_at)
                  VALUES(?,?,?,?,?,?,?,?,?,?)",
+            )?.execute(
                 params![cv.hash, cv.item_id, cv.origin.as_str(), cv.source_url, cv.raw_blob, cv.raw_mime, cv.doc_blob, cv.doc_schema, cv.text_len, cv.created_at],
             )?;
         }
         (Entity::Item, "meta") => {
-            tx.execute(
+            tx.prepare_cached(
                 "UPDATE items SET excerpt=?, text_len=?, lang=COALESCE(?,lang) WHERE id=?",
-                params![
-                    v.get("excerpt").and_then(Value::as_str),
-                    v.get("text_len").and_then(Value::as_i64).unwrap_or(0),
-                    v.get("lang").and_then(Value::as_str),
-                    id
-                ],
-            )?;
+            )?
+            .execute(params![
+                v.get("excerpt").and_then(Value::as_str),
+                v.get("text_len").and_then(Value::as_i64).unwrap_or(0),
+                v.get("lang").and_then(Value::as_str),
+                id
+            ])?;
         }
         (Entity::Artifact, fields::CREATE) => {
             let get = |k: &str| v.get(k).and_then(Value::as_str);

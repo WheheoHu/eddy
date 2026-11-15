@@ -14,10 +14,13 @@ pub struct ServerStatusView {
     pub version: String,
 }
 
-/// Told when a background sync changed local data, so lists can reload.
+/// Hears about syncs that run in the background.
 #[uniffi::export(with_foreign)]
 pub trait SyncListener: Send + Sync {
+    /// Local data changed, so lists can reload.
     fn on_change(&self);
+    /// A long sync started, moved or ended; `status().sync` has the details.
+    fn on_progress(&self);
 }
 
 impl From<eddy_core::ServerStatus> for ServerStatusView {
@@ -50,8 +53,12 @@ type R<T> = Result<T, EddyError>;
 #[uniffi::export]
 impl EddyEngine {
     pub fn set_sync_listener(&self, listener: Option<Arc<dyn SyncListener>>) {
+        let progress = listener.clone();
         self.engine.set_change_listener(
             listener.map(|l| Arc::new(move || l.on_change()) as Arc<dyn Fn() + Send + Sync>),
+        );
+        self.engine.set_progress_listener(
+            progress.map(|l| Arc::new(move || l.on_progress()) as Arc<dyn Fn() + Send + Sync>),
         );
     }
 
@@ -75,18 +82,22 @@ impl EddyEngine {
 
 #[uniffi::export(async_runtime = "tokio")]
 impl EddyEngine {
-    /// Pairs with eddy-server and migrates local data to it.
+    /// Pairs with eddy-server and returns as soon as the device is
+    /// connected. The first sync (uploading local data, downloading the
+    /// server's) carries on in the background and reports through the sync
+    /// listener.
     pub async fn connect_server(
         &self,
         url: String,
         pairing_code: String,
         device_name: String,
     ) -> R<ServerStatusView> {
-        Ok(self
+        let status = self
             .engine
-            .connect_server(&url, &pairing_code, &device_name)
-            .await?
-            .into())
+            .pair_server(&url, &pairing_code, &device_name)
+            .await?;
+        self.engine.start_sync();
+        Ok(status.into())
     }
 
     pub fn disconnect_server(&self) -> R<()> {

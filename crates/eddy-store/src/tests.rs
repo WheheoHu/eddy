@@ -711,3 +711,79 @@ fn an_older_database_is_migrated_forward() {
     );
     assert!(s.devices().unwrap().is_empty(), "tables added later exist");
 }
+
+#[test]
+fn a_pulled_page_applies_like_its_ops_one_by_one_and_all_or_nothing() {
+    let page = |extra: Option<Op>| {
+        let mut ops = vec![
+            op(
+                1,
+                "srv",
+                Entity::Item,
+                "a",
+                fields::CREATE,
+                serde_json::to_value(item("a", 1)).unwrap(),
+            ),
+            op(
+                2,
+                "srv",
+                Entity::Item,
+                "b",
+                fields::CREATE,
+                serde_json::to_value(item("b", 2)).unwrap(),
+            ),
+            op(20, "dev2", Entity::Item, "a", fields::STARRED, json!(true)),
+            // Loses to the write above, and the one after it is a replay.
+            op(5, "dev3", Entity::Item, "a", fields::STARRED, json!(false)),
+            op(20, "dev2", Entity::Item, "a", fields::STARRED, json!(true)),
+            op(30, "dev2", Entity::Item, "b", fields::READ, json!(true)),
+        ];
+        ops.extend(extra);
+        ops
+    };
+    let (_d1, one_by_one) = store();
+    let (_d2, paged) = store();
+    // Item "a" is already on both devices; "b" is new.
+    one_by_one.insert_item(&item("a", 1)).unwrap();
+    paged.insert_item(&item("a", 1)).unwrap();
+
+    let expected: Vec<bool> = page(None)
+        .iter()
+        .map(|o| one_by_one.apply_remote(o).unwrap())
+        .collect();
+    let got = paged
+        .apply_remote_page(&page(None), Some(("cursor", "6")))
+        .unwrap();
+    assert_eq!(got.iter().map(|r| r.applied).collect::<Vec<_>>(), expected);
+    assert_eq!(
+        got.iter().map(|r| r.known).collect::<Vec<_>>(),
+        [true, false, false, false, false, false]
+    );
+    assert_eq!(paged.meta_get("cursor").unwrap().as_deref(), Some("6"));
+    for id in ["a", "b"] {
+        assert_eq!(
+            paged.item(id).unwrap().unwrap().item,
+            one_by_one.item(id).unwrap().unwrap().item
+        );
+    }
+    assert!(paged.unuploaded_ops(100).unwrap().is_empty());
+
+    // An op that cannot be applied takes the whole page and the cursor with
+    // it, so nothing is half done and the page is pulled again.
+    let (_d3, broken) = store();
+    let bad = op(
+        40,
+        "srv",
+        Entity::Item,
+        "c",
+        fields::CREATE,
+        json!("nonsense"),
+    );
+    assert!(
+        broken
+            .apply_remote_page(&page(Some(bad)), Some(("cursor", "7")))
+            .is_err()
+    );
+    assert!(broken.item("b").unwrap().is_none());
+    assert_eq!(broken.meta_get("cursor").unwrap(), None);
+}
