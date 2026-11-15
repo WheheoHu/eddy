@@ -99,12 +99,61 @@ fn safe_name(name: &str) -> Result<String> {
     })
 }
 
+/// Names of rule packs removed here that the server has not heard about.
+const REMOVED_PACKS_META: &str = "rule_packs_removed";
+const SHARED_PACKS_META: &str = "rule_packs_shared";
+
+impl Inner {
+    pub(crate) fn removed_rule_packs(&self) -> Vec<String> {
+        self.store
+            .meta_get(REMOVED_PACKS_META)
+            .ok()
+            .flatten()
+            .and_then(|v| serde_json::from_str(&v).ok())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn clear_removed_rule_packs(&self) -> Result<()> {
+        Ok(self.store.meta_delete(REMOVED_PACKS_META)?)
+    }
+
+    /// Packs that were on both this device and the server at the last sync.
+    pub(crate) fn shared_rule_packs(&self) -> Vec<String> {
+        self.store
+            .meta_get(SHARED_PACKS_META)
+            .ok()
+            .flatten()
+            .and_then(|v| serde_json::from_str(&v).ok())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn set_shared_rule_packs(&self, names: &[&String]) -> Result<()> {
+        Ok(self
+            .store
+            .meta_set(SHARED_PACKS_META, &serde_json::to_string(names)?)?)
+    }
+}
+
 impl Engine {
     /// Validates and stores a private TOML rule pack, then reloads the
     /// fetcher. The pack stays in the local data directory only.
     pub fn import_rule_pack(&self, name: &str, contents: &str) -> Result<RulePackSummary> {
         RulePack::parse_toml(contents).map_err(|e| EngineError::Invalid(e.to_string()))?;
         let name = safe_name(name.trim_end_matches(".toml"))?;
+        // Importing a pack (again) makes it new: it takes back an earlier
+        // removal here and outlives one made elsewhere.
+        let mut removed = self.inner.removed_rule_packs();
+        if removed.contains(&name) {
+            removed.retain(|n| n != &name);
+            self.inner
+                .store
+                .meta_set(REMOVED_PACKS_META, &serde_json::to_string(&removed)?)?;
+        }
+        let shared = self.inner.shared_rule_packs();
+        if shared.contains(&name) {
+            let rest: Vec<&String> = shared.iter().filter(|n| *n != &name).collect();
+            self.inner.set_shared_rule_packs(&rest)?;
+        }
         let dir = self.inner.rules_dir();
         std::fs::create_dir_all(&dir).map_err(|e| EngineError::Invalid(e.to_string()))?;
         std::fs::write(dir.join(format!("{name}.toml")), contents)
@@ -128,6 +177,17 @@ impl Engine {
     pub fn remove_rule_pack(&self, name: &str) -> Result<RulePackSummary> {
         let name = safe_name(name)?;
         let _ = std::fs::remove_file(self.inner.rules_dir().join(format!("{name}.toml")));
+        // In server mode the removal has to reach the server, or the next
+        // sync brings the pack back.
+        if self.inner.is_hub() {
+            let mut removed = self.inner.removed_rule_packs();
+            if !removed.contains(&name) {
+                removed.push(name.clone());
+                self.inner
+                    .store
+                    .meta_set(REMOVED_PACKS_META, &serde_json::to_string(&removed)?)?;
+            }
+        }
         self.inner.rebuild_fetcher()?;
         Ok(self.rule_packs())
     }

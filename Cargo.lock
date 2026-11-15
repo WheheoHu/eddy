@@ -1273,6 +1273,7 @@ dependencies = [
  "eddy-sync",
  "getrandom 0.3.4",
  "parking_lot",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",

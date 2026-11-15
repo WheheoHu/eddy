@@ -22,9 +22,9 @@ use eddy_core::{
 use eddy_model::ids::sha256_hex;
 use eddy_store::Store;
 use eddy_sync::{
-    AccountInfo, AccountRequest, ConfigEntry, CreateVideoJobRequest, ErrorBody, PROTOCOL_VERSION,
-    PairRequest, PairResponse, PullResponse, PushRequest, PushResponse, RemoteVideoJob, SearchHit,
-    ServerInfo,
+    AccountInfo, AccountRequest, ConfigEntry, CreateVideoJobRequest, ErrorBody, MIN_PROTOCOL,
+    PROTOCOL_HEADER, PROTOCOL_VERSION, PairRequest, PairResponse, PullResponse, PushResponse,
+    RawPushRequest, RejectedOp, RemoteVideoJob, SearchHit, ServerInfo,
 };
 use serde::Deserialize;
 use tokio::sync::broadcast;
@@ -41,6 +41,9 @@ pub struct AppState {
     pub server_id: String,
     pub changes: broadcast::Sender<i64>,
     pub video_events: broadcast::Sender<()>,
+    /// Wakes live connections when the server shuts down, so they close
+    /// instead of holding the shutdown open.
+    pub closing: tokio::sync::Notify,
 }
 
 impl AppState {
@@ -77,6 +80,7 @@ impl AppState {
             server_id,
             changes,
             video_events,
+            closing: tokio::sync::Notify::new(),
         }))
     }
 
@@ -90,6 +94,8 @@ impl AppState {
             }),
             cursor: self.engine.server_cursor().map_err(ApiError::internal)?,
             video_capable: self.engine.server_video_capable(),
+            min_protocol: MIN_PROTOCOL,
+            version: eddy_core::core_version(),
         })
     }
 
@@ -194,7 +200,7 @@ impl FromRequestParts<Arc<AppState>> for Device {
 
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/v1/health", get(|| async { "ok" }))
+        .route("/v1/health", get(health))
         .route("/v1/pair", post(pair))
         .route("/v1/info", get(info))
         .route("/v1/account", post(set_account))
@@ -219,14 +225,53 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/video-jobs/{id}", delete(dismiss_video_job))
         .route("/v1/ws", get(ws))
         .layer(DefaultBodyLimit::max(80 * 1024 * 1024))
+        .layer(axum::middleware::from_fn(require_protocol))
         .with_state(state)
+}
+
+async fn health(State(s): State<Arc<AppState>>) -> Result<&'static str, ApiError> {
+    if s.engine.server_healthy() {
+        Ok("ok")
+    } else {
+        Err(ApiError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "database unavailable".into(),
+        ))
+    }
+}
+
+/// Turns away clients that speak a protocol this server no longer reads,
+/// before they push or pull anything. Clients older than the header do not
+/// send it and count as protocol 1.
+async fn require_protocol(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if request.uri().path() == "/v1/health" {
+        return next.run(request).await;
+    }
+    let protocol = request
+        .headers()
+        .get(PROTOCOL_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .unwrap_or(1);
+    if protocol < MIN_PROTOCOL {
+        return ApiError(
+            StatusCode::UPGRADE_REQUIRED,
+            "这个版本的 Eddy 太旧，服务端已不再支持，请先更新 Eddy 再同步。".into(),
+        )
+        .into_response();
+    }
+    next.run(request).await
 }
 
 /// Refreshes FreshRSS every `interval` in the background.
 pub fn spawn_poller(state: Arc<AppState>, interval: Duration) {
     tokio::spawn(async move {
+        // The first tick fires at once: a restarted server catches up
+        // instead of waiting a full interval.
         let mut tick = tokio::time::interval(interval);
-        tick.tick().await;
         loop {
             tick.tick().await;
             if let Err(e) = state.refresh().await {
@@ -296,16 +341,24 @@ async fn refresh(State(s): State<Arc<AppState>>, _d: Device) -> Result<StatusCod
 async fn push(
     State(s): State<Arc<AppState>>,
     Device(device): Device,
-    Json(req): Json<PushRequest>,
+    Json(req): Json<RawPushRequest>,
 ) -> Result<Json<PushResponse>, ApiError> {
-    let (applied, cursor) = s
+    let outcome = s
         .engine
         .server_apply_ops(&device, &req.ops)
-        .map_err(ApiError::bad)?;
-    if applied > 0 {
+        .map_err(ApiError::internal)?;
+    if outcome.applied > 0 {
         s.announce();
     }
-    Ok(Json(PushResponse { applied, cursor }))
+    Ok(Json(PushResponse {
+        applied: outcome.applied,
+        cursor: outcome.cursor,
+        rejected: outcome
+            .rejected
+            .into_iter()
+            .map(|(op_id, reason)| RejectedOp { op_id, reason })
+            .collect(),
+    }))
 }
 
 #[derive(Deserialize)]
@@ -600,6 +653,7 @@ async fn live(mut socket: WebSocket, s: Arc<AppState>) {
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(_) => break,
             },
+            _ = s.closing.notified() => break,
             incoming = socket.recv() => match incoming {
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
                 _ => {}

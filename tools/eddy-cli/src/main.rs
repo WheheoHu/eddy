@@ -8,6 +8,11 @@
 //! eddy-cli [--data DIR] text ITEM_ID
 //! eddy-cli [--data DIR] fulltext ITEM_ID
 //! eddy-cli [--data DIR] import FILE.epub|FILE.pdf
+//! eddy-cli [--data DIR] connect URL CODE | disconnect | sync | status
+//! eddy-cli [--data DIR] freshrss URL USER PASSWORD
+//! eddy-cli [--data DIR] server-account URL USER PASSWORD
+//! eddy-cli [--data DIR] tag NAME | tags | star ITEM_ID
+//! eddy-cli --version
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -97,6 +102,14 @@ fn summarize(doc: &Document) {
 #[tokio::main]
 async fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if matches!(args.first().map(String::as_str), Some("--version" | "-V")) {
+        println!(
+            "eddy-cli {} (sync protocol {})",
+            eddy_core::core_version(),
+            eddy_core::SYNC_PROTOCOL_VERSION
+        );
+        return;
+    }
     let mut data = PathBuf::from("build/cli-data");
     if args.first().map(String::as_str) == Some("--data") && args.len() > 1 {
         data = PathBuf::from(args.remove(1));
@@ -149,6 +162,52 @@ async fn main() {
                 s.url, s.server_id, s.cursor
             );
         }),
+        ["disconnect"] => engine.disconnect_server(),
+        // Standalone: this device's FreshRSS account. Server mode: the same
+        // account, kept here for refreshing while the server is offline.
+        ["freshrss", url, user, password] => engine
+            .configure_freshrss(url, user, password)
+            .await
+            .map(|a| println!("FreshRSS {} @ {}", a.username, a.base_url)),
+        // The FreshRSS account the server manages.
+        ["server-account", url, user, password] => engine
+            .configure_server_freshrss(url, user, password)
+            .await
+            .map(|_| println!("server account set")),
+        ["status"] => match engine.status() {
+            Ok(s) => {
+                println!("mode {:?}", s.mode);
+                if s.mode == eddy_core::Mode::Server {
+                    println!(
+                        "server {}",
+                        if s.server_online { "online" } else { "offline" }
+                    );
+                    println!("pending uploads {}", s.pending_uploads);
+                    println!("refused uploads {}", s.rejected_uploads);
+                    println!("offline refresh {}", s.offline_refresh);
+                    match engine.server_status().await {
+                        Ok(Some(server)) => println!(
+                            "server version {}, cursor {}",
+                            server.version, server.cursor
+                        ),
+                        Ok(None) => {}
+                        Err(e) => println!("server unreachable: {e}"),
+                    }
+                }
+                if let Some(e) = s.last_error {
+                    println!("last error {e}");
+                }
+                Ok(())
+            }
+            Err(e) => Err(e),
+        },
+        ["tag", name] => engine.create_tag(name).map(|id| println!("tag {id}")),
+        ["tags"] => engine.tags().map(|tags| {
+            for t in tags {
+                println!("{}", t.name);
+            }
+        }),
+        ["star", id] => engine.set_starred(id, true).await,
         ["series", url] => engine.detect_series_at(url).await.map(|p| match p {
             Some(p) => {
                 println!("{} — {} chapters", p.title, p.chapters.len());
@@ -162,8 +221,14 @@ async fn main() {
         ["sync"] => match engine.refresh().await {
             Ok(s) => {
                 println!(
-                    "new items {}, state changes {}",
-                    s.new_items, s.state_changes
+                    "new items {}, state changes {}{}",
+                    s.new_items,
+                    s.state_changes,
+                    if s.offline {
+                        " (server offline: fetched from FreshRSS)"
+                    } else {
+                        ""
+                    }
                 );
                 let progress: eddy_core::HistoryCallback =
                     Arc::new(|added| println!("history: {added} older articles"));
@@ -246,7 +311,7 @@ async fn main() {
         }
         _ => {
             eprintln!(
-                "usage: eddy-cli [--data DIR] save URL | items | doc ID | text ID | fulltext ID | connect URL CODE | sync | search QUERY | import FILE | media ID | gallery FOLDER COUNT"
+                "usage: eddy-cli [--data DIR] save URL | items | doc ID | text ID | fulltext ID | connect URL CODE | disconnect | sync | status | freshrss URL USER PASSWORD | server-account URL USER PASSWORD | tag NAME | tags | star ID | search QUERY | import FILE | media ID | gallery FOLDER COUNT | --version"
             );
             std::process::exit(2);
         }

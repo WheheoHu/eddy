@@ -451,6 +451,20 @@ impl Store {
         })
     }
 
+    /// On a server: removes upstream items that were stored but never
+    /// published to the op log (the process stopped in between), so the next
+    /// pull ingests and publishes them properly. Returns how many.
+    pub fn drop_unpublished_items(&self, account_id: &str) -> Result<usize> {
+        self.with(|c| {
+            Ok(c.execute(
+                "DELETE FROM items WHERE account_id=? AND upstream_id IS NOT NULL
+                   AND NOT EXISTS(SELECT 1 FROM field_clock f
+                                  WHERE f.entity='item' AND f.entity_id=items.id AND f.field='create')",
+                [account_id],
+            )?)
+        })
+    }
+
     /// Applies read/starred state reported by the upstream service, unless a
     /// local change to that field is still waiting to be pushed: a change made
     /// while a refresh was in flight must win over the stale copy.

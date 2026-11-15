@@ -54,8 +54,10 @@ impl Upstream for DirectUpstream {
         if pending.is_empty() {
             return Ok(());
         }
-        // Collapse to the latest value per (item, field), then batch by value.
-        let mut latest: HashMap<(String, String), (bool, Vec<i64>)> = HashMap::new();
+        // Collapse to the latest value per (item, field) by timestamp, not by
+        // arrival, then batch by value.
+        let mut latest: HashMap<(String, String), (eddy_model::Hlc, bool, Vec<i64>)> =
+            HashMap::new();
         let mut unrelated = Vec::new();
         for stored in pending {
             let op = &stored.op;
@@ -69,13 +71,16 @@ impl Upstream for DirectUpstream {
             };
             let entry = latest
                 .entry((op.entity_id.clone(), op.field.clone()))
-                .or_insert((value, Vec::new()));
-            entry.0 = value;
-            entry.1.push(stored.seq);
+                .or_insert((op.hlc.clone(), value, Vec::new()));
+            if op.hlc >= entry.0 {
+                entry.0 = op.hlc.clone();
+                entry.1 = value;
+            }
+            entry.2.push(stored.seq);
         }
         inner.store.clear_upstream_pending(&unrelated)?;
         let mut batches: HashMap<(String, bool), (Vec<String>, Vec<i64>)> = HashMap::new();
-        for ((item_id, field), (value, seqs)) in latest {
+        for ((item_id, field), (_, value, seqs)) in latest {
             let upstream_id = inner
                 .store
                 .item(&item_id)?
@@ -99,10 +104,42 @@ impl Upstream for DirectUpstream {
     }
 
     async fn sync(&self, inner: &Inner) -> Result<RefreshSummary> {
-        let account_id = self.account.id.as_str();
         // Local changes first, so upstream state already includes them.
         let push_error = self.push(inner).await.err();
+        let summary = self.pull(inner, true).await?;
+        if let Some(e) = push_error {
+            return Err(e);
+        }
+        Ok(summary)
+    }
+}
 
+impl DirectUpstream {
+    /// Server mode with the server unreachable: brings in new articles only.
+    /// The server stays the one that writes to FreshRSS and that decides
+    /// read/star state and which feeds exist, so nothing is pushed and
+    /// nothing already here is changed. Item IDs are deterministic: when the
+    /// server comes back, its copy of these articles merges into them.
+    pub(crate) async fn pull_new(&self, inner: &Inner) -> Result<RefreshSummary> {
+        let mut summary = self.pull(inner, false).await?;
+        summary.offline = true;
+        Ok(summary)
+    }
+
+    /// Pulls subscriptions and new articles. `authoritative` also drops
+    /// feeds that are gone, walks history and takes read/star state from
+    /// FreshRSS (standalone mode and the server).
+    async fn pull(&self, inner: &Inner, authoritative: bool) -> Result<RefreshSummary> {
+        let account_id = self.account.id.as_str();
+        if inner.options.server_role {
+            let dropped = inner.store.drop_unpublished_items(account_id)?;
+            if dropped > 0 {
+                inner.platform.log(
+                    LogLevel::Warn,
+                    &format!("re-ingesting {dropped} articles left unpublished"),
+                );
+            }
+        }
         let subscriptions = self.client.subscriptions().await?;
         let previous: HashMap<String, Source> = inner
             .store
@@ -144,15 +181,17 @@ impl Upstream for DirectUpstream {
             feed_to_source.insert(sub.id.clone(), id.clone());
             source_ids.push(id);
         }
-        for gone in previous.keys().filter(|id| !source_ids.contains(id)) {
-            inner.publish(
-                eddy_model::Entity::Source,
-                gone,
-                fields::DELETED,
-                true.into(),
-            )?;
+        if authoritative {
+            for gone in previous.keys().filter(|id| !source_ids.contains(id)) {
+                inner.publish(
+                    eddy_model::Entity::Source,
+                    gone,
+                    fields::DELETED,
+                    true.into(),
+                )?;
+            }
+            inner.store.remove_sources_not_in(account_id, &source_ids)?;
         }
-        inner.store.remove_sources_not_in(account_id, &source_ids)?;
 
         let unread: HashSet<String> = self
             .client
@@ -203,6 +242,15 @@ impl Upstream for DirectUpstream {
                 new_item_ids.push(id);
             }
         }
+        if !authoritative {
+            return Ok(RefreshSummary {
+                new_items: new_item_ids.len() as u32,
+                state_changes: 0,
+                sources: subscriptions.len() as u32,
+                new_item_ids,
+                offline: false,
+            });
+        }
         self.start_history(inner, recent.continuation)?;
 
         let mut state_changes = 0;
@@ -227,19 +275,15 @@ impl Upstream for DirectUpstream {
             }
         }
 
-        if let Some(e) = push_error {
-            return Err(e);
-        }
         Ok(RefreshSummary {
             new_items: new_item_ids.len() as u32,
             state_changes,
             sources: subscriptions.len() as u32,
             new_item_ids,
+            offline: false,
         })
     }
-}
 
-impl DirectUpstream {
     /// Where the reading list continues past pages already ingested. An empty
     /// value marks the end: it is never a valid continuation.
     fn history_key(&self) -> String {
@@ -438,7 +482,9 @@ impl Engine {
     /// walk is running.
     pub async fn backfill_history(&self, on_page: Option<HistoryCallback>) -> Result<u32> {
         let inner = &self.inner;
-        if inner.backfilling.swap(true, Ordering::SeqCst) {
+        // In server mode the server walks the history; this device gets it
+        // through the op log.
+        if inner.is_hub() || inner.backfilling.swap(true, Ordering::SeqCst) {
             return Ok(0);
         }
         let _running = Running(&inner.backfilling);

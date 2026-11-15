@@ -50,6 +50,16 @@ pub struct EngineStatus {
     pub account: Option<Account>,
     pub last_refresh: Option<i64>,
     pub last_error: Option<String>,
+    /// Server mode: false once a request failed to reach the server, until
+    /// one gets through again. Always true in the other modes.
+    pub server_online: bool,
+    /// Local changes waiting to be uploaded to the server.
+    pub pending_uploads: u32,
+    /// Changes the server refused for good (shown so they are not silent).
+    pub rejected_uploads: u32,
+    /// Server mode: FreshRSS credentials are on this device, so new articles
+    /// still arrive while the server is offline.
+    pub offline_refresh: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -59,6 +69,8 @@ pub struct RefreshSummary {
     pub sources: u32,
     /// IDs of the newly ingested items.
     pub new_item_ids: Vec<String>,
+    /// The server was unreachable: new articles came straight from FreshRSS.
+    pub offline: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -106,7 +118,18 @@ pub(crate) struct Inner {
     /// session; opening them doesn't try again.
     pub full_text_tried: parking_lot::Mutex<std::collections::HashSet<String>>,
     pub search: Option<eddy_search::SearchIndex>,
-    pub live: std::sync::atomic::AtomicBool,
+    /// The engine itself, for background tasks started from `&self`.
+    pub me: std::sync::Weak<Inner>,
+    /// The live-sync task, if running.
+    pub live: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// When the server last failed to answer; `None` while it is reachable.
+    pub hub_down_since: parking_lot::Mutex<Option<std::time::Instant>>,
+    /// A background upload is waiting to run.
+    pub push_scheduled: std::sync::atomic::AtomicBool,
+    /// One upload to the server at a time.
+    pub push_lock: tokio::sync::Mutex<()>,
+    /// Called when a background sync changed local data.
+    pub change_listener: RwLock<Option<Arc<dyn Fn() + Send + Sync>>>,
     pub backfilling: std::sync::atomic::AtomicBool,
     pub media: eddy_media::Resolver,
     /// Caps concurrent media lookups across the grid and prefetching.
@@ -145,7 +168,10 @@ impl Engine {
             ))
             .build()
             .map_err(|e| EngineError::Network(e.to_string()))?;
-        let inner = Arc::new(Inner {
+        let fetcher = Fetcher::new(Default::default(), None)
+            .map_err(|e| EngineError::Network(e.to_string()))?;
+        let inner = Arc::new_cyclic(|me| Inner {
+            me: me.clone(),
             store,
             platform,
             clock: HlcClock::new(device_id),
@@ -155,10 +181,7 @@ impl Engine {
             refresh_lock: tokio::sync::Mutex::new(()),
             data_dir: data_dir.to_path_buf(),
             options,
-            fetcher: RwLock::new(Arc::new(
-                Fetcher::new(Default::default(), None)
-                    .map_err(|e| EngineError::Network(e.to_string()))?,
-            )),
+            fetcher: RwLock::new(Arc::new(fetcher)),
             web_renderer: RwLock::new(None),
             pdf_reader: RwLock::new(None),
             progress_throttle: parking_lot::Mutex::new(Default::default()),
@@ -172,7 +195,11 @@ impl Engine {
             ai_requests: parking_lot::Mutex::new(Default::default()),
             full_text_tried: parking_lot::Mutex::new(Default::default()),
             search: eddy_search::SearchIndex::open(&data_dir.join("index")).ok(),
-            live: std::sync::atomic::AtomicBool::new(false),
+            live: parking_lot::Mutex::new(None),
+            hub_down_since: parking_lot::Mutex::new(None),
+            push_scheduled: std::sync::atomic::AtomicBool::new(false),
+            push_lock: tokio::sync::Mutex::new(()),
+            change_listener: RwLock::new(None),
             backfilling: std::sync::atomic::AtomicBool::new(false),
             media: eddy_media::Resolver::new(),
             media_gate: tokio::sync::Semaphore::new(4),
@@ -198,8 +225,17 @@ impl Engine {
             truncated: false,
             gallery: false,
         })?;
-        if !inner.restore_hub()? {
-            inner.restore_upstream()?;
+        // After a restart the clock continues past everything in the log.
+        if let Some(latest) = inner.store.max_hlc()? {
+            inner.clock.observe(&latest);
+        }
+        // The FreshRSS account stays available in server mode, for refreshing
+        // while the server is offline.
+        inner.restore_direct()?;
+        if !inner.restore_hub()?
+            && let Some(direct) = inner.direct.read().clone()
+        {
+            *inner.upstream.write() = Some(direct);
         }
         if !inner.options.server_role {
             match inner.restore_feed_versions() {
@@ -221,6 +257,12 @@ impl Engine {
         self.inner.clock.node().to_string()
     }
 
+    /// Installs a callback run after a background sync (live channel) changed
+    /// local data, so open lists can reload.
+    pub fn set_change_listener(&self, listener: Option<Arc<dyn Fn() + Send + Sync>>) {
+        *self.inner.change_listener.write() = listener;
+    }
+
     pub fn status(&self) -> Result<EngineStatus> {
         let inner = &self.inner;
         let account = inner.direct.read().as_ref().map(|d| d.account.clone());
@@ -229,7 +271,16 @@ impl Engine {
             Some(_) => Mode::Server,
             None => Mode::Unconfigured,
         };
+        let (pending_uploads, rejected_uploads) = if mode == Mode::Server {
+            inner.store.upload_counts()?
+        } else {
+            (0, 0)
+        };
         Ok(EngineStatus {
+            server_online: mode != Mode::Server || inner.hub_down_since.lock().is_none(),
+            pending_uploads,
+            rejected_uploads,
+            offline_refresh: mode == Mode::Server && account.is_some(),
             mode,
             account,
             last_refresh: inner
@@ -263,6 +314,21 @@ impl Engine {
             username: username.trim().to_string(),
             created_at: now_ms(),
         };
+        // In server mode this only enables refreshing while the server is
+        // offline, so it has to be the account the server manages: the same
+        // articles then get the same IDs on both sides.
+        let hub = self.inner.is_hub();
+        if hub
+            && self
+                .inner
+                .store
+                .meta_get(crate::hub::SERVER_ACCOUNT_META)?
+                .is_some_and(|id| id != account.id)
+        {
+            return Err(EngineError::Invalid(
+                "这不是服务端使用的 FreshRSS 账号。离线刷新需要填写同一个地址和用户名。".into(),
+            ));
+        }
         if !self
             .inner
             .platform
@@ -279,10 +345,14 @@ impl Engine {
             }
         }
         self.inner.store.upsert_account(&account)?;
-        self.inner.set_direct(DirectUpstream {
+        let direct = Arc::new(DirectUpstream {
             account: account.clone(),
             client,
         });
+        *self.inner.direct.write() = Some(direct.clone());
+        if !hub {
+            *self.inner.upstream.write() = Some(direct);
+        }
         Ok(account)
     }
 
@@ -294,7 +364,9 @@ impl Engine {
             self.inner.store.delete_account(&account.id)?;
         }
         *self.inner.direct.write() = None;
-        *self.inner.upstream.write() = None;
+        if !self.inner.is_hub() {
+            *self.inner.upstream.write() = None;
+        }
         Ok(())
     }
 
@@ -307,7 +379,23 @@ impl Engine {
             .read()
             .clone()
             .ok_or(EngineError::NotConfigured)?;
-        let result = upstream.sync(inner).await;
+        let mut result = upstream.sync(inner).await;
+        if upstream.kind() == "hub" {
+            inner.note_hub(&result);
+            // The server is the usual way in for new articles; while it is
+            // unreachable they come straight from FreshRSS.
+            let direct = inner.direct.read().clone();
+            if matches!(result, Err(EngineError::Offline(_)))
+                && let Some(direct) = direct
+            {
+                match direct.pull_new(inner).await {
+                    Ok(summary) => result = Ok(summary),
+                    Err(e) => inner
+                        .platform
+                        .log(LogLevel::Warn, &format!("offline refresh failed: {e}")),
+                }
+            }
+        }
         match &result {
             Ok(summary) => {
                 inner
@@ -395,10 +483,19 @@ impl Engine {
             self.inner.warm_pdf_images(&doc.document);
             return Ok(Some(doc));
         }
-        if self.fetch_missing_blobs(item_id).await?
-            && let Some(doc) = self.inner.current_document(item_id)?
-        {
-            return Ok(Some(doc));
+        // An unreachable server is not the end: the page or FreshRSS may
+        // still have the content.
+        match self.fetch_missing_blobs(item_id).await {
+            Ok(true) => {
+                if let Some(doc) = self.inner.current_document(item_id)? {
+                    return Ok(Some(doc));
+                }
+            }
+            Ok(false) => {}
+            Err(e) => self
+                .inner
+                .platform
+                .log(LogLevel::Warn, &format!("content download failed: {e}")),
         }
         if self.inner.ensure_page_content(item_id).await? {
             return self.inner.current_document(item_id);
@@ -525,7 +622,70 @@ impl Engine {
 }
 
 impl Inner {
-    fn restore_upstream(&self) -> Result<()> {
+    pub(crate) fn is_hub(&self) -> bool {
+        self.upstream
+            .read()
+            .as_ref()
+            .is_some_and(|u| u.kind() == "hub")
+    }
+
+    /// Records whether a request reached the server.
+    pub(crate) fn note_hub<T>(&self, result: &Result<T>) {
+        let mut down = self.hub_down_since.lock();
+        match result {
+            Err(EngineError::Offline(_)) => *down = Some(std::time::Instant::now()),
+            _ => *down = None,
+        }
+    }
+
+    /// Uploads pending changes shortly, retrying with backoff while the
+    /// server is unreachable. Calls made while one is waiting join it.
+    pub(crate) fn schedule_push(&self) {
+        use std::sync::atomic::Ordering;
+        if self.options.server_role || !self.is_hub() {
+            return;
+        }
+        let (Some(inner), Ok(runtime)) = (self.me.upgrade(), tokio::runtime::Handle::try_current())
+        else {
+            return;
+        };
+        if self.push_scheduled.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        runtime.spawn(async move {
+            let mut delay = Duration::from_millis(500);
+            loop {
+                tokio::time::sleep(delay).await;
+                // Changes recorded from here on schedule their own upload.
+                inner.push_scheduled.store(false, Ordering::SeqCst);
+                let upstream = inner.upstream.read().clone();
+                let Some(upstream) = upstream.filter(|u| u.kind() == "hub") else {
+                    break;
+                };
+                let result = upstream.push(&inner).await;
+                inner.note_hub(&result);
+                let Err(e) = result else { break };
+                inner
+                    .platform
+                    .log(LogLevel::Warn, &format!("push failed: {e}"));
+                // Only an unreachable server is worth waiting for.
+                if !matches!(e, EngineError::Offline(_))
+                    || inner.push_scheduled.swap(true, Ordering::SeqCst)
+                {
+                    break;
+                }
+                delay = (delay * 2).clamp(Duration::from_secs(5), Duration::from_secs(300));
+            }
+        });
+    }
+
+    pub(crate) fn notify_changed(&self) {
+        if let Some(listener) = self.change_listener.read().clone() {
+            listener();
+        }
+    }
+
+    fn restore_direct(&self) -> Result<()> {
         if let Some(account) = self
             .store
             .accounts()?
@@ -538,15 +698,9 @@ impl Inner {
                 username: account.username.clone(),
                 password,
             })?;
-            self.set_direct(DirectUpstream { account, client });
+            *self.direct.write() = Some(Arc::new(DirectUpstream { account, client }));
         }
         Ok(())
-    }
-
-    fn set_direct(&self, direct: DirectUpstream) {
-        let direct = Arc::new(direct);
-        *self.direct.write() = Some(direct.clone());
-        *self.upstream.write() = Some(direct);
     }
 
     /// On a server, records an op so clients receive a change that was
@@ -587,6 +741,9 @@ impl Inner {
             .as_ref()
             .is_some_and(|u| u.kind() == "direct");
         self.store.record_local(&op, upstream_pending && direct)?;
+        // Every change reaches the server on its own, not only at the next
+        // refresh.
+        self.schedule_push();
         Ok(())
     }
 
@@ -594,6 +751,9 @@ impl Inner {
         let Some(upstream) = self.upstream.read().clone() else {
             return;
         };
+        if upstream.kind() == "hub" {
+            return self.schedule_push();
+        }
         let inner = self.clone();
         tokio::spawn(async move {
             if let Err(e) = upstream.push(&inner).await {

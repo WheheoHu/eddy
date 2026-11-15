@@ -701,10 +701,13 @@ impl Engine {
             .collect();
 
         if !self.inner.options.server_role
-            && let Some(client) = self.inner.hub_client()
-            && let Ok(remote_jobs) = client.video_jobs().await
+            && let Some(client) = self.inner.reachable_hub_client()
         {
-            list.extend(remote_jobs.into_iter().map(remote_to_info));
+            let remote = client.video_jobs().await.map_err(crate::EngineError::from);
+            self.inner.note_hub(&remote);
+            if let Ok(remote_jobs) = remote {
+                list.extend(remote_jobs.into_iter().map(remote_to_info));
+            }
         }
 
         list.sort_by_key(|a| std::cmp::Reverse(a.created_at));

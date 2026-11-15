@@ -12,13 +12,34 @@ use eddy_model::Op;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+/// Version of the wire protocol this build speaks. Raise it whenever an
+/// older peer would misread the exchange: a new entity or field, or a field
+/// whose meaning changes. See docs/adr/0009.
+pub const PROTOCOL_VERSION: u32 = 2;
+
+/// Oldest protocol this build still talks to, as a server (clients below it
+/// get 426) and as a client (servers below it are refused).
+pub const MIN_PROTOCOL: u32 = 2;
+
+/// Request header carrying the client's protocol version.
+pub const PROTOCOL_HEADER: &str = "x-eddy-protocol";
 
 /// Largest content blob a server accepts (imported books and PDFs).
 pub const MAX_BLOB_BYTES: usize = 256 * 1024 * 1024;
 
 /// Blob transfers can be large; other requests keep the client's timeout.
 const BLOB_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+/// An unreachable server should be noticed quickly: the app keeps working
+/// offline and retries later.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Search falls back to the local index, so it does not wait long.
+const SEARCH_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// The live channel pings this often and gives up after three silent
+/// intervals, so a dead connection is replaced instead of sitting open.
+const LIVE_PING: Duration = Duration::from_secs(25);
 
 #[derive(Debug, thiserror::Error)]
 pub enum SyncError {
@@ -30,6 +51,9 @@ pub enum SyncError {
     Http(u16, String),
     #[error("连接服务端失败：{0}")]
     Network(String),
+    /// The two sides speak incompatible protocol versions.
+    #[error("{0}")]
+    Upgrade(String),
     #[error("服务端返回的数据格式不正确：{0}")]
     Format(String),
 }
@@ -50,6 +74,33 @@ pub struct ServerInfo {
     pub cursor: i64,
     #[serde(default)]
     pub video_capable: bool,
+    /// Oldest client protocol the server accepts.
+    #[serde(default = "first_protocol")]
+    pub min_protocol: u32,
+    /// The server's software version, for display.
+    #[serde(default)]
+    pub version: String,
+}
+
+fn first_protocol() -> u32 {
+    1
+}
+
+impl ServerInfo {
+    /// Whether this build can sync with the server that sent this.
+    pub fn check_protocol(&self) -> Result<()> {
+        if self.min_protocol > PROTOCOL_VERSION {
+            return Err(SyncError::Upgrade(
+                "服务端比这个版本的 Eddy 新，请先更新 Eddy 再同步。".into(),
+            ));
+        }
+        if self.protocol < MIN_PROTOCOL {
+            return Err(SyncError::Upgrade(
+                "服务端版本太旧，请先更新 eddy-server 再同步。".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +163,15 @@ pub struct PushRequest {
 pub struct PushResponse {
     pub applied: u32,
     pub cursor: i64,
+    /// Ops the server will never accept; the rest of the batch went through.
+    #[serde(default)]
+    pub rejected: Vec<RejectedOp>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RejectedOp {
+    pub op_id: String,
+    pub reason: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -119,6 +179,30 @@ pub struct PullResponse {
     pub ops: Vec<Op>,
     pub cursor: i64,
     pub more: bool,
+}
+
+/// A push as the server reads it: ops it cannot parse (from a newer client)
+/// are refused one by one instead of failing the whole request.
+#[derive(Clone, Debug, Deserialize)]
+pub struct RawPushRequest {
+    pub ops: Vec<serde_json::Value>,
+}
+
+/// A pulled page as the client reads it. Ops this version cannot parse (an
+/// entity added by a newer server) are counted in `skipped`, not fatal.
+#[derive(Clone, Debug)]
+pub struct PulledPage {
+    pub ops: Vec<Op>,
+    pub cursor: i64,
+    pub more: bool,
+    pub skipped: u32,
+}
+
+#[derive(Deserialize)]
+struct RawPullResponse {
+    ops: Vec<serde_json::Value>,
+    cursor: i64,
+    more: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -173,7 +257,7 @@ impl SyncClient {
     pub fn new(base_url: &str, token: Option<String>) -> Result<Self> {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(60))
-            .connect_timeout(Duration::from_secs(10))
+            .connect_timeout(CONNECT_TIMEOUT)
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| SyncError::Network(e.to_string()))?;
@@ -193,6 +277,7 @@ impl SyncClient {
     }
 
     fn auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let req = req.header(PROTOCOL_HEADER, PROTOCOL_VERSION);
         match &self.token {
             Some(t) => req.bearer_auth(t),
             None => req,
@@ -216,6 +301,9 @@ impl SyncClient {
             let message = serde_json::from_str::<ErrorBody>(&body)
                 .map(|b| b.error)
                 .unwrap_or_else(|_| body.chars().take(200).collect());
+            if status == reqwest::StatusCode::UPGRADE_REQUIRED {
+                return Err(SyncError::Upgrade(message));
+            }
             return Err(SyncError::Http(status.as_u16(), message));
         }
         Ok(response)
@@ -256,13 +344,26 @@ impl SyncClient {
             .await
     }
 
-    pub async fn pull(&self, since: i64, limit: u32) -> Result<PullResponse> {
-        self.json(
-            self.http
-                .get(self.url("ops"))
-                .query(&[("since", since.to_string()), ("limit", limit.to_string())]),
-        )
-        .await
+    pub async fn pull(&self, since: i64, limit: u32) -> Result<PulledPage> {
+        let raw: RawPullResponse = self
+            .json(
+                self.http
+                    .get(self.url("ops"))
+                    .query(&[("since", since.to_string()), ("limit", limit.to_string())]),
+            )
+            .await?;
+        let total = raw.ops.len();
+        let ops: Vec<Op> = raw
+            .ops
+            .into_iter()
+            .filter_map(|op| serde_json::from_value(op).ok())
+            .collect();
+        Ok(PulledPage {
+            skipped: (total - ops.len()) as u32,
+            ops,
+            cursor: raw.cursor,
+            more: raw.more,
+        })
     }
 
     pub async fn has_blob(&self, key: &str) -> Result<bool> {
@@ -342,6 +443,7 @@ impl SyncClient {
         self.json(
             self.http
                 .get(self.url("search"))
+                .timeout(SEARCH_TIMEOUT)
                 .query(&[("q", query.to_string()), ("limit", limit.to_string())]),
         )
         .await
@@ -373,13 +475,19 @@ impl SyncClient {
     }
 
     /// Opens the live channel and calls `on_change` with the server cursor
-    /// whenever new ops land. Returns when the connection closes.
+    /// whenever new ops land (`-1` for video job events). Returns when the
+    /// connection closes or goes silent.
     pub async fn listen(&self, mut on_change: impl FnMut(i64) + Send) -> Result<()> {
+        use futures::SinkExt;
+        use tokio_tungstenite::tungstenite::Message;
         use tokio_tungstenite::tungstenite::client::IntoClientRequest;
         let ws = self.url("ws").replacen("http", "ws", 1);
         let mut request = ws
             .into_client_request()
             .map_err(|e| SyncError::Config(e.to_string()))?;
+        request
+            .headers_mut()
+            .insert(PROTOCOL_HEADER, PROTOCOL_VERSION.into());
         if let Some(t) = &self.token {
             request.headers_mut().insert(
                 "authorization",
@@ -388,24 +496,47 @@ impl SyncClient {
                     .map_err(|_| SyncError::Unauthorized)?,
             );
         }
-        let (mut stream, _) =
-            tokio_tungstenite::connect_async(request)
-                .await
-                .map_err(|e| match e {
-                    tokio_tungstenite::tungstenite::Error::Http(r) if r.status() == 401 => {
-                        SyncError::Unauthorized
+        let connecting = tokio_tungstenite::connect_async(request);
+        let (mut stream, _) = tokio::time::timeout(CONNECT_TIMEOUT * 2, connecting)
+            .await
+            .map_err(|_| SyncError::Network("请求超时".into()))?
+            .map_err(|e| match e {
+                tokio_tungstenite::tungstenite::Error::Http(r) if r.status() == 401 => {
+                    SyncError::Unauthorized
+                }
+                tokio_tungstenite::tungstenite::Error::Http(r) if r.status() == 426 => {
+                    SyncError::Upgrade("服务端要求更新 Eddy 后再同步。".into())
+                }
+                e => SyncError::Network(e.to_string()),
+            })?;
+        let mut ping = tokio::time::interval(LIVE_PING);
+        ping.tick().await;
+        let mut silent = 0;
+        loop {
+            tokio::select! {
+                message = stream.next() => {
+                    let Some(message) = message else { break };
+                    let message = message.map_err(|e| SyncError::Network(e.to_string()))?;
+                    silent = 0;
+                    if let Ok(text) = message.to_text()
+                        && let Ok(n) = serde_json::from_str::<serde_json::Value>(text)
+                    {
+                        if let Some(cursor) = n["cursor"].as_i64() {
+                            on_change(cursor);
+                        } else if n["video_jobs"].as_bool() == Some(true) {
+                            on_change(-1);
+                        }
                     }
-                    e => SyncError::Network(e.to_string()),
-                })?;
-        while let Some(message) = stream.next().await {
-            let message = message.map_err(|e| SyncError::Network(e.to_string()))?;
-            if let Ok(text) = message.to_text()
-                && let Ok(n) = serde_json::from_str::<serde_json::Value>(text)
-            {
-                if let Some(cursor) = n["cursor"].as_i64() {
-                    on_change(cursor);
-                } else if n["video_jobs"].as_bool() == Some(true) {
-                    on_change(-1);
+                }
+                _ = ping.tick() => {
+                    silent += 1;
+                    if silent > 3 {
+                        return Err(SyncError::Network("连接没有响应".into()));
+                    }
+                    stream
+                        .send(Message::Ping(Default::default()))
+                        .await
+                        .map_err(|e| SyncError::Network(e.to_string()))?;
                 }
             }
         }

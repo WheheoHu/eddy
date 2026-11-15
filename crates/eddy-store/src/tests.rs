@@ -557,3 +557,157 @@ fn freeing_files_never_scans_all_blobs_or_versions() {
         assert!(!scanned.contains(&table), "{table} scanned: {plan:#?}");
     }
 }
+
+#[test]
+fn only_a_winning_change_is_owed_to_the_upstream_service() {
+    let (_d, s) = store();
+    s.insert_item(&item("a", 1)).unwrap();
+    // On a server: the newer change arrives first, the older one after it.
+    let newer = op(20, "dev1", Entity::Item, "a", fields::STARRED, json!(false));
+    let older = op(10, "dev2", Entity::Item, "a", fields::STARRED, json!(true));
+    assert!(s.apply_remote_from(&newer, Some("dev1"), true).unwrap());
+    assert!(!s.apply_remote_from(&older, Some("dev2"), true).unwrap());
+    let pending = s.upstream_pending().unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].op.op_id, newer.op_id);
+    assert!(!s.item("a").unwrap().unwrap().item.starred);
+}
+
+#[test]
+fn upload_bookkeeping_survives_refusals_and_a_new_server() {
+    let (_d, s) = store();
+    s.insert_item(&item("a", 1)).unwrap();
+    let mine = op(10, "me", Entity::Item, "a", fields::READ, json!(true));
+    let bad = op(11, "me", Entity::Item, "a", fields::STARRED, json!(true));
+    s.record_local(&mine, false).unwrap();
+    s.record_local(&bad, false).unwrap();
+    s.apply_remote(&op(
+        12,
+        "other",
+        Entity::Tag,
+        "t",
+        fields::CREATE,
+        json!({"name": "T"}),
+    ))
+    .unwrap();
+    assert_eq!(s.upload_counts().unwrap(), (2, 0));
+
+    let seqs: Vec<i64> = s
+        .unuploaded_ops(10)
+        .unwrap()
+        .iter()
+        .map(|o| o.seq)
+        .collect();
+    s.mark_uploaded(&seqs).unwrap();
+    s.mark_rejected(std::slice::from_ref(&bad.op_id)).unwrap();
+    assert_eq!(s.upload_counts().unwrap(), (0, 1));
+    assert!(
+        s.unuploaded_ops(10).unwrap().is_empty(),
+        "refused ops are not sent again"
+    );
+
+    // A changed server gets another try at what was refused...
+    s.retry_rejected().unwrap();
+    assert_eq!(s.upload_counts().unwrap(), (1, 0));
+    // ...and a server this device never synced with gets the whole log,
+    // what came from other devices included.
+    s.reset_uploaded().unwrap();
+    assert_eq!(s.unuploaded_ops(10).unwrap().len(), 3);
+    assert_eq!(s.max_hlc().unwrap().unwrap().wall_ms, 12);
+}
+
+#[test]
+fn leaving_the_server_hands_unsent_flags_to_the_upstream_service() {
+    let (_d, s) = store();
+    s.insert_item(&item("a", 1)).unwrap();
+    s.insert_item(&item("b", 2)).unwrap();
+    // Sent to the server already; not owed to anyone.
+    s.record_local(
+        &op(10, "me", Entity::Item, "a", fields::READ, json!(true)),
+        false,
+    )
+    .unwrap();
+    let sent: Vec<i64> = s
+        .unuploaded_ops(10)
+        .unwrap()
+        .iter()
+        .map(|o| o.seq)
+        .collect();
+    s.mark_uploaded(&sent).unwrap();
+    // Never sent: star then unstar, and a tag (not FreshRSS's business).
+    s.record_local(
+        &op(11, "me", Entity::Item, "b", fields::STARRED, json!(true)),
+        false,
+    )
+    .unwrap();
+    s.record_local(
+        &op(12, "me", Entity::Item, "b", fields::STARRED, json!(false)),
+        false,
+    )
+    .unwrap();
+    s.record_local(
+        &op(
+            13,
+            "me",
+            Entity::Tag,
+            "t",
+            fields::CREATE,
+            json!({"name": "T"}),
+        ),
+        false,
+    )
+    .unwrap();
+    s.requeue_unuploaded_for_upstream().unwrap();
+    let pending = s.upstream_pending().unwrap();
+    assert_eq!(
+        pending.len(),
+        1,
+        "only the current value of the unsent flag"
+    );
+    assert_eq!(pending[0].op.hlc.wall_ms, 12);
+}
+
+#[test]
+fn data_from_a_newer_version_is_refused_not_rewritten() {
+    let dir = tempfile::tempdir().unwrap();
+    drop(Store::open(dir.path()).unwrap());
+    let conn = rusqlite::Connection::open(dir.path().join("eddy.sqlite3")).unwrap();
+    let newer = (SCHEMA_VERSION + 1) as i64;
+    conn.pragma_update(None, "user_version", newer).unwrap();
+    drop(conn);
+    match Store::open(dir.path()) {
+        Err(StoreError::Newer { found, supported }) => {
+            assert_eq!((found, supported), (SCHEMA_VERSION + 1, SCHEMA_VERSION));
+        }
+        other => panic!("expected a refusal, got {:?}", other.map(|_| ())),
+    }
+    // Nothing was touched: the version is still the newer one.
+    let conn = rusqlite::Connection::open(dir.path().join("eddy.sqlite3")).unwrap();
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, newer);
+}
+
+#[test]
+fn an_older_database_is_migrated_forward() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        // The first released schema, with a row in it.
+        let mut conn = rusqlite::Connection::open(dir.path().join("eddy.sqlite3")).unwrap();
+        crate::schema::migrate_to(&mut conn, 1).unwrap();
+        conn.execute(
+            "INSERT INTO items(id,kind,title,published_at,added_at) VALUES('old','saved','Old',1,1)",
+            [],
+        )
+        .unwrap();
+    }
+    let s = Store::open(dir.path()).unwrap();
+    let row = s.item("old").unwrap().unwrap();
+    assert_eq!(row.item.title, "Old");
+    assert_eq!(
+        row.item.chapter_level, 0,
+        "columns added later have defaults"
+    );
+    assert!(s.devices().unwrap().is_empty(), "tables added later exist");
+}

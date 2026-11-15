@@ -103,6 +103,84 @@ impl Store {
         })
     }
 
+    /// Ops the server refused (it will never accept them): kept in the log,
+    /// never sent again.
+    pub fn mark_rejected(&self, op_ids: &[String]) -> Result<()> {
+        self.with(|c| {
+            let tx = c.transaction()?;
+            for id in op_ids {
+                tx.execute("UPDATE ops SET uploaded=2 WHERE op_id=?", [id])?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
+    /// Queues refused ops again (the server changed and may accept them).
+    pub fn retry_rejected(&self) -> Result<()> {
+        self.with(|c| {
+            c.execute("UPDATE ops SET uploaded=0 WHERE uploaded=2", [])?;
+            Ok(())
+        })
+    }
+
+    /// (waiting to upload, refused by the server), AI results included in
+    /// the first.
+    pub fn upload_counts(&self) -> Result<(u32, u32)> {
+        self.with(|c| {
+            let pending: u32 =
+                c.query_row("SELECT COUNT(*) FROM ops WHERE uploaded=0", [], |r| {
+                    r.get(0)
+                })?;
+            let artifacts: u32 = c.query_row(
+                "SELECT COUNT(*) FROM ai_artifacts WHERE sync=1 AND uploaded=0",
+                [],
+                |r| r.get(0),
+            )?;
+            let rejected: u32 =
+                c.query_row("SELECT COUNT(*) FROM ops WHERE uploaded=2", [], |r| {
+                    r.get(0)
+                })?;
+            Ok((pending + artifacts, rejected))
+        })
+    }
+
+    /// Queues the whole log (and synced AI results) for upload again: a
+    /// server this device has not synced with has none of it. Servers drop
+    /// ops they already hold by `op_id`.
+    pub fn reset_uploaded(&self) -> Result<()> {
+        self.with(|c| {
+            let tx = c.transaction()?;
+            tx.execute("UPDATE ops SET uploaded=0 WHERE uploaded<>0", [])?;
+            tx.execute("UPDATE ai_artifacts SET uploaded=0 WHERE sync=1", [])?;
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
+    /// Local read/star changes the server never received become FreshRSS's
+    /// to receive (leaving server mode).
+    pub fn requeue_unuploaded_for_upstream(&self) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE ops SET upstream_pending=1
+                 WHERE uploaded=0 AND origin='local' AND entity='item' AND field IN ('read','starred')
+                   AND entity_id IN (SELECT id FROM items WHERE upstream_id IS NOT NULL)
+                   AND hlc=(SELECT hlc FROM field_clock f WHERE f.entity=ops.entity
+                            AND f.entity_id=ops.entity_id AND f.field=ops.field)",
+                [],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// The newest timestamp in the log, to seed the clock after a restart.
+    pub fn max_hlc(&self) -> Result<Option<Hlc>> {
+        let raw: Option<String> =
+            self.with(|c| Ok(c.query_row("SELECT MAX(hlc) FROM ops", [], |r| r.get(0))?))?;
+        Ok(raw.and_then(|s| s.parse().ok()))
+    }
+
     /// Current winning timestamp for a field, if any op touched it.
     pub fn field_clock(&self, entity: Entity, entity_id: &str, field: &str) -> Result<Option<Hlc>> {
         let raw: Option<String> = self.with(|c| {
@@ -162,7 +240,7 @@ fn apply(
             serde_json::to_string(&op.value)?,
             if origin == OpOrigin::Local { "local" } else { "remote" },
             origin == OpOrigin::Remote,
-            upstream_pending,
+            false,
             device,
         ],
     )?;
@@ -192,6 +270,14 @@ fn apply(
         ],
     )?;
     effect(tx, op)?;
+    // Only the winning value is owed to FreshRSS: a late, older change must
+    // not reach it and come back as the newest state.
+    if upstream_pending {
+        tx.execute(
+            "UPDATE ops SET upstream_pending=1 WHERE op_id=?",
+            [&op.op_id],
+        )?;
+    }
     Ok(true)
 }
 
