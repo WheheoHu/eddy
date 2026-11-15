@@ -497,9 +497,7 @@ impl Engine {
                         .flatten()
                         .and_then(|v| v.parse().ok())
                         .unwrap_or(0);
-                    if cursor > local
-                        && engine.inner.live.load(Ordering::SeqCst)
-                    {
+                    if cursor > local && engine.inner.live.load(Ordering::SeqCst) {
                         if let Err(e) = engine.refresh().await {
                             engine
                                 .inner

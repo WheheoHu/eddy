@@ -32,7 +32,12 @@ impl PdfiumReader {
 
     /// Image `index` on page `page` of the PDF at `path`, encoded: JPEG data
     /// as stored when a browser can show it unchanged, otherwise PNG.
-    pub fn read_image(&self, path: &Path, page: u32, index: u32) -> Option<(Vec<u8>, &'static str)> {
+    pub fn read_image(
+        &self,
+        path: &Path,
+        page: u32,
+        index: u32,
+    ) -> Option<(Vec<u8>, &'static str)> {
         let pdfium = pdfium()?;
         let document = pdfium.load_pdf_from_file(path, None).ok()?;
         let page = document.pages().get(i32::try_from(page).ok()?).ok()?;
@@ -50,7 +55,11 @@ impl PdfiumReader {
     /// Several images at once, `(page, index)` each, in request order. The
     /// file is opened once, and the pictures on a page that are shown by
     /// rendering its area share one rendering of the page per scale.
-    pub fn read_images(&self, path: &Path, requests: &[(u32, u32)]) -> Vec<Option<(Vec<u8>, &'static str)>> {
+    pub fn read_images(
+        &self,
+        path: &Path,
+        requests: &[(u32, u32)],
+    ) -> Vec<Option<(Vec<u8>, &'static str)>> {
         let mut out: Vec<Option<(Vec<u8>, &'static str)>> = vec![None; requests.len()];
         let Some(pdfium) = pdfium() else { return out };
         let Ok(document) = pdfium.load_pdf_from_file(path, None) else {
@@ -61,8 +70,12 @@ impl PdfiumReader {
             by_page.entry(*page).or_default().push(i);
         }
         for (page_number, wanted) in by_page {
-            let Ok(page_number) = i32::try_from(page_number) else { continue };
-            let Ok(page) = document.pages().get(page_number) else { continue };
+            let Ok(page_number) = i32::try_from(page_number) else {
+                continue;
+            };
+            let Ok(page) = document.pages().get(page_number) else {
+                continue;
+            };
             let page = PageContext::new(page);
             // Regions grouped by rendering scale, in first-seen order.
             let mut regions: Vec<(u32, Vec<(usize, Rect)>)> = Vec::new();
@@ -81,9 +94,12 @@ impl PdfiumReader {
             }
             for (key, group) in regions {
                 let scale = f32::from_bits(key);
-                let Some(bitmap) = render_page(&page.page, scale) else { continue };
+                let Some(bitmap) = render_page(&page.page, scale) else {
+                    continue;
+                };
                 for (i, bounds) in group {
-                    out[i] = crop_region(&page.page, &bitmap, scale, bounds).map(|png| (png, "image/png"));
+                    out[i] = crop_region(&page.page, &bitmap, scale, bounds)
+                        .map(|png| (png, "image/png"));
                 }
             }
         }
@@ -168,7 +184,9 @@ fn locate(document: &PdfDocument<'_>, page: &PageContext<'_>, index: u32) -> Opt
     let image = object.as_image_object()?;
     if is_upright(&page.page) {
         let Rasters { rects, groups } = page.rasters();
-        let group = groups.iter().find(|g| g.iter().any(|&i| rects[i].0 == index));
+        let group = groups
+            .iter()
+            .find(|g| g.iter().any(|&i| rects[i].0 == index));
         if let Some(group) = group.filter(|g| g.len() > 1) {
             let bounds = group.iter().map(|&i| rects[i].1).reduce(Rect::union)?;
             return Some(Picture::Region(bounds));
@@ -370,13 +388,18 @@ fn read_images(page: &PdfPage<'_>, lines: &[PdfLine]) -> Vec<PdfImage> {
         let Some(image) = object.as_image_object() else {
             continue;
         };
-        let Ok(bounds) = object.bounds() else { continue };
+        let Ok(bounds) = object.bounds() else {
+            continue;
+        };
         let (Ok(pixel_width), Ok(pixel_height)) = (image.width(), image.height()) else {
             continue;
         };
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         (pixel_width, pixel_height).hash(&mut hasher);
-        image.get_raw_image_data().unwrap_or_default().hash(&mut hasher);
+        image
+            .get_raw_image_data()
+            .unwrap_or_default()
+            .hash(&mut hasher);
         rasters.push(PdfImage {
             index: index as u32,
             x: bounds.left().value,
@@ -503,8 +526,7 @@ impl FormContents {
                     if self.images == 0
                         && let Some(image) = object.as_image_object()
                     {
-                        self.first_image_bytes =
-                            image.get_raw_image_data().map_or(0, |d| d.len());
+                        self.first_image_bytes = image.get_raw_image_data().map_or(0, |d| d.len());
                     }
                     self.images += 1;
                 }
@@ -530,8 +552,9 @@ impl FormContents {
 fn body_size(lines: &[PdfLine]) -> f32 {
     let mut counts: HashMap<u32, usize> = HashMap::new();
     for line in lines {
-        *counts.entry((line.font_size * 2.0).round() as u32).or_default() +=
-            line.text.chars().count();
+        *counts
+            .entry((line.font_size * 2.0).round() as u32)
+            .or_default() += line.text.chars().count();
     }
     counts
         .into_iter()
@@ -709,7 +732,12 @@ fn collect_marks(
             continue;
         }
         let Ok(b) = object.bounds() else { continue };
-        let rect = to_page.rect(b.left().value, b.bottom().value, b.right().value, b.top().value);
+        let rect = to_page.rect(
+            b.left().value,
+            b.bottom().value,
+            b.right().value,
+            b.top().value,
+        );
         let on_page = rect.intersection(page_rect).area();
         if rect.area() <= 0.0 || on_page < rect.area() * 0.5 {
             continue;
@@ -736,7 +764,12 @@ fn render_page<'a>(page: &'a PdfPage<'a>, scale: f32) -> Option<PdfBitmap<'a>> {
 
 /// The area `bounds` of an upright page, cut from `bitmap` (the page
 /// rendered at `scale`) and encoded as PNG.
-fn crop_region(page: &PdfPage<'_>, bitmap: &PdfBitmap<'_>, scale: f32, bounds: Rect) -> Option<Vec<u8>> {
+fn crop_region(
+    page: &PdfPage<'_>,
+    bitmap: &PdfBitmap<'_>,
+    scale: f32,
+    bounds: Rect,
+) -> Option<Vec<u8>> {
     let page_height = page.height().value;
     let px = |v: f32| (v * scale).round() as i32;
     let left = px(bounds.left).clamp(0, bitmap.width());
@@ -748,7 +781,11 @@ fn crop_region(page: &PdfPage<'_>, bitmap: &PdfBitmap<'_>, scale: f32, bounds: R
 
 /// The stored bytes when the image is a plain RGB or grayscale JPEG.
 fn plain_jpeg(image: &PdfPageImageObject<'_>) -> Option<Vec<u8>> {
-    let filters: Vec<String> = image.filters().iter().map(|f| f.name().to_string()).collect();
+    let filters: Vec<String> = image
+        .filters()
+        .iter()
+        .map(|f| f.name().to_string())
+        .collect();
     if filters != ["DCTDecode"] {
         return None;
     }
@@ -863,7 +900,9 @@ impl<'r> LineBuilder<'r> {
     fn run(mut self, text: &PdfPageText<'_>) -> Vec<PdfLine> {
         let chars = text.chars();
         for c in chars.iter() {
-            let Some(mut ch) = c.unicode_char() else { continue };
+            let Some(mut ch) = c.unicode_char() else {
+                continue;
+            };
             if ch == '\r' || ch == '\n' {
                 // pdfium infers a line break wherever the baseline moves,
                 // including at every sub- and superscript; only text that
@@ -883,8 +922,12 @@ impl<'r> LineBuilder<'r> {
             if is_diagonal(&c) {
                 continue;
             }
-            let Ok(bounds) = c.loose_bounds() else { continue };
-            let Ok((_, baseline)) = c.origin() else { continue };
+            let Ok(bounds) = c.loose_bounds() else {
+                continue;
+            };
+            let Ok((_, baseline)) = c.origin() else {
+                continue;
+            };
             let font_size = c.scaled_font_size().value.abs();
             if font_size <= 0.0 {
                 continue;
@@ -952,7 +995,9 @@ fn build_line(mut glyphs: Vec<Glyph>) -> Option<PdfLine> {
                 continue;
             }
             g.ch = match g.ch {
-                '0'..='9' => ['⁰', '¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹'][g.ch as usize - '0' as usize],
+                '0'..='9' => {
+                    ['⁰', '¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹'][g.ch as usize - '0' as usize]
+                }
                 '-' | '−' => '⁻',
                 '+' => '⁺',
                 c => c,
@@ -1060,7 +1105,9 @@ fn dominant_size(glyphs: &[&Glyph]) -> f32 {
     let glyphs = if kept.is_empty() { glyphs } else { &kept };
     let mut counts: HashMap<u32, usize> = HashMap::new();
     for g in glyphs {
-        *counts.entry((g.font_size * 10.0).round() as u32).or_default() += 1;
+        *counts
+            .entry((g.font_size * 10.0).round() as u32)
+            .or_default() += 1;
     }
     counts
         .into_iter()
@@ -1074,7 +1121,9 @@ fn dominant_size(glyphs: &[&Glyph]) -> f32 {
 fn main_baseline(glyphs: &[&Glyph]) -> Option<f32> {
     let mut baselines: HashMap<i32, (usize, f32)> = HashMap::new();
     for g in glyphs {
-        let entry = baselines.entry((g.baseline * 2.0).round() as i32).or_default();
+        let entry = baselines
+            .entry((g.baseline * 2.0).round() as i32)
+            .or_default();
         entry.0 += 1;
         entry.1 = entry.1.max(g.font_size);
     }
@@ -1102,17 +1151,23 @@ fn is_bold(c: &PdfPageTextChar<'_>) -> bool {
     // by stroking the glyph outline over its fill, as Word exports do.
     if matches!(
         c.render_mode(),
-        Ok(PdfPageTextRenderMode::FilledThenStroked | PdfPageTextRenderMode::FilledThenStrokedClipping)
+        Ok(PdfPageTextRenderMode::FilledThenStroked
+            | PdfPageTextRenderMode::FilledThenStrokedClipping)
     ) {
         return true;
     }
     let name = c.font_name().to_ascii_lowercase();
-    if ["bold", "black", "heavy", "semibold"].iter().any(|w| name.contains(w)) {
-        return true;
-    }
-    if ["roman", "regular", "light", "book", "medium", "italic", "oblique"]
+    if ["bold", "black", "heavy", "semibold"]
         .iter()
         .any(|w| name.contains(w))
+    {
+        return true;
+    }
+    if [
+        "roman", "regular", "light", "book", "medium", "italic", "oblique",
+    ]
+    .iter()
+    .any(|w| name.contains(w))
     {
         return false;
     }
@@ -1132,15 +1187,25 @@ fn is_bold(c: &PdfPageTextChar<'_>) -> bool {
 fn is_mono(c: &PdfPageTextChar<'_>) -> bool {
     let name = c.font_name().to_ascii_lowercase();
     let named = [
-        "mono", "courier", "consol", "menlo", "typewriter", "cmtt", "inconsolata", "sourcecode", "firacode",
-        "jetbrains", "lucidaconsole", "andale",
+        "mono",
+        "courier",
+        "consol",
+        "menlo",
+        "typewriter",
+        "cmtt",
+        "inconsolata",
+        "sourcecode",
+        "firacode",
+        "jetbrains",
+        "lucidaconsole",
+        "andale",
     ];
     if named.iter().any(|w| name.contains(w)) {
         return true;
     }
     let cjk = [
-        "song", "sun", "hei", "kai", "fang", "ming", "gothic", "mincho", "batang", "gulim", "dotum", "yahei",
-        "pingfang", "cjk",
+        "song", "sun", "hei", "kai", "fang", "ming", "gothic", "mincho", "batang", "gulim",
+        "dotum", "yahei", "pingfang", "cjk",
     ];
     c.font_is_fixed_pitch() && !cjk.iter().any(|w| name.contains(w))
 }
@@ -1186,7 +1251,9 @@ mod tests {
             out.extend_from_slice(format!("{} 0 obj\n{obj}\nendobj\n", i + 1).as_bytes());
         }
         let xref = out.len();
-        out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes());
+        out.extend_from_slice(
+            format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+        );
         for o in offsets {
             out.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
         }
@@ -1212,7 +1279,9 @@ BT /F1 9 Tf 300 40 Td (1) Tj ET";
         let path = dir.join("sample.pdf");
         std::fs::write(&path, pdf(content)).unwrap();
 
-        let text = PdfiumReader::new().read(&path).expect("pdfium reads the file");
+        let text = PdfiumReader::new()
+            .read(&path)
+            .expect("pdfium reads the file");
         assert_eq!(text.title.as_deref(), Some("Paper"));
         assert_eq!(text.author.as_deref(), Some("Ada"));
         assert_eq!(text.pages.len(), 1);
@@ -1305,8 +1374,15 @@ BT /F1 10 Tf 320 700 Td (other column) Tj ET";
 
         let page = PdfiumReader::new().read(&path).unwrap().pages.remove(0);
         let texts: Vec<String> = page.lines.iter().map(|l| l.text.replace(' ', "")).collect();
-        assert_eq!(texts, ["asin[SDS*93]andTj+1more4.6⁴", "nextline", "othercolumn"]);
-        assert!((page.lines[0].font_size - 10.0).abs() < 0.1, "{:?}", page.lines[0]);
+        assert_eq!(
+            texts,
+            ["asin[SDS*93]andTj+1more4.6⁴", "nextline", "othercolumn"]
+        );
+        assert!(
+            (page.lines[0].font_size - 10.0).abs() < 0.1,
+            "{:?}",
+            page.lines[0]
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1352,8 +1428,14 @@ BT /F1 40 Tf 0.7071 0.7071 -0.7071 0.7071 150 300 Tm (DRAFT) Tj ET";
         assert_eq!(px(0, 0), (255, 0, 0), "top is red");
         assert_eq!(px(0, info.height - 1), (0, 0, 255), "bottom is blue");
 
-        assert!(PdfiumReader::new().image(&path, 0, 0).is_none(), "object 0 is text");
-        assert!(PdfiumReader::new().image(&path, 3, 1).is_none(), "no page 3");
+        assert!(
+            PdfiumReader::new().image(&path, 0, 0).is_none(),
+            "object 0 is text"
+        );
+        assert!(
+            PdfiumReader::new().image(&path, 3, 1).is_none(),
+            "no page 3"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1376,16 +1458,26 @@ q 100 0 0 80 300 500 cm /Fm1 Do Q";
 
         let (bytes, mime) = PdfiumReader::new().image(&path, 0, figure.index).unwrap();
         assert_eq!(mime, "image/png");
-        let mut reader = png::Decoder::new(std::io::Cursor::new(bytes)).read_info().unwrap();
+        let mut reader = png::Decoder::new(std::io::Cursor::new(bytes))
+            .read_info()
+            .unwrap();
         let mut buf = vec![0; reader.output_buffer_size().unwrap()];
         let info = reader.next_frame(&mut buf).unwrap();
-        assert_eq!((info.width, info.height), (424, 344), "106x86 pt at 4 px/pt");
+        assert_eq!(
+            (info.width, info.height),
+            (424, 344),
+            "106x86 pt at 4 px/pt"
+        );
         let channels = info.line_size / info.width as usize;
         let px = |x: usize, y: usize| {
             let at = y * info.line_size + x * channels;
             (buf[at], buf[at + 1], buf[at + 2])
         };
-        assert_eq!(px(212, 52), (255, 0, 0), "the top of the figure is the red half");
+        assert_eq!(
+            px(212, 52),
+            (255, 0, 0),
+            "the top of the figure is the red half"
+        );
         assert_eq!(px(212, 292), (0, 0, 255), "the bottom is the blue half");
         assert_eq!(px(4, 4), (255, 255, 255), "the padding is the white page");
         let _ = std::fs::remove_dir_all(dir);
@@ -1410,18 +1502,27 @@ q 60 0 0 60 400 100 cm /Im1 Do Q";
         let picture = &images[0];
         assert!((picture.x - 72.0).abs() < 0.5 && (picture.y - 450.0).abs() < 0.5);
         assert!((picture.width - 200.0).abs() < 0.5 && (picture.height - 100.0).abs() < 0.5);
-        assert!((images[1].x - 400.0).abs() < 0.5, "the separate image stays apart");
+        assert!(
+            (images[1].x - 400.0).abs() < 0.5,
+            "the separate image stays apart"
+        );
 
         let decode = |index: u32| {
             let (bytes, mime) = PdfiumReader::new().image(&path, 0, index).unwrap();
             assert_eq!(mime, "image/png");
-            let mut reader = png::Decoder::new(std::io::Cursor::new(bytes)).read_info().unwrap();
+            let mut reader = png::Decoder::new(std::io::Cursor::new(bytes))
+                .read_info()
+                .unwrap();
             let mut buf = vec![0; reader.output_buffer_size().unwrap()];
             let info = reader.next_frame(&mut buf).unwrap();
             (info, buf)
         };
         let (info, buf) = decode(picture.index);
-        assert_eq!((info.width, info.height), (800, 400), "200x100 pt at 4 px/pt");
+        assert_eq!(
+            (info.width, info.height),
+            (800, 400),
+            "200x100 pt at 4 px/pt"
+        );
         let channels = info.line_size / info.width as usize;
         let px = |x: usize, y: usize| {
             let at = y * info.line_size + x * channels;
@@ -1433,7 +1534,11 @@ q 60 0 0 60 400 100 cm /Im1 Do Q";
         assert_eq!(px(400, 150), (255, 0, 0));
         assert_eq!(px(400, 300), (0, 0, 255));
         let (other, _) = decode(picture.index + 1);
-        assert_eq!((other.width, other.height), (800, 400), "any strip gives the whole");
+        assert_eq!(
+            (other.width, other.height),
+            (800, 400),
+            "any strip gives the whole"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1449,13 +1554,20 @@ BT /F1 10 Tf 90 400 Td (On the slide) Tj ET";
 
         let reader = PdfiumReader::new();
         let page = reader.read(&path).unwrap().pages.remove(0);
-        assert_eq!(page.frames.len(), 1, "small shapes are not frames: {:?}", page.frames);
+        assert_eq!(
+            page.frames.len(),
+            1,
+            "small shapes are not frames: {:?}",
+            page.frames
+        );
         let frame = &page.frames[0];
         assert!((frame.x - 72.0).abs() < 0.5 && (frame.width - 400.0).abs() < 0.5);
         assert_eq!((frame.pixel_width, frame.pixel_height), (1600, 900));
         let (bytes, mime) = reader.read_image(&path, 0, frame.index).unwrap();
         assert_eq!(mime, "image/png");
-        let mut png = png::Decoder::new(std::io::Cursor::new(bytes)).read_info().unwrap();
+        let mut png = png::Decoder::new(std::io::Cursor::new(bytes))
+            .read_info()
+            .unwrap();
         let mut buf = vec![0; png.output_buffer_size().unwrap()];
         let info = png.next_frame(&mut buf).unwrap();
         assert_eq!((info.width, info.height), (1600, 900));
@@ -1487,10 +1599,17 @@ q 200 0 0 50 72 250 cm /Im1 Do Q";
         let batch = reader.read_images(&path, &requests);
         assert_eq!(batch.len(), requests.len());
         for (request, picture) in requests.iter().zip(&batch) {
-            assert_eq!(*picture, reader.read_image(&path, request.0, request.1), "{request:?}");
+            assert_eq!(
+                *picture,
+                reader.read_image(&path, request.0, request.1),
+                "{request:?}"
+            );
         }
         assert!(batch[..3].iter().all(Option::is_some));
-        assert!(batch[3..].iter().all(Option::is_none), "unknown objects and pages give nothing");
+        assert!(
+            batch[3..].iter().all(Option::is_none),
+            "unknown objects and pages give nothing"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

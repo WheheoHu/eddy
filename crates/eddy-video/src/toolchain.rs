@@ -133,7 +133,11 @@ pub fn augmented_child_path(extra_bin_dirs: &[&Path]) -> std::ffi::OsString {
         // Include latest nvm node bin if installed
         let nvm_versions = home_p.join(".nvm/versions/node");
         if let Ok(entries) = std::fs::read_dir(nvm_versions) {
-            let mut versions: Vec<PathBuf> = entries.flatten().map(|e| e.path().join("bin")).filter(|p| p.is_dir()).collect();
+            let mut versions: Vec<PathBuf> = entries
+                .flatten()
+                .map(|e| e.path().join("bin"))
+                .filter(|p| p.is_dir())
+                .collect();
             versions.sort();
             if let Some(latest) = versions.pop()
                 && !dirs.contains(&latest)
@@ -166,7 +170,10 @@ pub fn augmented_child_path(extra_bin_dirs: &[&Path]) -> std::ffi::OsString {
     std::env::join_paths(dirs).unwrap_or_default()
 }
 /// Probes local availability and versions of `ffmpeg`, `ffprobe`, and `yt-dlp`.
-pub fn detect_toolchain(ffmpeg_override: Option<&str>, yt_dlp_override: Option<&str>) -> ToolchainStatus {
+pub fn detect_toolchain(
+    ffmpeg_override: Option<&str>,
+    yt_dlp_override: Option<&str>,
+) -> ToolchainStatus {
     let ffmpeg = resolve_binary("ffmpeg", ffmpeg_override);
     let ffprobe_hint = ffmpeg
         .as_ref()
@@ -175,8 +182,12 @@ pub fn detect_toolchain(ffmpeg_override: Option<&str>, yt_dlp_override: Option<&
     let ffprobe = ffprobe_hint.or_else(|| resolve_binary("ffprobe", None));
     let yt_dlp = resolve_binary("yt-dlp", yt_dlp_override);
 
-    let ffmpeg_version = ffmpeg.as_deref().and_then(|p| read_version_line(p, "-version"));
-    let yt_dlp_version = yt_dlp.as_deref().and_then(|p| read_version_line(p, "--version"));
+    let ffmpeg_version = ffmpeg
+        .as_deref()
+        .and_then(|p| read_version_line(p, "-version"));
+    let yt_dlp_version = yt_dlp
+        .as_deref()
+        .and_then(|p| read_version_line(p, "--version"));
 
     ToolchainStatus {
         ffmpeg_path: ffmpeg.map(|p| p.to_string_lossy().into_owned()),

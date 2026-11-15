@@ -127,7 +127,14 @@ impl std::fmt::Debug for StageEndpoint {
             .field("protocol", &self.protocol)
             .field("url", &self.url)
             .field("model", &self.model)
-            .field("api_key", &if self.api_key.is_empty() { "(empty)" } else { REDACTED })
+            .field(
+                "api_key",
+                &if self.api_key.is_empty() {
+                    "(empty)"
+                } else {
+                    REDACTED
+                },
+            )
             .finish()
     }
 }
@@ -318,36 +325,37 @@ impl RuntimeVideoConfig {
                 .map(|v| v.trim().to_string())
                 .filter(|v| !v.is_empty())
         };
-        let parse_proto = |val: Option<String>| match val.as_deref().map(str::to_ascii_lowercase).as_deref() {
-            Some("openai") => ProtocolKind::OpenAi,
-            Some("gemini") => ProtocolKind::Gemini,
-            _ => ProtocolKind::Auto,
-        };
+        let parse_proto =
+            |val: Option<String>| match val.as_deref().map(str::to_ascii_lowercase).as_deref() {
+                Some("openai") => ProtocolKind::OpenAi,
+                Some("gemini") => ProtocolKind::Gemini,
+                _ => ProtocolKind::Auto,
+            };
 
         let default_url = env_str("EDDY_VIDEO_DEFAULT_URL").unwrap_or_default();
         let default_key = env_str("EDDY_VIDEO_DEFAULT_KEY").unwrap_or_default();
 
-        let build_ep = |prefix: &str, fallback_url: &str, fallback_key: &str| -> Option<StageEndpoint> {
-            let url = env_str(&format!("EDDY_VIDEO_{prefix}_URL"))
-                .unwrap_or_else(|| fallback_url.to_string());
-            let model = env_str(&format!("EDDY_VIDEO_{prefix}_MODEL"))?;
-            let api_key = env_str(&format!("EDDY_VIDEO_{prefix}_KEY"))
-                .unwrap_or_else(|| fallback_key.to_string());
-            let protocol = parse_proto(env_str(&format!("EDDY_VIDEO_{prefix}_PROTOCOL")));
-            let ep = StageEndpoint {
-                protocol,
-                url,
-                model,
-                api_key,
+        let build_ep =
+            |prefix: &str, fallback_url: &str, fallback_key: &str| -> Option<StageEndpoint> {
+                let url = env_str(&format!("EDDY_VIDEO_{prefix}_URL"))
+                    .unwrap_or_else(|| fallback_url.to_string());
+                let model = env_str(&format!("EDDY_VIDEO_{prefix}_MODEL"))?;
+                let api_key = env_str(&format!("EDDY_VIDEO_{prefix}_KEY"))
+                    .unwrap_or_else(|| fallback_key.to_string());
+                let protocol = parse_proto(env_str(&format!("EDDY_VIDEO_{prefix}_PROTOCOL")));
+                let ep = StageEndpoint {
+                    protocol,
+                    url,
+                    model,
+                    api_key,
+                };
+                ep.is_configured().then_some(ep)
             };
-            ep.is_configured().then_some(ep)
-        };
 
         let stage2 = build_ep("STAGE2", &default_url, &default_key)?;
-        let stage1 = build_ep("STAGE1", &stage2.url, &stage2.api_key)
-            .unwrap_or_else(|| stage2.clone());
-        let vlm = build_ep("VLM", &stage2.url, &stage2.api_key)
-            .unwrap_or_else(|| stage2.clone());
+        let stage1 =
+            build_ep("STAGE1", &stage2.url, &stage2.api_key).unwrap_or_else(|| stage2.clone());
+        let vlm = build_ep("VLM", &stage2.url, &stage2.api_key).unwrap_or_else(|| stage2.clone());
         let asr = build_ep("ASR", &default_url, &default_key);
 
         let pipeline = match env_str("EDDY_VIDEO_PIPELINE")

@@ -448,12 +448,12 @@ impl EddyEngine {
             .collect())
     }
 
-    pub async fn retry_video_job(
-        &self,
-        id: String,
-        target: VideoJobTargetView,
-    ) -> R<VideoJobView> {
-        Ok(self.engine.retry_video_job(&id, target.into()).await?.into())
+    pub async fn retry_video_job(&self, id: String, target: VideoJobTargetView) -> R<VideoJobView> {
+        Ok(self
+            .engine
+            .retry_video_job(&id, target.into())
+            .await?
+            .into())
     }
 
     pub async fn cancel_video_job(

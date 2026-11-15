@@ -137,7 +137,12 @@ fn serve(
 
 fn main() {
     let dir = spool_dir();
-    if let Err(e) = serve(&mut io::stdin().lock(), &mut io::stdout().lock(), &dir, open_link) {
+    if let Err(e) = serve(
+        &mut io::stdin().lock(),
+        &mut io::stdout().lock(),
+        &dir,
+        open_link,
+    ) {
         eprintln!("eddy-capture-host: {e}");
         std::process::exit(1);
     }

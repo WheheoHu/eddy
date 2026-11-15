@@ -80,7 +80,11 @@ fn detects_video_urls_and_files() {
 fn cleans_rolling_vtt_and_builds_multichapter_epub() {
     let vtt = "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nWelcome to\n\n00:00:02.800 --> 00:00:05.500\nWelcome to\nour engine talk.\n";
     let segs = parse_vtt_or_srt(vtt);
-    let joined = segs.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
+    let joined = segs
+        .iter()
+        .map(|s| s.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
     assert_eq!(joined.matches("Welcome to").count(), 1);
 
     let doc = ArticleDocument {
@@ -261,7 +265,10 @@ fn bare_relay_url_defaults_to_openai_even_when_model_contains_gemini() {
         model: "gemini-2.5-flash".into(),
         api_key: "AIzaSyTestKey123456789012345".into(),
     };
-    assert_eq!(google_official.resolved_protocol(), ResolvedProtocol::Gemini);
+    assert_eq!(
+        google_official.resolved_protocol(),
+        ResolvedProtocol::Gemini
+    );
 
     let google_openai_compat = StageEndpoint {
         protocol: ProtocolKind::Auto,
@@ -287,7 +294,9 @@ async fn streams_gemini_sse_chunks_skipping_thoughts_and_reassembling_json() {
         "data: [DONE]\n\n",
     );
     Mock::given(method("POST"))
-        .and(path("/v1beta/models/gemini-4-hydrogen:streamGenerateContent"))
+        .and(path(
+            "/v1beta/models/gemini-4-hydrogen:streamGenerateContent",
+        ))
         .and(query_param("alt", "sse"))
         .and(header("x-goog-api-key", "sk-station-secret"))
         .respond_with(
@@ -515,5 +524,3 @@ async fn streams_openai_sse_and_labels_mid_body_read_timeout() {
         "expected timed out details, got: {stall_err}"
     );
 }
-
-

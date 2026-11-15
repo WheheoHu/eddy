@@ -304,11 +304,16 @@ impl ChatProvider {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_lowercase();
-        let raw = response
-            .text()
-            .await
-            .map_err(|e| AiError::Network(crate::redact::safe_detail(&e.to_string(), &[&self.api_key])))?;
-        parse_gemini_completion(status, &content_type, &raw, &[&self.api_key], Some(&resp_headers))
+        let raw = response.text().await.map_err(|e| {
+            AiError::Network(crate::redact::safe_detail(&e.to_string(), &[&self.api_key]))
+        })?;
+        parse_gemini_completion(
+            status,
+            &content_type,
+            &raw,
+            &[&self.api_key],
+            Some(&resp_headers),
+        )
     }
 }
 

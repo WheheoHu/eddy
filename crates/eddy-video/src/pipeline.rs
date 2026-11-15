@@ -150,17 +150,18 @@ pub async fn run_video_pipeline(
     on_progress: Option<ProgressCallback>,
 ) -> Result<GeneratedBook, VideoError> {
     std::fs::create_dir_all(job_dir)?;
-    let report = |phase: PipelinePhase, done: u32, total: u32, detail: &str, title: Option<String>| {
-        if let Some(cb) = &on_progress {
-            cb(PipelineProgress {
-                phase,
-                completed_chapters: done,
-                total_chapters: total,
-                detail: detail.to_string(),
-                resolved_title: title,
-            });
-        }
-    };
+    let report =
+        |phase: PipelinePhase, done: u32, total: u32, detail: &str, title: Option<String>| {
+            if let Some(cb) = &on_progress {
+                cb(PipelineProgress {
+                    phase,
+                    completed_chapters: done,
+                    total_chapters: total,
+                    detail: detail.to_string(),
+                    resolved_title: title,
+                });
+            }
+        };
 
     check_cancel(&cancel)?;
     let toolchain = detect_toolchain(cfg.ffmpeg_path.as_deref(), cfg.yt_dlp_path.as_deref());
@@ -172,21 +173,34 @@ pub async fn run_video_pipeline(
     })?;
 
     // --- Step 1: Probe metadata (checkpointed) ---
-    report(PipelinePhase::Probing, 0, 0, "Inspecting video metadata…", None);
+    report(
+        PipelinePhase::Probing,
+        0,
+        0,
+        "Inspecting video metadata…",
+        None,
+    );
     let probe_file = job_dir.join("checkpoint_probe.json");
     let probe: VideoProbe = if probe_file.is_file() {
         serde_json::from_slice(&std::fs::read(&probe_file)?)
             .map_err(|e| VideoError::Format(e.to_string()))?
     } else {
         let p = probe_video(source, &toolchain, cfg.cookies_from_browser.as_deref()).await?;
-        std::fs::write(&probe_file, serde_json::to_vec_pretty(&p).unwrap_or_default())?;
+        std::fs::write(
+            &probe_file,
+            serde_json::to_vec_pretty(&p).unwrap_or_default(),
+        )?;
         p
     };
     report(
         PipelinePhase::Probing,
         0,
         0,
-        &format!("Loaded “{}” ({})", probe.title, format_timestamp_ms(probe.duration_ms)),
+        &format!(
+            "Loaded “{}” ({})",
+            probe.title,
+            format_timestamp_ms(probe.duration_ms)
+        ),
         Some(probe.title.clone()),
     );
 
@@ -241,7 +255,9 @@ pub async fn run_video_pipeline(
                                 phase: PipelinePhase::Transcribing,
                                 completed_chapters: 0,
                                 total_chapters: 0,
-                                detail: format!("Transcribing speech ({done} of {total} segments)…"),
+                                detail: format!(
+                                    "Transcribing speech ({done} of {total} segments)…"
+                                ),
                                 resolved_title: Some(asr_title.clone()),
                             });
                         }) as Arc<dyn Fn(usize, usize) + Send + Sync>
@@ -260,7 +276,10 @@ pub async fn run_video_pipeline(
                 .await?
             }
         };
-        std::fs::write(&transcript_file, serde_json::to_vec_pretty(&bundle).unwrap_or_default())?;
+        std::fs::write(
+            &transcript_file,
+            serde_json::to_vec_pretty(&bundle).unwrap_or_default(),
+        )?;
         bundle
     };
 
@@ -322,7 +341,10 @@ pub async fn run_video_pipeline(
             plan: p.clone(),
             frames: f.clone(),
         };
-        std::fs::write(&plan_file, serde_json::to_vec_pretty(&cp).unwrap_or_default())?;
+        std::fs::write(
+            &plan_file,
+            serde_json::to_vec_pretty(&cp).unwrap_or_default(),
+        )?;
         (p, f)
     };
 
@@ -412,7 +434,10 @@ pub async fn run_video_pipeline(
             )
             .await?;
 
-            std::fs::write(&ch_file, serde_json::to_vec_pretty(&section).unwrap_or_default())?;
+            std::fs::write(
+                &ch_file,
+                serde_json::to_vec_pretty(&section).unwrap_or_default(),
+            )?;
             let finished = done_ref.fetch_add(1, Ordering::Relaxed) + 1;
             if let Some(cb) = &on_prog {
                 cb(PipelineProgress {
@@ -512,13 +537,19 @@ where
             PipelinePhase::PlanningVisuals,
             0,
             0,
-            &format!("Analyzing YouTube video stream with {}…", stage1_ep.model.trim()),
+            &format!(
+                "Analyzing YouTube video stream with {}…",
+                stage1_ep.model.trim()
+            ),
             Some(probe.title.clone()),
         );
         let dur_label = format_timestamp_ms(probe.duration_ms);
         let prompt = GEMINI_STAGE1_PROMPT
             .replace("{target_language}", target_language)
-            .replace("{clip_context}", &format!("Presentation Title: {}", probe.title))
+            .replace(
+                "{clip_context}",
+                &format!("Presentation Title: {}", probe.title),
+            )
             .replace("{clip_span_note}", &format!("00:00 to {dur_label}"))
             .replace("{chapter_count_hint}", "5 to 10");
 
@@ -634,7 +665,8 @@ where
 
     let mut parts = Vec::with_capacity(windows.len());
     for (idx, s_ms, e_ms, p_path) in windows {
-        let part_cache = proxies_dir.join(format!("plan_part_{:02}_of_{num_chunks:02}.json", idx + 1));
+        let part_cache =
+            proxies_dir.join(format!("plan_part_{:02}_of_{num_chunks:02}.json", idx + 1));
         if part_cache.is_file()
             && let Ok(cached_bytes) = std::fs::read(&part_cache)
             && let Ok(cached_val) = serde_json::from_slice::<Value>(&cached_bytes)
@@ -646,7 +678,10 @@ where
                     PipelinePhase::PlanningVisuals,
                     0,
                     0,
-                    &format!("Loaded cached video plan ({} of {num_chunks} parts)…", parts.len()),
+                    &format!(
+                        "Loaded cached video plan ({} of {num_chunks} parts)…",
+                        parts.len()
+                    ),
                     Some(probe.title.clone()),
                 );
             }
@@ -703,7 +738,10 @@ where
         )
         .await?;
         let parsed = extract_json_object(&out.text)?;
-        let _ = std::fs::write(&part_cache, serde_json::to_vec_pretty(&parsed).unwrap_or_default());
+        let _ = std::fs::write(
+            &part_cache,
+            serde_json::to_vec_pretty(&parsed).unwrap_or_default(),
+        );
         parts.push((idx, s_ms, e_ms, parsed));
 
         if num_chunks > 1 {
@@ -711,7 +749,10 @@ where
                 PipelinePhase::PlanningVisuals,
                 0,
                 0,
-                &format!("Analyzed video stream ({} of {num_chunks} parts)…", parts.len()),
+                &format!(
+                    "Analyzed video stream ({} of {num_chunks} parts)…",
+                    parts.len()
+                ),
                 Some(probe.title.clone()),
             );
         }
@@ -759,13 +800,25 @@ where
                     .map(parse_timestamp_to_ms)
                     .unwrap_or(clip_dur);
                 let g_start = shift_clip_ts(local_start, s_ms, clip_dur, total_ms);
-                let g_end = shift_clip_ts(local_end, s_ms, clip_dur, total_ms).max(g_start + 30_000).min(total_ms);
+                let g_end = shift_clip_ts(local_end, s_ms, clip_dur, total_ms)
+                    .max(g_start + 30_000)
+                    .min(total_ms);
 
                 let mut shifted_slides = Vec::new();
-                if let Some(slides) = ch["slides"].as_array().or_else(|| ch["selected_slides"].as_array()) {
+                if let Some(slides) = ch["slides"]
+                    .as_array()
+                    .or_else(|| ch["selected_slides"].as_array())
+                {
                     for sl in slides {
-                        if let Some(ts_str) = sl["timestamp"].as_str().or_else(|| sl["time"].as_str()) {
-                            let g_ts = shift_clip_ts(parse_timestamp_to_ms(ts_str), s_ms, clip_dur, total_ms);
+                        if let Some(ts_str) =
+                            sl["timestamp"].as_str().or_else(|| sl["time"].as_str())
+                        {
+                            let g_ts = shift_clip_ts(
+                                parse_timestamp_to_ms(ts_str),
+                                s_ms,
+                                clip_dur,
+                                total_ms,
+                            );
                             let mut cloned = sl.clone();
                             cloned["timestamp"] = Value::String(format_timestamp_ms(g_ts));
                             shifted_slides.push(cloned);
@@ -792,7 +845,11 @@ where
 }
 
 fn shift_clip_ts(ts_ms: u64, chunk_start_ms: u64, clip_dur_ms: u64, total_ms: u64) -> u64 {
-    if chunk_start_ms > 0 && ts_ms > clip_dur_ms + 15_000 && ts_ms >= chunk_start_ms && ts_ms <= total_ms {
+    if chunk_start_ms > 0
+        && ts_ms > clip_dur_ms + 15_000
+        && ts_ms >= chunk_start_ms
+        && ts_ms <= total_ms
+    {
         ts_ms
     } else {
         (chunk_start_ms + ts_ms).min(total_ms)
@@ -810,7 +867,10 @@ async fn materialize_gemini_plan(
     let mut requests: Vec<(usize, Value, u64)> = Vec::new();
 
     for (c_idx, ch) in raw_chapters.iter().enumerate() {
-        if let Some(slides) = ch["slides"].as_array().or_else(|| ch["selected_slides"].as_array()) {
+        if let Some(slides) = ch["slides"]
+            .as_array()
+            .or_else(|| ch["selected_slides"].as_array())
+        {
             for sl in slides {
                 if let Some(ts_str) = sl["timestamp"].as_str().or_else(|| sl["time"].as_str()) {
                     let mut ts_ms = parse_timestamp_to_ms(ts_str);
@@ -824,7 +884,8 @@ async fn materialize_gemini_plan(
     }
 
     let all_ts: Vec<u64> = requests.iter().map(|x| x.2).collect();
-    let captured = extract_frames_at_timestamps(ffmpeg, local_video, &all_ts, cap_dir, "hs").await?;
+    let captured =
+        extract_frames_at_timestamps(ffmpeg, local_video, &all_ts, cap_dir, "hs").await?;
 
     let mut kept_frames: Vec<CandidateFrame> = Vec::new();
     let mut chapter_slides: HashMap<usize, Vec<Stage1SlideChoice>> = HashMap::new();
@@ -838,16 +899,19 @@ async fn materialize_gemini_plan(
             let _ = std::fs::remove_file(&cand.image_path);
             continue;
         }
-        chapter_slides.entry(c_idx).or_default().push(Stage1SlideChoice {
-            frame_id: cand.frame_id.clone(),
-            timestamp_ms: cand.timestamp_ms,
-            role: sl_val["role"].as_str().unwrap_or("slide").to_string(),
-            draft_caption: sl_val["draft_caption"]
-                .as_str()
-                .or_else(|| sl_val["caption"].as_str())
-                .unwrap_or("")
-                .to_string(),
-        });
+        chapter_slides
+            .entry(c_idx)
+            .or_default()
+            .push(Stage1SlideChoice {
+                frame_id: cand.frame_id.clone(),
+                timestamp_ms: cand.timestamp_ms,
+                role: sl_val["role"].as_str().unwrap_or("slide").to_string(),
+                draft_caption: sl_val["draft_caption"]
+                    .as_str()
+                    .or_else(|| sl_val["caption"].as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            });
         kept_frames.push(cand);
     }
 
@@ -866,7 +930,11 @@ async fn materialize_gemini_plan(
         }
         let key_terms = ch["key_terms"]
             .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
 
         chapters.push(Stage1ChapterPlan {
@@ -897,7 +965,11 @@ async fn materialize_gemini_plan(
 
     let takeaways = raw["key_takeaways"]
         .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
 
     let plan = Stage1Plan {
@@ -936,7 +1008,8 @@ where
         "Running local scene detection and slide deduplication…",
         Some(probe.title.clone()),
     );
-    let candidates = build_local_candidate_frames(ffmpeg, local_video, probe, transcript, job_dir, 24).await?;
+    let candidates =
+        build_local_candidate_frames(ffmpeg, local_video, probe, transcript, job_dir, 24).await?;
     let valid_map: HashMap<String, CandidateFrame> = candidates
         .iter()
         .map(|c| (c.frame_id.clone(), c.clone()))
@@ -946,7 +1019,10 @@ where
         PipelinePhase::PlanningVisuals,
         0,
         0,
-        &format!("Selecting informative slides from {} candidates…", candidates.len()),
+        &format!(
+            "Selecting informative slides from {} candidates…",
+            candidates.len()
+        ),
         Some(probe.title.clone()),
     );
 
@@ -1030,7 +1106,11 @@ where
                 summary_goal: ch["summary_goal"].as_str().unwrap_or("").to_string(),
                 key_terms: ch["key_terms"]
                     .as_array()
-                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
                     .unwrap_or_default(),
                 selected_slides,
             });
@@ -1046,7 +1126,11 @@ where
         executive_summary: raw["executive_summary"].as_str().unwrap_or("").to_string(),
         key_takeaways: raw["key_takeaways"]
             .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default(),
         chapters,
     };
@@ -1145,7 +1229,11 @@ async fn write_single_chapter(
 
     let parsed = match parsed_sec {
         Some(v) => v,
-        None => return Err(last_err.unwrap_or_else(|| VideoError::Format("Failed to write chapter.".into()))),
+        None => {
+            return Err(
+                last_err.unwrap_or_else(|| VideoError::Format("Failed to write chapter.".into()))
+            );
+        }
     };
 
     let mut used_fids = HashSet::new();
@@ -1189,7 +1277,11 @@ fn parse_raw_blocks(
     };
     let mut out = Vec::new();
     for rb in arr {
-        let btype = rb["type"].as_str().unwrap_or("paragraph").trim().to_ascii_lowercase();
+        let btype = rb["type"]
+            .as_str()
+            .unwrap_or("paragraph")
+            .trim()
+            .to_ascii_lowercase();
         match btype.as_str() {
             "figure" => {
                 let fid = rb["frame_id"].as_str().unwrap_or("").trim();
@@ -1263,7 +1355,11 @@ fn parse_raw_blocks(
             "table" => {
                 let headers: Vec<String> = rb["headers"]
                     .as_array()
-                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 let rows: Vec<Vec<String>> = rb["rows"]
                     .as_array()

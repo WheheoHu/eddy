@@ -19,8 +19,10 @@ use crate::toolchain::ToolchainStatus;
 static YOUTUBE_ID_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?:v=|youtu\.be/|shorts/|embed/)([A-Za-z0-9_-]{11})").unwrap());
 static VTT_TIMING_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\s*((?:\d{1,2}:)?\d{2}:\d{2}[.,]\d{3})\s*-->\s*((?:\d{1,2}:)?\d{2}:\d{2}[.,]\d{3})")
-        .unwrap()
+    Regex::new(
+        r"^\s*((?:\d{1,2}:)?\d{2}:\d{2}[.,]\d{3})\s*-->\s*((?:\d{1,2}:)?\d{2}:\d{2}[.,]\d{3})",
+    )
+    .unwrap()
 });
 static INLINE_TAG_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]+>").unwrap());
 static PTS_TIME_RE: LazyLock<Regex> =
@@ -46,7 +48,10 @@ pub fn compute_video_id(source: &str) -> String {
             .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
             .take(20)
             .collect();
-        return format!("{stem}_{}", sha_short(&format!("{}:{size}", canon.display())));
+        return format!(
+            "{stem}_{}",
+            sha_short(&format!("{}:{size}", canon.display()))
+        );
     }
     if let Some(cap) = YOUTUBE_ID_RE.captures(source) {
         return format!("yt_{}", &cap[1]);
@@ -220,7 +225,9 @@ async fn probe_remote_url(
     cookies_from_browser: Option<&str>,
 ) -> Result<VideoProbe, VideoError> {
     let yt_dlp = toolchain.yt_dlp_path.as_deref().ok_or_else(|| {
-        VideoError::Toolchain("`yt-dlp` is not installed (install via `brew install yt-dlp`).".into())
+        VideoError::Toolchain(
+            "`yt-dlp` is not installed (install via `brew install yt-dlp`).".into(),
+        )
     })?;
     let mut args = vec!["--dump-single-json", "--no-warnings", "--no-playlist"];
     if let Some(browser) = cookies_from_browser.filter(|s| !s.trim().is_empty()) {
@@ -233,7 +240,12 @@ async fn probe_remote_url(
         Ok(res) => res,
         Err(_) if cookies_from_browser.is_some() => {
             // Retry without cookies if a logged-in YouTube cookie jar triggered a format/n-sig mismatch
-            run_cmd(yt_dlp, &["--dump-single-json", "--no-warnings", "--no-playlist", url], &[]).await?
+            run_cmd(
+                yt_dlp,
+                &["--dump-single-json", "--no-warnings", "--no-playlist", url],
+                &[],
+            )
+            .await?
         }
         Err(e) => return Err(e),
     };
@@ -275,11 +287,8 @@ async fn probe_remote_url(
                 continue;
             }
             let is_native = fmts.as_array().is_some_and(|arr| {
-                arr.iter().any(|f| {
-                    f["url"]
-                        .as_str()
-                        .is_some_and(|u| !u.contains("tlang="))
-                })
+                arr.iter()
+                    .any(|f| f["url"].as_str().is_some_and(|u| !u.contains("tlang=")))
             });
             if is_native {
                 auto_sub_langs.push(lang.clone());
@@ -310,10 +319,7 @@ async fn probe_remote_url(
         .or_else(|| raw["channel"].as_str())
         .map(String::from);
     let duration_ms = (raw["duration"].as_f64().unwrap_or(0.0).max(0.0) * 1000.0).round() as u64;
-    let source_url = raw["webpage_url"]
-        .as_str()
-        .unwrap_or(url)
-        .to_string();
+    let source_url = raw["webpage_url"].as_str().unwrap_or(url).to_string();
 
     Ok(VideoProbe {
         video_id,
@@ -333,7 +339,10 @@ fn pick_best_sub_lang(available: &[String]) -> Option<String> {
     if available.is_empty() {
         return None;
     }
-    if let Some(orig) = available.iter().find(|k| k.to_ascii_lowercase().ends_with("-orig")) {
+    if let Some(orig) = available
+        .iter()
+        .find(|k| k.to_ascii_lowercase().ends_with("-orig"))
+    {
         return Some(orig.clone());
     }
     for pref in [
@@ -379,14 +388,21 @@ pub async fn try_fetch_subtitles(
                 }
             }
         }
-        if probe.manual_sub_langs.iter().any(|s| s.starts_with("embedded:"))
+        if probe
+            .manual_sub_langs
+            .iter()
+            .any(|s| s.starts_with("embedded:"))
             && let Some(ffmpeg) = toolchain.ffmpeg_path.as_deref()
         {
             let out_vtt = subs_dir.join("embedded.vtt");
             let out_str = out_vtt.to_string_lossy().into_owned();
-            if run_cmd(ffmpeg, &["-y", "-i", vpath_str, "-map", "0:s:0", &out_str], &[])
-                .await
-                .is_ok()
+            if run_cmd(
+                ffmpeg,
+                &["-y", "-i", vpath_str, "-map", "0:s:0", &out_str],
+                &[],
+            )
+            .await
+            .is_ok()
                 && out_vtt.is_file()
             {
                 let segs = parse_subtitle_file(&out_vtt)?;
@@ -451,16 +467,18 @@ pub async fn try_fetch_subtitles(
         .flatten()
         .map(|e| e.path())
         .filter(|p| {
-            p.extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|ext| matches!(ext.to_ascii_lowercase().as_str(), "json3" | "vtt" | "srt"))
+            p.extension().and_then(|e| e.to_str()).is_some_and(|ext| {
+                matches!(ext.to_ascii_lowercase().as_str(), "json3" | "vtt" | "srt")
+            })
         })
         .collect();
-    found.sort_by_key(|p| match p.extension().and_then(|e| e.to_str()).unwrap_or("") {
-        "json3" => 0,
-        "vtt" => 1,
-        _ => 2,
-    });
+    found.sort_by_key(
+        |p| match p.extension().and_then(|e| e.to_str()).unwrap_or("") {
+            "json3" => 0,
+            "vtt" => 1,
+            _ => 2,
+        },
+    );
 
     let Some(sub_file) = found.first() else {
         return Ok(None);
@@ -614,7 +632,9 @@ pub fn merge_micro_segments(segments: Vec<TranscriptSegment>) -> Vec<TranscriptS
     let mut merged = Vec::new();
     for seg in segments.into_iter().skip(1) {
         let gap = seg.start_ms.saturating_sub(buf.end_ms);
-        let ends_sentence = buf.text.ends_with(['.', '!', '?', '。', '！', '？', ';', '；']);
+        let ends_sentence = buf
+            .text
+            .ends_with(['.', '!', '?', '。', '！', '？', ';', '；']);
         let combined_chars = buf.text.chars().count() + 1 + seg.text.chars().count();
         let buf_chars = buf.text.chars().count();
         if gap <= 1500 && combined_chars <= 160 && (buf_chars < 28 || !ends_sentence) {
@@ -751,7 +771,9 @@ pub async fn ensure_local_video(
         }
     }
     if !cached.is_file() {
-        return Err(VideoError::Media("Video download completed without producing video.mp4.".into()));
+        return Err(VideoError::Media(
+            "Video download completed without producing video.mp4.".into(),
+        ));
     }
     Ok(cached)
 }
@@ -775,14 +797,29 @@ pub async fn ensure_local_audio(
 
     let input_path: PathBuf = if let Some(v) = local_video.filter(|p| p.is_file()) {
         v.to_path_buf()
-    } else if let Some(local) = probe.local_video_path.as_deref().map(PathBuf::from).filter(|p| p.is_file()) {
+    } else if let Some(local) = probe
+        .local_video_path
+        .as_deref()
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+    {
         local
     } else if let Some(url) = probe.source_url.as_deref() {
         let yt_dlp = toolchain.yt_dlp_path.as_deref().ok_or_else(|| {
             VideoError::Toolchain("`yt-dlp` is required to fetch online audio.".into())
         })?;
-        let tpl = work_dir.join("raw_audio.%(ext)s").to_string_lossy().into_owned();
-        let mut args = vec!["--no-warnings", "--no-playlist", "-f", "bestaudio/best", "-o", &tpl];
+        let tpl = work_dir
+            .join("raw_audio.%(ext)s")
+            .to_string_lossy()
+            .into_owned();
+        let mut args = vec![
+            "--no-warnings",
+            "--no-playlist",
+            "-f",
+            "bestaudio/best",
+            "-o",
+            &tpl,
+        ];
         if let Some(browser) = cookies_from_browser.filter(|s| !s.trim().is_empty()) {
             args.push("--cookies-from-browser");
             args.push(browser);
@@ -790,7 +827,20 @@ pub async fn ensure_local_audio(
         args.push(url);
         if let Err(e) = run_cmd(yt_dlp, &args, &[]).await {
             if cookies_from_browser.is_some() {
-                run_cmd(yt_dlp, &["--no-warnings", "--no-playlist", "-f", "bestaudio/best", "-o", &tpl, url], &[]).await?;
+                run_cmd(
+                    yt_dlp,
+                    &[
+                        "--no-warnings",
+                        "--no-playlist",
+                        "-f",
+                        "bestaudio/best",
+                        "-o",
+                        &tpl,
+                        url,
+                    ],
+                    &[],
+                )
+                .await?;
             } else {
                 return Err(e);
             }
@@ -801,7 +851,9 @@ pub async fn ensure_local_audio(
             .find(|p| p.file_stem().and_then(|s| s.to_str()) == Some("raw_audio"))
             .ok_or_else(|| VideoError::Media("Failed to download audio stream.".into()))?
     } else {
-        return Err(VideoError::Media("No media source available for audio extraction.".into()));
+        return Err(VideoError::Media(
+            "No media source available for audio extraction.".into(),
+        ));
     };
 
     let in_str = input_path.to_string_lossy().into_owned();
@@ -1130,7 +1182,10 @@ pub async fn build_local_candidate_frames(
     let mut pts: Vec<u64> = Vec::new();
     let mut add_pt = |ms: u64| {
         let clamped = ms.clamp(200, upper);
-        if pts.iter().all(|&existing| existing.abs_diff(clamped) >= 600) {
+        if pts
+            .iter()
+            .all(|&existing| existing.abs_diff(clamped) >= 600)
+        {
             pts.push(clamped);
         }
     };
@@ -1162,7 +1217,9 @@ pub async fn build_local_candidate_frames(
         let (l, r) = (win[0], win[1]);
         let gap = r.saturating_sub(l);
         if gap > 20_000 {
-            let steps = ((gap as f64 / 20_000.0).ceil() as u64).saturating_sub(1).max(1);
+            let steps = ((gap as f64 / 20_000.0).ceil() as u64)
+                .saturating_sub(1)
+                .max(1);
             for s in 1..=steps {
                 let target = l + gap * s / (steps + 1);
                 let snapped = transcript
@@ -1207,10 +1264,7 @@ pub async fn build_local_candidate_frames(
 
     let mut winners: Vec<(u64, PathBuf, FrameMetrics)> = Vec::new();
     for cluster in clusters {
-        let max_sharp = cluster
-            .iter()
-            .map(|x| x.2.sharpness)
-            .fold(0.0f64, f64::max);
+        let max_sharp = cluster.iter().map(|x| x.2.sharpness).fold(0.0f64, f64::max);
         let chosen = cluster
             .iter()
             .rev()
@@ -1218,11 +1272,9 @@ pub async fn build_local_candidate_frames(
             .or_else(|| cluster.last())
             .cloned();
         if let Some(w) = chosen {
-            let dup_recent = winners
-                .iter()
-                .rev()
-                .take(4)
-                .any(|p| w.0.saturating_sub(p.0) < 90_000 && hamming_distance(w.2.dhash, p.2.dhash) <= 6);
+            let dup_recent = winners.iter().rev().take(4).any(|p| {
+                w.0.saturating_sub(p.0) < 90_000 && hamming_distance(w.2.dhash, p.2.dhash) <= 6
+            });
             if !dup_recent {
                 winners.push(w);
             }

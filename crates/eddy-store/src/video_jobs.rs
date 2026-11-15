@@ -107,7 +107,8 @@ impl Store {
                 "SELECT {COLS} FROM video_jobs ORDER BY created_at DESC LIMIT ?"
             ))?;
             let rows = st.query_map([limit], map_row)?;
-            rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(Into::into)
         })
     }
 
