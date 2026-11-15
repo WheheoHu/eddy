@@ -2,7 +2,8 @@ name: CI
 
 # Every commit pushed to any branch is checked for formatting, linted and
 # tested. What the run builds anyway (the server binary and the Mac app) is
-# kept as artifacts for two weeks, for trying a commit without building it.
+# kept as artifacts for two weeks, for trying a commit without building it,
+# and the server image of dev and main goes to ghcr.io.
 # Tags are the release workflow's business.
 on:
   push:
@@ -54,6 +55,10 @@ jobs:
     # tested there, and the image has to build.
     name: Test and build image (Linux, server)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # To push the image of dev and main to ghcr.io.
+      packages: write
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -72,6 +77,20 @@ jobs:
           done
           curl -fsS http://127.0.0.1:8787/v1/health
           docker exec eddy eddy-server --version | grep "${GITHUB_SHA::7}"
+      # The image is built and has just been seen to start: publish it for
+      # the long-lived branches, as :dev / :main (moving) and :sha-<commit>
+      # (fixed). linux/amd64 only; release tags publish both architectures
+      # as :X.Y.Z and :latest.
+      - name: Push image to ghcr.io
+        if: github.ref_name == 'dev' || github.ref_name == 'main'
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}/eddy-server"
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          for tag in "$GITHUB_REF_NAME" "sha-${GITHUB_SHA::7}"; do
+            docker tag eddy-server:ci "$image:$tag"
+            docker push "$image:$tag"
+          done
+          echo "Pushed \`$image:$GITHUB_REF_NAME\` and \`$image:sha-${GITHUB_SHA::7}\`" >> "$GITHUB_STEP_SUMMARY"
       # The binary is already built inside the image: keep it. It runs on
       # Debian 12 (bookworm) or anything with a glibc at least as new.
       - name: Take the server binary out of the image
