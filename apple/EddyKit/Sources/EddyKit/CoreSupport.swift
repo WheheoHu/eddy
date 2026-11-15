@@ -2,13 +2,17 @@ import Foundation
 
 /// Swift-side helpers layered on top of the generated UniFFI bindings in `Generated/`.
 public enum EddyCore {
+    /// Version of the Rust core, which is released separately from the app.
     public static var version: String { coreVersion() }
+
+    /// The core's version with the commit it was built from.
+    public static var build: String { "\(coreVersion()) (\(coreCommit()))" }
 
     /// Opens the engine on the default data directory with keychain-backed secrets.
     public static func openDefault(cacheLimit: UInt64 = 2 * 1024 * 1024 * 1024) throws -> EddyEngine {
         try EddyEngine(
             dataDir: EddyPaths.dataDirectory.path,
-            platform: KeychainPlatform(),
+            platform: KeychainPlatform(service: EddyPaths.keychainService),
             defaultCacheLimit: cacheLimit
         )
     }

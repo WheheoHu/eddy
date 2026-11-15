@@ -9,11 +9,19 @@ Eddy 是本地优先的个人阅读器：Rust 内核（`crates/`）通过 UniFFI
 - 生成物不进仓库：`apple/Eddy.xcodeproj`、`apple/EddyKit/EddyFFI.xcframework`、`apple/EddyKit/Sources/EddyKit/Generated/`。改了 `eddy-ffi` 的导出接口就重新跑构建脚本。
 - 本机的 `xcode-select` 可能指向命令行工具；`scripts/env.sh` 会自动设置 `DEVELOPER_DIR`，手动调用 `xcodebuild` 时也先 source 它。
 - 服务端：`deploy/compose.yaml`，端口只映射到 `127.0.0.1`；部署步骤见 `deploy/README.md`。
+- 服务端改动除了 `cargo test -p eddy-server`，再跑 `scripts/test-server-smoke.sh`：它在 OrbStack/Docker 里起一个临时服务端，用两个 `eddy-cli` 数据目录走一遍配对、停机、离线改动、恢复、收敛。
 - 不开界面验证真实网络行为（保存网页、连服务端、搜索）用 `tools/eddy-cli`，它的数据和密钥都在 `build/` 下自己的目录里，和应用数据隔离。
-- 调试 Mac 应用时不要往用户的真实数据目录里写测试内容：用 `open --env EDDY_DATA_DIR=$PWD/build/app-test apple/DerivedData/Build/Products/Debug/Eddy.app` 指向 `build/` 下的测试目录。
+- 调试 Mac 应用时不要往用户的真实数据目录里写测试内容：用 `open --env EDDY_DATA_DIR=$PWD/build/app-test apple/DerivedData/Build/Products/Debug/Eddy.app` 指向 `build/` 下的测试目录。设了 `EDDY_DATA_DIR` 的应用用自己的钥匙串条目（`EddyPaths.keychainService`），不会读写真实安装的密钥。
 - 阅读视图用 TextKit 2（`NSTextView`），不要改回 SwiftUI 的 `LazyVStack` 拼文章：UX demo 阶段两次卡死都是它在滚动时的布局反馈循环。
 - 窗口里只有三栏模式用 `NavigationSplitView`：另一个分栏视图替换它之后，系统的侧边栏开关会消失，栏宽也会互相串（同一窗口的分栏视图共用一份自动保存的栏宽）。Library 的栏用 `LeadingColumn` 自己排，开关是 `ColumnToggle`。
 - 界面文字先只做英文（SwiftUI 的字符串字面量就是本地化 key），中文等以后加 `.xcstrings`。
+
+## 版本
+
+- 内核和客户端各有版本号（[ADR 0009](docs/adr/0009-versions-and-compatibility.md)）：内核是根 `Cargo.toml` 的 workspace 版本（`eddy-server`、`eddy-cli` 跟随），Mac 应用是 `apple/project.yml` 的 `MARKETING_VERSION`。只改界面就只升客户端。用 `scripts/bump-version.sh core|mac X.Y.Z` 改，并在对应的 `CHANGELOG.md`（根目录 / `apple/`）里写条目。
+- 标签 `core-vX.Y.Z`、`mac-vX.Y.Z` 在合并到 `main` 之后打，由用户确认。
+- 两端能否同步只看 `eddy_sync::PROTOCOL_VERSION`：新增实体、字段，或字段含义变了就加一，并在内核 changelog 里写明；`MIN_PROTOCOL` 只在放弃旧版本时提高。
+- 改数据库结构只在 `eddy-store/src/schema.rs` 末尾追加迁移，已有的迁移不改。
 
 ## 分支
 
@@ -32,6 +40,7 @@ Eddy 是本地优先的个人阅读器：Rust 内核（`crates/`）通过 UniFFI
 ## 内核约定
 
 - 本地修改先写操作日志（带混合逻辑时钟），再更新状态；单机模式和服务端模式走同一条路径。
+- 服务端随时可能不在线（[ADR 0010](docs/adr/0010-offline-refresh-from-freshrss.md)）：新功能默认只依赖本地数据；确实要问服务端的，连不上时要有本地结果或明确的"离线"状态（`EngineError::Offline`），不能卡住或当成普通错误弹出来。只有服务端向 FreshRSS 写状态，服务端模式下的客户端只读。
 - 条目 ID 确定性生成：订阅文章由来源账号和上游 ID 推算 UUIDv5，保存的网页和系列用 UUIDv7。
 - 文本偏移一律用 UTF-16 码元，和 Swift/Kotlin 字符串对齐。
 - 文档结构升级时提升 `eddy_doc::SCHEMA_VERSION`，旧内容从保存的原始内容重新生成。

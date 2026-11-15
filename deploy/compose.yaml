@@ -3,8 +3,14 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+      args:
+        # Shown by `eddy-server --version` and to clients. Set it when
+        # building: EDDY_GIT_HASH=$(git rev-parse --short HEAD) docker compose build
+        EDDY_GIT_HASH: ${EDDY_GIT_HASH:-}
     image: eddy-server:local
     restart: unless-stopped
+    # Reaps yt-dlp/ffmpeg children and passes SIGTERM on.
+    init: true
     env_file: .env
     volumes:
       - eddy-data:/data

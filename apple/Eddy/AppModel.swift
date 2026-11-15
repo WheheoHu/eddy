@@ -197,6 +197,10 @@ final class AppModel {
         engine.setVideoJobListener(listener: VideoJobBridge { [weak self] in
             self?.scheduleVideoJobsRefresh()
         })
+        // Changes that arrive from the server while the app is open.
+        engine.setSyncListener(listener: SyncBridge { [weak self] in
+            self?.reloadSoon()
+        })
         spoolWatcher = SpoolWatcher(path: engine.spoolDir()) { [weak self] in
             Task { @MainActor in await self?.importCaptures() }
         }
@@ -299,7 +303,16 @@ final class AppModel {
 
     func search(_ query: String) async -> [SearchResultView] {
         guard let engine, !query.trimmingCharacters(in: .whitespaces).isEmpty else { return [] }
-        return (try? await engine.searchAll(query: query, limit: 80)) ?? []
+        let found = (try? await engine.searchAll(query: query, limit: 80)) ?? []
+        // The search may have found the server gone (or back).
+        status = try? engine.status()
+        return found
+    }
+
+    /// Server mode with the server unreachable: search covers only what is
+    /// on this Mac, and changes wait to upload.
+    var serverOffline: Bool {
+        status?.mode == .server && status?.serverOnline == false
     }
 
     // MARK: Content
@@ -525,14 +538,29 @@ final class AppModel {
         reload()
     }
 
-    func refresh() async {
+    /// `quiet` is for refreshes nobody asked for (the timer, coming back to
+    /// the app): an unreachable server is then not worth a banner, the
+    /// status in Settings and the sidebar says it.
+    func refresh(quiet: Bool = false) async {
         guard let engine, !busy else { return }
         busy = true
         defer { busy = false }
         do {
             let s = try await engine.refresh()
-            if s.newItems > 0 { message = "\(s.newItems) new articles" }
+            if s.offline {
+                if s.newItems > 0 {
+                    message = "\(s.newItems) new articles from FreshRSS. The sync server is offline."
+                } else if !quiet {
+                    message = "The sync server is offline. Changes on this Mac sync when it is back."
+                }
+            } else if s.newItems > 0 {
+                message = "\(s.newItems) new articles"
+            }
             loadHistory()
+        } catch EddyError.Offline {
+            if !quiet {
+                message = "The sync server is offline. Everything on this Mac still works and syncs when it is back."
+            }
         } catch EddyError.NotConfigured {
             message = "Connect FreshRSS or a sync server in Settings to load subscriptions."
         } catch {
@@ -817,7 +845,7 @@ final class AppModel {
             Task { @MainActor in self?.engine?.stopLiveSync() }
         }
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 15 * 60, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.refresh() }
+            Task { @MainActor in await self?.refresh(quiet: true) }
         }
     }
 
@@ -831,7 +859,7 @@ final class AppModel {
         }
         Task { await refreshVideoJobs(initial: false) }
         let stale = status.lastRefresh.map { Date().timeIntervalSince1970 * 1000 - Double($0) > 10 * 60 * 1000 } ?? true
-        if status.mode != .unconfigured, stale { Task { await refresh() } }
+        if status.mode != .unconfigured, stale { Task { await refresh(quiet: true) } }
     }
 
     // MARK: Video-to-Book Jobs
@@ -933,6 +961,20 @@ final class AppModel {
 
 /// Forwards background video job updates to the main actor.
 final class VideoJobBridge: VideoJobListener, @unchecked Sendable {
+    private let handler: @MainActor () -> Void
+
+    init(_ handler: @escaping @MainActor () -> Void) {
+        self.handler = handler
+    }
+
+    func onChange() {
+        let handler = handler
+        Task { @MainActor in handler() }
+    }
+}
+
+/// Forwards "a background sync changed something" to the main actor.
+final class SyncBridge: SyncListener, @unchecked Sendable {
     private let handler: @MainActor () -> Void
 
     init(_ handler: @escaping @MainActor () -> Void) {

@@ -174,33 +174,38 @@ async fn main() {
             .configure_server_freshrss(url, user, password)
             .await
             .map(|_| println!("server account set")),
-        ["status"] => match engine.status() {
-            Ok(s) => {
-                println!("mode {:?}", s.mode);
-                if s.mode == eddy_core::Mode::Server {
-                    println!(
-                        "server {}",
-                        if s.server_online { "online" } else { "offline" }
-                    );
-                    println!("pending uploads {}", s.pending_uploads);
-                    println!("refused uploads {}", s.rejected_uploads);
-                    println!("offline refresh {}", s.offline_refresh);
-                    match engine.server_status().await {
-                        Ok(Some(server)) => println!(
-                            "server version {}, cursor {}",
-                            server.version, server.cursor
-                        ),
-                        Ok(None) => {}
-                        Err(e) => println!("server unreachable: {e}"),
+        ["status"] => {
+            // Asking the server first is what tells the engine whether it
+            // is reachable.
+            let server = engine.server_status().await;
+            match engine.status() {
+                Ok(s) => {
+                    println!("mode {:?}", s.mode);
+                    if s.mode == eddy_core::Mode::Server {
+                        println!(
+                            "server {}",
+                            if s.server_online { "online" } else { "offline" }
+                        );
+                        match server {
+                            Ok(Some(server)) => println!(
+                                "server version {}, cursor {}",
+                                server.version, server.cursor
+                            ),
+                            Ok(None) => {}
+                            Err(e) => println!("server error: {e}"),
+                        }
+                        println!("pending uploads {}", s.pending_uploads);
+                        println!("refused uploads {}", s.rejected_uploads);
+                        println!("offline refresh {}", s.offline_refresh);
                     }
+                    if let Some(e) = s.last_error {
+                        println!("last error {e}");
+                    }
+                    Ok(())
                 }
-                if let Some(e) = s.last_error {
-                    println!("last error {e}");
-                }
-                Ok(())
+                Err(e) => Err(e),
             }
-            Err(e) => Err(e),
-        },
+        }
         ["tag", name] => engine.create_tag(name).map(|id| println!("tag {id}")),
         ["tags"] => engine.tags().map(|tags| {
             for t in tags {

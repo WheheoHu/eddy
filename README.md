@@ -106,7 +106,9 @@ See [`deploy/README.md`](deploy/README.md) for pairing, backups and the video jo
 
 The decisions behind the architecture are recorded in [`docs/adr/`](docs/adr/). The short version:
 
-- Local changes are written to an operation log with a hybrid logical clock first, then applied to state. Standalone and server modes share that path, so connecting a server later uploads and merges the existing log.
+- Local changes are written to an operation log with a hybrid logical clock first, then applied to state. Standalone and server modes share that path, so connecting a server later uploads and merges the log; a server the device has not synced with before gets all of it.
+- The server is optional at every moment, not just at setup: while it is unreachable a device keeps working, queues its changes, and fetches new articles from FreshRSS itself.
+- The core (the Rust crates, `eddy-server` included) and each app have their own version numbers. What decides whether two sides can sync is the sync protocol version, not either of those.
 - Item IDs are deterministic: feed articles derive a UUIDv5 from the source account and the upstream ID; saved pages and series use UUIDv7.
 - Text offsets are UTF-16 code units everywhere, matching Swift and Kotlin strings.
 - Site-specific fetch rules are never part of this repository. It ships only the generic strategy engine and the rule pack format; rule packs live on your own machine or your own server. See [`crates/eddy-fetch/README.md`](crates/eddy-fetch/README.md).
