@@ -5,7 +5,7 @@
 ## 决定
 
 - 两套版本号，同一个仓库：
-  - **内核版本**是根 `Cargo.toml` 的 `[workspace.package] version`，所有 crate 继承它，`eddy-server` 和 `eddy-cli` 也用这个版本。标签 `core-vX.Y.Z`，变更记在根目录 `CHANGELOG.md`。
+  - **内核版本**是根 `Cargo.toml` 的 `[workspace.package] version`，所有 crate 继承它，`eddy-server` 和 `eddy-cli` 也用这个版本。标签 `core-vX.Y.Z`，变更记在根目录 `CHANGELOG.md`（两份 changelog 都按 Keep a Changelog 1.1.0 的格式写）。
   - **客户端版本**是各平台应用自己的版本：Mac 应用在 `apple/project.yml` 的 `MARKETING_VERSION`（给人看）和 `CURRENT_PROJECT_VERSION`（每次发布加一）。标签 `mac-vX.Y.Z`（以后 `ios-v…`、`android-v…`），变更记在 `apple/CHANGELOG.md`。
   - 只改界面时只升客户端版本，内核版本不动；改了内核而界面没变时反过来。两边都用 `scripts/bump-version.sh core|mac X.Y.Z` 修改。
 - 运行时两个版本都看得到：应用的 Settings → About 同时显示客户端版本和内核版本（带提交哈希）；`eddy-server --version`、`eddy-cli --version` 和 `/v1/info` 的 `version` 报内核版本。提交哈希由 `eddy-core/build.rs` 写入，Docker 构建通过 `EDDY_GIT_HASH` 传入。
@@ -27,6 +27,6 @@
 
 ## 后果
 
-- 发布内核或客户端各自独立：改版本号、写 changelog、合并到 `main` 后打对应标签。
+- 发布内核或客户端各自独立：`scripts/bump-version.sh` 改版本号并把 changelog 的 `Unreleased` 定成这个版本，合并到 `main` 后打对应标签；推送标签由 `.github/workflows/release.yml` 完成发布（内核发服务端镜像，Mac 发应用包）。
 - 旧版本程序遇到新数据时会停在一条明确的提示上，而不是带着读不懂的数据继续跑。
 - 协议版本 1 的客户端（没有协议头）连不上现在的服务端；在这次改动之前没有对外发布过，不保留兼容。

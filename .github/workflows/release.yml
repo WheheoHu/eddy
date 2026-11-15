@@ -1,0 +1,128 @@
+name: Release
+
+# Runs when a release tag is pushed. The core and the apps are versioned and
+# released separately (docs/adr/0009):
+#
+#   core-vX.Y.Z  eddy-server image on ghcr.io + a GitHub release
+#   mac-vX.Y.Z   Eddy.app (zip) attached to a GitHub release
+#
+# Before tagging: scripts/bump-version.sh core|mac X.Y.Z (sets the version
+# and dates the changelog section), merge to main, then tag that commit.
+# The tag has to match the version in the repository and have a changelog
+# section, or nothing is published.
+on:
+  push:
+    tags:
+      - "core-v*"
+      - "mac-v*"
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Check the tag
+    runs-on: ubuntu-latest
+    outputs:
+      target: ${{ steps.tag.outputs.target }}
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: tag
+        name: Tag matches the version and has release notes
+        run: |
+          target="${GITHUB_REF_NAME%%-v*}"
+          version="${GITHUB_REF_NAME#*-v}"
+          actual="$(scripts/bump-version.sh | awk -v t="$target" '$1 == t { print $2 }')"
+          if [[ "$actual" != "$version" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the $target version in the repository ($actual)"
+            exit 1
+          fi
+          scripts/changelog-notes.sh "$target" "$version" > notes.md
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notes
+          path: notes.md
+
+  core:
+    name: Release the core (server image)
+    needs: prepare
+    if: needs.prepare.outputs.target == 'core'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: notes
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Image name
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}/eddy-server" >> "$GITHUB_OUTPUT"
+      - name: Build and push (amd64, arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            EDDY_GIT_HASH=${{ github.sha }}
+          tags: |
+            ${{ steps.image.outputs.name }}:${{ needs.prepare.outputs.version }}
+            ${{ steps.image.outputs.name }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          printf '\nServer image: `%s:%s`\n' "${{ steps.image.outputs.name }}" "${{ needs.prepare.outputs.version }}" >> notes.md
+          gh release create "$GITHUB_REF_NAME" --verify-tag \
+            --title "Core ${{ needs.prepare.outputs.version }}" --notes-file notes.md
+
+  mac:
+    name: Release the Mac app
+    needs: prepare
+    if: needs.prepare.outputs.target == 'mac'
+    runs-on: macos-15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: notes
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Build
+        run: scripts/build-mac-app.sh release
+      - name: Package
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent \
+            apple/DerivedData/Build/Products/Release/Eddy.app \
+            "Eddy-${{ needs.prepare.outputs.version }}-mac-arm64.zip"
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The build is signed ad hoc, not notarized: say so where people
+          # download it.
+          printf '\nApple silicon, macOS 15 or later. This build is not notarized: the first time, open it with right-click, Open.\n' >> notes.md
+          gh release create "$GITHUB_REF_NAME" --verify-tag \
+            --title "Eddy for Mac ${{ needs.prepare.outputs.version }}" --notes-file notes.md \
+            "Eddy-${{ needs.prepare.outputs.version }}-mac-arm64.zip"
