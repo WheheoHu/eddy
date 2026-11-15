@@ -1,7 +1,9 @@
 name: CI
 
 # Every commit pushed to any branch is checked for formatting, linted and
-# tested. Tags are the release workflow's business.
+# tested. What the run builds anyway (the server binary and the Mac app) is
+# kept as artifacts for two weeks, for trying a commit without building it.
+# Tags are the release workflow's business.
 on:
   push:
     branches: ["**"]
@@ -70,6 +72,18 @@ jobs:
           done
           curl -fsS http://127.0.0.1:8787/v1/health
           docker exec eddy eddy-server --version | grep "${GITHUB_SHA::7}"
+      # The binary is already built inside the image: keep it. It runs on
+      # Debian 12 (bookworm) or anything with a glibc at least as new.
+      - name: Take the server binary out of the image
+        run: |
+          docker cp eddy:/usr/local/bin/eddy-server eddy-server
+          tar -czf "eddy-server-${GITHUB_SHA::7}-linux-amd64.tar.gz" eddy-server
+      - uses: actions/upload-artifact@v7
+        with:
+          name: eddy-server-linux-amd64
+          path: eddy-server-*-linux-amd64.tar.gz
+          retention-days: 14
+          if-no-files-found: error
 
   mac-app:
     name: Build Mac app
@@ -85,8 +99,23 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install XcodeGen
         run: brew install xcodegen
+      # Release configuration: it is what a release tag builds, and it makes
+      # the artifact below an app worth trying.
       - name: Build
-        run: scripts/build-mac-app.sh debug
+        run: scripts/build-mac-app.sh release
       - name: Build log
         if: failure()
         run: tail -n 200 build/xcodebuild.log || true
+      # Zipped with ditto first: uploading the bundle as loose files would
+      # drop its executable bits and symlinks.
+      - name: Package
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent \
+            apple/DerivedData/Build/Products/Release/Eddy.app \
+            "Eddy-${GITHUB_SHA::7}-mac-arm64.zip"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: eddy-mac-arm64
+          path: Eddy-*-mac-arm64.zip
+          retention-days: 14
+          if-no-files-found: error
