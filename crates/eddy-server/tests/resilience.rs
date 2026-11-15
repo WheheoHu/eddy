@@ -284,7 +284,7 @@ async fn pairing_with_an_empty_server_uploads_the_history_again() {
     assert!(b.tags().unwrap().iter().any(|t| t.name == "Kept"));
 
     // Leaving server mode and pairing again works the same way.
-    a.disconnect_server().unwrap();
+    a.disconnect_server().await.unwrap();
     assert_eq!(a.status().unwrap().mode, Mode::Unconfigured);
     a.create_tag("Later").unwrap();
     a.connect_server(&second.url, &second.code(), "A")

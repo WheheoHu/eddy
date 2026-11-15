@@ -135,6 +135,16 @@ for tag in smoke-online smoke-offline smoke-offline-b; do
   b tags | grep -qx "$tag" || fail "B is missing $tag"
 done
 
+step "B signs out: its last change goes up, the server forgets it, and its data is erased"
+b tag smoke-leaving >/dev/null
+b sign-out | grep -qx "signed out and erased" || fail "B did not sign out"
+[[ "$(docker exec "$NAME" eddy-server devices | wc -l | tr -d ' ')" == 1 ]] || fail "the server still lists the device that signed out"
+b status | tee "$WORK/status-signed-out.txt"
+grep -qx "mode Unconfigured" "$WORK/status-signed-out.txt" || fail "B should be a blank device after signing out"
+[[ -z "$(b tags)" ]] || fail "B still has data after signing out"
+a sync >/dev/null
+a tags | grep -qx smoke-leaving || fail "the change B made just before signing out did not reach A"
+
 step "the container reports healthy"
 for _ in $(seq 1 30); do
   health="$(docker inspect -f '{{.State.Health.Status}}' "$NAME")"

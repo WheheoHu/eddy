@@ -64,6 +64,8 @@ pub trait PlatformServices: Send + Sync {
     fn secret_get(&self, key: String) -> Option<String>;
     fn secret_set(&self, key: String, value: String) -> bool;
     fn secret_delete(&self, key: String);
+    /// Forgets every secret, for signing out.
+    fn secret_clear(&self);
     fn log(&self, level: String, message: String);
 }
 
@@ -156,6 +158,10 @@ impl Platform for PlatformAdapter {
 
     fn secret_delete(&self, key: &str) {
         self.0.secret_delete(key.to_string())
+    }
+
+    fn secret_clear(&self) {
+        self.0.secret_clear()
     }
 
     fn log(&self, level: LogLevel, message: &str) {

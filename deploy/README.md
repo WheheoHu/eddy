@@ -51,6 +51,8 @@ docker compose exec eddy-server eddy-server pairing-code
 
 Enter the server address and the pairing code in Eddy's settings. If the first device to connect is already using FreshRSS in standalone mode, the server is given the account, and the device's read state, stars, reading progress, saved pages, books and tags are uploaded and merged. Back up the device's data directory first (`scripts/backup-app-data.sh`).
 
+A device leaves on its own when it is disconnected or signed out in its settings (the log says `device <name> signed out`); revoke it here only when the device is gone or cannot reach the server.
+
 Pairing itself takes a moment; the first sync then runs in the background on the device, which shows how far it is. The server log follows it too (`docker compose logs -f eddy-server`): `device <name> started syncing: N changes behind`, a line now and then while it catches up, and `device <name> is up to date` at the end.
 
 The server must reach FreshRSS at exactly the address the device uses. Article IDs are derived from that address and the username, so a different spelling of the same server (`localhost` on the Mac, a container name on the server) would show every feed twice; pairing refuses when the server already has a different account.

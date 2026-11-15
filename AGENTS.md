@@ -9,7 +9,7 @@ Eddy 是本地优先的个人阅读器：Rust 内核（`crates/`）通过 UniFFI
 - 生成物不进仓库：`apple/Eddy.xcodeproj`、`apple/EddyKit/EddyFFI.xcframework`、`apple/EddyKit/Sources/EddyKit/Generated/`。改了 `eddy-ffi` 的导出接口就重新跑构建脚本。
 - 本机的 `xcode-select` 可能指向命令行工具；`scripts/env.sh` 会自动设置 `DEVELOPER_DIR`，手动调用 `xcodebuild` 时也先 source 它。
 - 服务端：`deploy/compose.yaml`，端口只映射到 `127.0.0.1`；部署步骤见 `deploy/README.md`。
-- 服务端改动除了 `cargo test -p eddy-server`，再跑 `scripts/test-server-smoke.sh`：它在 OrbStack/Docker 里起一个临时服务端，用两个 `eddy-cli` 数据目录走一遍配对、停机、离线改动、恢复、收敛。
+- 服务端改动除了 `cargo test -p eddy-server`，再跑 `scripts/test-server-smoke.sh`：它在 OrbStack/Docker 里起一个临时服务端，用两个 `eddy-cli` 数据目录走一遍配对、停机、离线改动、恢复、收敛、登出。
 - 推到 GitHub 的每个提交都会跑 `.github/workflows/ci.yml`：`cargo fmt --all --check`、clippy 和测试（macOS 上整个 workspace，警告即失败）、Linux 上的服务端测试和镜像构建、Mac 应用构建。每次运行会把顺带编译出来的服务端二进制（linux/amd64）和 Mac 应用（Release 配置，未公证）作为 artifact 保留 14 天。`dev` 和 `main` 的服务端镜像（linux/amd64）还会推到 `ghcr.io/wheheohu/eddy/eddy-server`，标签是分支名和 `sha-<提交>`；`:latest` 和版本号标签只由发布流程打。提交前本地先跑 `cargo fmt --all` 和 clippy，别让 CI 替你发现。
 - 不开界面验证真实网络行为（保存网页、连服务端、搜索）用 `tools/eddy-cli`，它的数据和密钥都在 `build/` 下自己的目录里，和应用数据隔离。
 - 调试 Mac 应用时不要往用户的真实数据目录里写测试内容：用 `open --env EDDY_DATA_DIR=$PWD/build/app-test apple/DerivedData/Build/Products/Debug/Eddy.app` 指向 `build/` 下的测试目录。设了 `EDDY_DATA_DIR` 的应用用自己的钥匙串条目（`EddyPaths.keychainService`），不会读写真实安装的密钥。
@@ -43,6 +43,7 @@ Eddy 是本地优先的个人阅读器：Rust 内核（`crates/`）通过 UniFFI
 
 - 本地修改先写操作日志（带混合逻辑时钟），再更新状态；单机模式和服务端模式走同一条路径。
 - 服务端随时可能不在线（[ADR 0010](docs/adr/0010-offline-refresh-from-freshrss.md)）：新功能默认只依赖本地数据；确实要问服务端的，连不上时要有本地结果或明确的"离线"状态（`EngineError::Offline`），不能卡住或当成普通错误弹出来。只有服务端向 FreshRSS 写状态，服务端模式下的客户端只读。
+- 登出并清除数据（`sign_out_and_erase`）不在运行中的内核下面删文件：它留一个标记，下次 `Engine::open` 在打开任何东西之前清除。清除的是 `eddy-core/src/erase.rs` 里 `OWNED` 列出的文件和目录，内核在数据目录里新增东西时要加进去；密钥由 `Platform::secret_clear` 一次清空。
 - 条目 ID 确定性生成：订阅文章由来源账号和上游 ID 推算 UUIDv5，保存的网页和系列用 UUIDv7。
 - 文本偏移一律用 UTF-16 码元，和 Swift/Kotlin 字符串对齐。
 - 文档结构升级时提升 `eddy_doc::SCHEMA_VERSION`，旧内容从保存的原始内容重新生成。

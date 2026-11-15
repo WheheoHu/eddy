@@ -14,6 +14,15 @@ pub struct ServerStatusView {
     pub version: String,
 }
 
+/// What signing out did.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct SignOutView {
+    /// Signed out; the data is erased on the next open.
+    pub erased: bool,
+    /// Not signed out: changes that exist only here and could not be sent.
+    pub unsent: u32,
+}
+
 /// Hears about syncs that run in the background.
 #[uniffi::export(with_foreign)]
 pub trait SyncListener: Send + Sync {
@@ -100,8 +109,31 @@ impl EddyEngine {
         Ok(status.into())
     }
 
-    pub fn disconnect_server(&self) -> R<()> {
-        Ok(self.engine.disconnect_server()?)
+    /// Leaves server mode and keeps the data; the server is asked to
+    /// forget this device.
+    pub async fn disconnect_server(&self) -> R<()> {
+        Ok(self.engine.disconnect_server().await?)
+    }
+
+    /// Signs this device out and erases everything Eddy keeps on it. The
+    /// files go when the data directory is next opened, so after `erased`
+    /// the app restarts (or drops this engine and opens a new one).
+    ///
+    /// Changes not sent yet are sent first. When some cannot be, nothing is
+    /// done and `unsent` says how many, unless `discard_unsent` is set.
+    pub async fn sign_out_and_erase(&self, discard_unsent: bool) -> R<SignOutView> {
+        Ok(
+            match self.engine.sign_out_and_erase(discard_unsent).await? {
+                eddy_core::SignOut::Erased => SignOutView {
+                    erased: true,
+                    unsent: 0,
+                },
+                eddy_core::SignOut::Unsent(unsent) => SignOutView {
+                    erased: false,
+                    unsent,
+                },
+            },
+        )
     }
 
     pub async fn server_status(&self) -> R<Option<ServerStatusView>> {
