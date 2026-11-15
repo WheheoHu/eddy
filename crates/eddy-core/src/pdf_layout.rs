@@ -331,7 +331,9 @@ fn is_page_number(text: &str) -> bool {
     if rest.is_empty() {
         return false;
     }
-    let mut parts = rest.split(|c: char| c == '/' || c.is_whitespace()).filter(|s| !s.is_empty());
+    let mut parts = rest
+        .split(|c: char| c == '/' || c.is_whitespace())
+        .filter(|s| !s.is_empty());
     let first = parts.next().unwrap_or("");
     let tail: Vec<&str> = parts.collect();
     let tail_ok = match tail.as_slice() {
@@ -346,7 +348,8 @@ fn is_page_number(text: &str) -> bool {
 fn is_number(s: &str) -> bool {
     !s.is_empty()
         && (s.chars().all(|c| c.is_ascii_digit())
-            || s.chars().all(|c| matches!(c, 'i' | 'v' | 'x' | 'l' | 'c' | 'd' | 'm')))
+            || s.chars()
+                .all(|c| matches!(c, 'i' | 'v' | 'x' | 'l' | 'c' | 'd' | 'm')))
 }
 
 /// Images drawn on three or more pages, or on most of them: logos,
@@ -447,9 +450,15 @@ fn is_caption(text: &str) -> bool {
                 return false;
             };
             head.to_lowercase() == *prefix
-                && text[prefix.len()..].trim_start().chars().next().is_some_and(|c| {
-                    c.is_ascii_digit() || c.is_ascii_uppercase() || "一二三四五六七八九十".contains(c)
-                })
+                && text[prefix.len()..]
+                    .trim_start()
+                    .chars()
+                    .next()
+                    .is_some_and(|c| {
+                        c.is_ascii_digit()
+                            || c.is_ascii_uppercase()
+                            || "一二三四五六七八九十".contains(c)
+                    })
         })
 }
 
@@ -484,9 +493,15 @@ enum Flow<'a> {
         slide: bool,
     },
     /// Tables stay where they are.
-    Table { table: &'a Table, page: usize },
+    Table {
+        table: &'a Table,
+        page: usize,
+    },
     /// A boxed code listing, which floats like a figure.
-    Listing { listing: &'a Listing, page: usize },
+    Listing {
+        listing: &'a Listing,
+        page: usize,
+    },
     /// Figures set side by side with their own captions under them, read
     /// one after another and moved as one.
     Group(Vec<Flow<'a>>),
@@ -556,7 +571,10 @@ enum Part<'a> {
 /// only lines smaller than the body text.
 fn side_by_side<'a>(col: Vec<Piece<'a>>, body: f32) -> Vec<Part<'a>> {
     let left = col.iter().map(|p| p.rect().0).fold(f32::MAX, f32::min);
-    let right = col.iter().map(|p| p.rect().0 + p.rect().2).fold(f32::MIN, f32::max);
+    let right = col
+        .iter()
+        .map(|p| p.rect().0 + p.rect().2)
+        .fold(f32::MIN, f32::max);
     let narrow = |p: &Piece| p.rect().2 < (right - left) * 0.6;
     let mut out = Vec::with_capacity(col.len());
     let mut i = 0;
@@ -566,7 +584,9 @@ fn side_by_side<'a>(col: Vec<Piece<'a>>, body: f32) -> Vec<Part<'a>> {
             i += 1;
             continue;
         }
-        let end = (i..col.len()).find(|&k| !narrow(&col[k])).unwrap_or(col.len());
+        let end = (i..col.len())
+            .find(|&k| !narrow(&col[k]))
+            .unwrap_or(col.len());
         let run = &col[i..end];
         match group_in(run, body) {
             Some((start, stop, columns)) => {
@@ -629,14 +649,18 @@ fn group_in<'a>(run: &[Piece<'a>], body: f32) -> Option<(usize, usize, Vec<Vec<P
         ay < by + bh + 1.0 && by < ay + ah + 1.0
     };
     // Something sits level with it in another column of the group.
-    let partnered = |k: usize| (0..run.len()).any(|m| column_of[m] != column_of[k] && overlaps(&run[k], &run[m]));
+    let partnered = |k: usize| {
+        (0..run.len()).any(|m| column_of[m] != column_of[k] && overlaps(&run[k], &run[m]))
+    };
     let start = (0..run.len()).find(|&k| partnered(k))?;
     let mut stop = (0..run.len()).rev().find(|&k| partnered(k))? + 1;
     // A caption under a figure can run a line or two longer than the one
     // beside it.
     while stop < run.len() {
         let Piece::Line(line) = run[stop] else { break };
-        let above = (start..stop).rev().find(|&k| column_of[k] == column_of[stop]);
+        let above = (start..stop)
+            .rev()
+            .find(|&k| column_of[k] == column_of[stop]);
         let close = above.is_some_and(|k| {
             let (_, y, _, _) = run[k].rect();
             y - (line.y + line.height) < line.height.max(body) * 0.8
@@ -770,7 +794,10 @@ fn order_page<'a>(
                 Piece::Image(_) | Piece::Table(_) | Piece::Listing(_) => None,
             })
             .collect();
-        (lines.iter().map(|l| l.width).fold(0.0, f32::max), dominant_x(&lines))
+        (
+            lines.iter().map(|l| l.width).fold(0.0, f32::max),
+            dominant_x(&lines),
+        )
     };
     let to_flow = |piece: Piece<'a>, width: f32, x: f32| match piece {
         Piece::Line(line) => placed(line, width, x),
@@ -815,7 +842,11 @@ fn order_page<'a>(
             }
             _ => false,
         };
-        let column = if ends_spanning { None } else { column_of(&piece) };
+        let column = if ends_spanning {
+            None
+        } else {
+            column_of(&piece)
+        };
         last_spanning = match (&piece, column) {
             (Piece::Line(l), None) => Some(*l),
             _ => None,
@@ -919,9 +950,16 @@ fn keep_paragraphs_whole(mut flow: Vec<Flow<'_>>, body: f32) -> Vec<Flow<'_>> {
             .unwrap_or(flow.len());
         // The figures' caption, if one follows, goes with them.
         let mut resume = end;
-        if flow.get(end).and_then(Flow::text).is_some_and(|c| is_caption(&c.line.text)) {
+        if flow
+            .get(end)
+            .and_then(Flow::text)
+            .is_some_and(|c| is_caption(&c.line.text))
+        {
             resume += 1;
-            while let (Some(c), Some(next)) = (flow[resume - 1].text(), flow.get(resume).and_then(Flow::text)) {
+            while let (Some(c), Some(next)) = (
+                flow[resume - 1].text(),
+                flow.get(resume).and_then(Flow::text),
+            ) {
                 if breaks_paragraph(c, next, body) {
                     break;
                 }
@@ -989,9 +1027,7 @@ fn find_gutters(
         .iter()
         .copied()
         .filter(|l| {
-            l.width < width * 0.6
-                && l.font_size < body * HEADING_SCALE
-                && l.font_size >= body * 0.8
+            l.width < width * 0.6 && l.font_size < body * HEADING_SCALE && l.font_size >= body * 0.8
         })
         .collect();
     if narrow.len() < 6 {
@@ -1105,7 +1141,9 @@ impl Para {
             return;
         }
         match self.spans.last_mut() {
-            Some(last) if last.bold == bold && last.underline == underline => last.text.push_str(text),
+            Some(last) if last.bold == bold && last.underline == underline => {
+                last.text.push_str(text)
+            }
             _ => self.spans.push(Span {
                 text: text.to_string(),
                 bold,
@@ -1132,7 +1170,10 @@ impl Para {
             }
             (Some(a), b) if is_cjk(a) || is_cjk(b) => {}
             _ => {
-                let (bold, underline) = self.spans.last().map_or((false, false), |s| (s.bold, s.underline));
+                let (bold, underline) = self
+                    .spans
+                    .last()
+                    .map_or((false, false), |s| (s.bold, s.underline));
                 self.push(" ", bold, underline && runs[0].underline);
             }
         }
@@ -1226,7 +1267,11 @@ fn chars(lines: &[&PdfLine]) -> usize {
 
 /// Lines wholly left of `edge` (label candidates) and those starting at or
 /// right of it (the text they label).
-fn label_sides<'a>(lines: &[&'a PdfLine], edge: f32, body: f32) -> (Vec<&'a PdfLine>, Vec<&'a PdfLine>) {
+fn label_sides<'a>(
+    lines: &[&'a PdfLine],
+    edge: f32,
+    body: f32,
+) -> (Vec<&'a PdfLine>, Vec<&'a PdfLine>) {
     let left = lines
         .iter()
         .copied()
@@ -1238,7 +1283,9 @@ fn label_sides<'a>(lines: &[&'a PdfLine], edge: f32, body: f32) -> (Vec<&'a PdfL
 
 /// Whether a line stands level with the start of some line beside it.
 fn level_with(line: &PdfLine, others: &[&PdfLine], body: f32) -> bool {
-    others.iter().any(|o| (top(o) - top(line)).abs() <= body * 0.5)
+    others
+        .iter()
+        .any(|o| (top(o) - top(line)).abs() <= body * 0.5)
 }
 
 /// Where a column of labels ends, for documents laid out as clauses and
@@ -1253,7 +1300,11 @@ fn label_column(pages: &[PdfPage], body: f32) -> Option<f32> {
     let mut edges: Vec<f32> = pages
         .iter()
         .filter_map(|page| {
-            let lines: Vec<&PdfLine> = page.lines.iter().filter(|l| !l.text.trim().is_empty()).collect();
+            let lines: Vec<&PdfLine> = page
+                .lines
+                .iter()
+                .filter(|l| !l.text.trim().is_empty())
+                .collect();
             let &(gl, gr) = find_gutters(&lines, &[], page, body).first()?;
             if gl > page.width * 0.35 {
                 return None;
@@ -1396,7 +1447,12 @@ impl Block {
             Block::Image { caption, .. } => caption.clone(),
             Block::Table { rows, .. } => rows
                 .iter()
-                .map(|r| r.iter().map(|c| c.para.text()).collect::<Vec<_>>().join(" | "))
+                .map(|r| {
+                    r.iter()
+                        .map(|c| c.para.text())
+                        .collect::<Vec<_>>()
+                        .join(" | ")
+                })
                 .collect::<Vec<_>>()
                 .join("\n"),
         }
@@ -1650,7 +1706,10 @@ fn assemble_prose(placed: &[&Placed<'_>], body: f32, sizes: &[u32], blocks: &mut
         let next_is_lead = candidates[i + 1].is_none()
             && next.label.is_none()
             && heading_size(next.line, body).is_some_and(|s| !large(s));
-        if candidates[i].is_some_and(|s| !large(s)) && next_is_lead && !breaks_paragraph(p, next, body) {
+        if candidates[i].is_some_and(|s| !large(s))
+            && next_is_lead
+            && !breaks_paragraph(p, next, body)
+        {
             candidates[i] = None;
         }
     }
@@ -1659,7 +1718,9 @@ fn assemble_prose(placed: &[&Placed<'_>], body: f32, sizes: &[u32], blocks: &mut
         if let Some(id) = p.label {
             match runs.last_mut() {
                 Some(Run::Heading {
-                    label: Some(l), lines, ..
+                    label: Some(l),
+                    lines,
+                    ..
                 }) if *l == id => lines.push(p),
                 _ => runs.push(Run::Heading {
                     size: 0,
@@ -1705,7 +1766,10 @@ fn assemble_prose(placed: &[&Placed<'_>], body: f32, sizes: &[u32], blocks: &mut
                 lines,
             } if !large(size)
                 && (lines.len() > 2
-                    || lines.iter().map(|p| p.line.text.chars().count()).sum::<usize>()
+                    || lines
+                        .iter()
+                        .map(|p| p.line.text.chars().count())
+                        .sum::<usize>()
                         > BOLD_HEADING_CHARS) =>
             {
                 push_body(&mut flat, lines);
@@ -1809,7 +1873,11 @@ fn breaks_by_shape(a: &Placed<'_>, b: &Placed<'_>, body: f32) -> bool {
     // further off.
     let overlap = (la.y + la.height).min(lb.y + lb.height) - la.y.max(lb.y);
     let gap = lb.x - (la.x + la.width);
-    if a.page == b.page && gap >= -1.0 && gap < body * 2.0 && overlap > la.height.min(lb.height) * 0.3 {
+    if a.page == b.page
+        && gap >= -1.0
+        && gap < body * 2.0
+        && overlap > la.height.min(lb.height) * 0.3
+    {
         return false;
     }
     if (la.font_size - lb.font_size).abs() > 0.5 {
@@ -1861,7 +1929,8 @@ fn breaks_by_shape(a: &Placed<'_>, b: &Placed<'_>, body: f32) -> bool {
 const BULLETS: [char; 8] = ['•', '●', '○', '◦', '▪', '■', '◆', '‣'];
 
 fn ends_sentence(text: &str) -> bool {
-    text.trim_end().ends_with(['。', '；', '：', '！', '？', '.', ';', ':', '!', '?'])
+    text.trim_end()
+        .ends_with(['。', '；', '：', '！', '？', '.', ';', ':', '!', '?'])
 }
 
 /// The number that starts a numbered item or clause.
@@ -1882,7 +1951,10 @@ fn enumerator(text: &str) -> Option<Enumerator> {
     let first = *chars.peek()?;
     let followed_by_text = |c: Option<char>| c.is_some_and(|c| c.is_whitespace() || is_cjk(c));
     if BULLETS.contains(&first) {
-        return Some(Enumerator { depth: 1, strong: true });
+        return Some(Enumerator {
+            depth: 1,
+            strong: true,
+        });
     }
     if first == '(' || first == '（' {
         chars.next();
@@ -1895,16 +1967,30 @@ fn enumerator(text: &str) -> Option<Enumerator> {
             && (inner.chars().all(|c| c.is_ascii_digit())
                 || inner.chars().all(|c| "一二三四五六七八九十".contains(c)));
         // `take_while` consumed the closing bracket only if there was one.
-        return (ok && t[first.len_utf8() + inner.len()..].starts_with([')', '）'])).then_some(Enumerator { depth: 1, strong: true });
+        return (ok && t[first.len_utf8() + inner.len()..].starts_with([')', '）'])).then_some(
+            Enumerator {
+                depth: 1,
+                strong: true,
+            },
+        );
     }
     if "一二三四五六七八九十".contains(first) {
-        let n = t.chars().take_while(|c| "一二三四五六七八九十".contains(*c)).count();
-        return (n <= 3 && t.chars().nth(n) == Some('、')).then_some(Enumerator { depth: 1, strong: true });
+        let n = t
+            .chars()
+            .take_while(|c| "一二三四五六七八九十".contains(*c))
+            .count();
+        return (n <= 3 && t.chars().nth(n) == Some('、')).then_some(Enumerator {
+            depth: 1,
+            strong: true,
+        });
     }
     if first.is_ascii_lowercase() {
         let mut it = t.chars();
         it.next();
-        return (it.next() == Some(')')).then_some(Enumerator { depth: 1, strong: true });
+        return (it.next() == Some(')')).then_some(Enumerator {
+            depth: 1,
+            strong: true,
+        });
     }
     let mut depth = 0;
     let mut trailing_dot = false;
@@ -1923,12 +2009,20 @@ fn enumerator(text: &str) -> Option<Enumerator> {
                 trailing_dot = true;
                 break;
             }
-            Some(')' | '）' | '、') => return Some(Enumerator { depth, strong: true }),
+            Some(')' | '）' | '、') => {
+                return Some(Enumerator {
+                    depth,
+                    strong: true,
+                });
+            }
             _ => break,
         }
     }
     let next = chars.next();
-    ((trailing_dot || depth >= 2) && followed_by_text(next)).then_some(Enumerator { depth, strong: trailing_dot })
+    ((trailing_dot || depth >= 2) && followed_by_text(next)).then_some(Enumerator {
+        depth,
+        strong: trailing_dot,
+    })
 }
 
 /// `take_while` that leaves the first character that fails in place.
@@ -2023,7 +2117,15 @@ mod tests {
     /// Fills a column: `n` full-width lines of 10 pt text from `top` down.
     fn column(x: f32, width: f32, top: f32, n: usize, label: &str) -> Vec<PdfLine> {
         (0..n)
-            .map(|i| wide(&format!("{label} line {i} of the column text"), x, top - 12.0 * i as f32, width, 10.0))
+            .map(|i| {
+                wide(
+                    &format!("{label} line {i} of the column text"),
+                    x,
+                    top - 12.0 * i as f32,
+                    width,
+                    10.0,
+                )
+            })
             .collect()
     }
 
@@ -2062,7 +2164,10 @@ mod tests {
         // column under a figure: two boxed listings, each captioned.
         let mut lines = column(72.0, 220.0, 700.0, 20, "left");
         let mut boxes = Vec::new();
-        for (dx, name, sub) in [(0.0, "def a(x):", "(a) First listing"), (112.0, "def b(x):", "(b) Second listing")] {
+        for (dx, name, sub) in [
+            (0.0, "def a(x):", "(a) First listing"),
+            (112.0, "def b(x):", "(b) Second listing"),
+        ] {
             let x = 320.0 + dx;
             boxes.push(PdfBox {
                 x,
@@ -2088,9 +2193,18 @@ mod tests {
         let doc = document(&[p]);
         let t = texts(&doc);
         assert_eq!(t.len(), 6, "{t:?}");
-        assert!(t[0].starts_with("left line 0") && t[0].ends_with("right line 14 of the column text"));
-        assert!(matches!(doc.blocks[1].kind, BlockKind::Code { .. }), "{:?}", doc.blocks[1].kind);
-        assert_eq!(t[1], "def a(x):\n  y ← 0\n  for i in x:\n    y ← y + i\n  return");
+        assert!(
+            t[0].starts_with("left line 0") && t[0].ends_with("right line 14 of the column text")
+        );
+        assert!(
+            matches!(doc.blocks[1].kind, BlockKind::Code { .. }),
+            "{:?}",
+            doc.blocks[1].kind
+        );
+        assert_eq!(
+            t[1],
+            "def a(x):\n  y ← 0\n  for i in x:\n    y ← y + i\n  return"
+        );
         assert_eq!(t[2], "(a) First listing");
         assert!(t[3].starts_with("def b(x):"), "{t:?}");
         assert_eq!(t[4], "(b) Second listing");
@@ -2111,10 +2225,22 @@ mod tests {
             l
         };
         let doc = document(&[page(vec![
-            wide("Run the command below to start it all up again.", 72.0, 700.0, 300.0, 10.0),
+            wide(
+                "Run the command below to start it all up again.",
+                72.0,
+                700.0,
+                300.0,
+                10.0,
+            ),
             mono("make build", 72.0, 686.0),
             mono("make run", 72.0, 674.0),
-            wide("Then the server listens on its port as before.", 72.0, 660.0, 300.0, 10.0),
+            wide(
+                "Then the server listens on its port as before.",
+                72.0,
+                660.0,
+                300.0,
+                10.0,
+            ),
         ])]);
         let t = texts(&doc);
         assert_eq!(t.len(), 3, "{t:?}");
@@ -2124,7 +2250,16 @@ mod tests {
 
     #[test]
     fn page_number_shapes() {
-        for s in ["12", "- 12 -", "Page 12", "12 of 30", "12 / 30", "第 12 页", "xiv", "p. 7"] {
+        for s in [
+            "12",
+            "- 12 -",
+            "Page 12",
+            "12 of 30",
+            "12 / 30",
+            "第 12 页",
+            "xiv",
+            "p. 7",
+        ] {
             assert!(is_page_number(s), "{s}");
         }
         for s in ["Chapter 12", "12 apples", "1.2", "", "Page"] {
@@ -2144,7 +2279,10 @@ mod tests {
         let doc = document(&[page(lines)]);
         let t = texts(&doc);
         assert_eq!(t[0], "A Spanning Title");
-        assert!(matches!(doc.blocks[0].kind, BlockKind::Heading { level: 2, .. }));
+        assert!(matches!(
+            doc.blocks[0].kind,
+            BlockKind::Heading { level: 2, .. }
+        ));
         assert_eq!(t[1], "Ada Lovelace");
         // The text flows from the bottom of the left column into the right.
         assert_eq!(t.len(), 3, "{t:?}");
@@ -2212,7 +2350,13 @@ mod tests {
             let top = 680.0 - 110.0 * k as f32;
             if k == 2 {
                 // Set on one baseline with its clause, and wrapped.
-                lines.push(styled(&[(&format!("{n}. Wrapped"), 46.0, true), (&format!("{n}.1. {body}"), 183.0, false)], top));
+                lines.push(styled(
+                    &[
+                        (&format!("{n}. Wrapped"), 46.0, true),
+                        (&format!("{n}.1. {body}"), 183.0, false),
+                    ],
+                    top,
+                ));
                 lines.push(bold(line("label end", 60.0, top - 12.0, 10.0)));
             } else {
                 lines.push(bold(line(&format!("{n}. Label"), 46.0, top, 10.0)));
@@ -2220,8 +2364,19 @@ mod tests {
             }
             lines.push(wide(more, 211.0, top - 12.0, 330.0, 10.0));
             lines.push(line("Short end.", 211.0, top - 24.0, 10.0));
-            lines.push(wide(&format!("{n}.2. {body}"), 183.0, top - 44.0, 340.0, 10.0));
-            lines.push(line(&format!("{n}.2.1. a sub-clause."), 211.0, top - 64.0, 10.0));
+            lines.push(wide(
+                &format!("{n}.2. {body}"),
+                183.0,
+                top - 44.0,
+                340.0,
+                10.0,
+            ));
+            lines.push(line(
+                &format!("{n}.2.1. a sub-clause."),
+                211.0,
+                top - 64.0,
+                10.0,
+            ));
         }
         page(lines)
     }
@@ -2248,13 +2403,30 @@ mod tests {
                 .unwrap_or_else(|| panic!("{s} in {blocks:?}"))
         };
         assert_eq!(blocks[0], ("1. Label".to_string(), Some(3)));
-        assert!(blocks[1].0.starts_with("1.1. clause text") && blocks[1].0.ends_with("Short end."), "{:?}", blocks[1]);
+        assert!(
+            blocks[1].0.starts_with("1.1. clause text") && blocks[1].0.ends_with("Short end."),
+            "{:?}",
+            blocks[1]
+        );
         assert_eq!(blocks[1].1, None);
-        assert!(at("1.2.") < at("1.2.1.") && at("1.2.1.") < at("2. Label"), "{blocks:?}");
-        assert_eq!(blocks[at("3. Wrapped")], ("3. Wrapped label end".to_string(), Some(3)));
-        assert!(blocks[at("3. Wrapped") + 1].0.starts_with("3.1. clause"), "{blocks:?}");
+        assert!(
+            at("1.2.") < at("1.2.1.") && at("1.2.1.") < at("2. Label"),
+            "{blocks:?}"
+        );
+        assert_eq!(
+            blocks[at("3. Wrapped")],
+            ("3. Wrapped label end".to_string(), Some(3))
+        );
+        assert!(
+            blocks[at("3. Wrapped") + 1].0.starts_with("3.1. clause"),
+            "{blocks:?}"
+        );
         assert!(at("5.2.1.") < at("6. Label"), "{blocks:?}");
-        assert_eq!(blocks.iter().filter(|b| b.1.is_some()).count(), 15, "{blocks:?}");
+        assert_eq!(
+            blocks.iter().filter(|b| b.1.is_some()).count(),
+            15,
+            "{blocks:?}"
+        );
     }
 
     #[test]
@@ -2270,21 +2442,40 @@ mod tests {
         pages.insert(0, page(contents));
         let doc = document(&pages);
         let t = texts(&doc);
-        let pos = |s: &str| t.iter().position(|b| b == s).unwrap_or_else(|| panic!("{s} in {t:?}"));
-        assert!(pos("1. Left") < pos("2. Left") && pos("15. Left") < pos("16. Right"), "{t:?}");
-        assert!(matches!(doc.blocks[pos("1. Left")].kind, BlockKind::Paragraph { .. }));
+        let pos = |s: &str| {
+            t.iter()
+                .position(|b| b == s)
+                .unwrap_or_else(|| panic!("{s} in {t:?}"))
+        };
+        assert!(
+            pos("1. Left") < pos("2. Left") && pos("15. Left") < pos("16. Right"),
+            "{t:?}"
+        );
+        assert!(matches!(
+            doc.blocks[pos("1. Left")].kind,
+            BlockKind::Paragraph { .. }
+        ));
     }
 
     #[test]
     fn bold_and_underlined_runs_keep_their_style() {
         let mut l = styled(
-            &[("Plain start and", 72.0, false), ("a bold term", 152.0, true), ("then plain again to the end.", 212.0, false)],
+            &[
+                ("Plain start and", 72.0, false),
+                ("a bold term", 152.0, true),
+                ("then plain again to the end.", 212.0, false),
+            ],
             700.0,
         );
         l.runs[2].underline = true;
         let mut lines = vec![l];
         // A wholly bold line ending in a full stop is emphasis, not a heading.
-        lines.push(bold(line("您方在犹豫期后解除保险合同会遭受一定损失。", 72.0, 660.0, 10.0)));
+        lines.push(bold(line(
+            "您方在犹豫期后解除保险合同会遭受一定损失。",
+            72.0,
+            660.0,
+            10.0,
+        )));
         lines.extend(column(72.0, 468.0, 600.0, 10, "pad"));
         let doc = document(&[page(lines)]);
         let runs = doc.blocks[0].kind.runs().unwrap();
@@ -2298,16 +2489,38 @@ mod tests {
                 ("then plain again to the end.", eddy_model::style::UNDERLINE),
             ]
         );
-        assert!(matches!(doc.blocks[1].kind, BlockKind::Paragraph { .. }), "{:?}", doc.blocks[1]);
+        assert!(
+            matches!(doc.blocks[1].kind, BlockKind::Paragraph { .. }),
+            "{:?}",
+            doc.blocks[1]
+        );
     }
 
     #[test]
     fn numbered_items_break_and_their_own_lines_stay_with_them() {
         let lines = vec![
-            wide("下列情况下，本保险合同将不续保，具体情形如下所列各项所述的内容范围", 72.0, 700.0, 468.0, 10.0),
-            wide("1) 第一项写满了一整行的宽度所以下一行是它自己的续行而不是新的段", 92.0, 688.0, 448.0, 10.0),
+            wide(
+                "下列情况下，本保险合同将不续保，具体情形如下所列各项所述的内容范围",
+                72.0,
+                700.0,
+                468.0,
+                10.0,
+            ),
+            wide(
+                "1) 第一项写满了一整行的宽度所以下一行是它自己的续行而不是新的段",
+                92.0,
+                688.0,
+                448.0,
+                10.0,
+            ),
             wide("落，这一行缩进到编号之后。", 110.0, 676.0, 130.0, 10.0),
-            wide("2) 第二项也写满了整整一行的宽度，下一项紧接着它从同一位置开始；", 92.0, 664.0, 448.0, 10.0),
+            wide(
+                "2) 第二项也写满了整整一行的宽度，下一项紧接着它从同一位置开始；",
+                92.0,
+                664.0,
+                448.0,
+                10.0,
+            ),
             wide("3) 第三项。", 92.0, 652.0, 60.0, 10.0),
         ];
         let doc = document(&[page(lines)]);
@@ -2324,10 +2537,31 @@ mod tests {
 
     #[test]
     fn enumerator_shapes() {
-        for (s, depth) in [("1. a", 1), ("7.2.1. 本", 3), ("38.1 付款", 2), ("1) x", 1), ("（3）黑", 1), ("(12) y", 1), ("a) z", 1), ("一、总则", 1), ("3、内容", 1), ("1.保险", 1), ("• item", 1)] {
+        for (s, depth) in [
+            ("1. a", 1),
+            ("7.2.1. 本", 3),
+            ("38.1 付款", 2),
+            ("1) x", 1),
+            ("（3）黑", 1),
+            ("(12) y", 1),
+            ("a) z", 1),
+            ("一、总则", 1),
+            ("3、内容", 1),
+            ("1.保险", 1),
+            ("• item", 1),
+        ] {
             assert_eq!(enumerator(s).map(|e| e.depth), Some(depth), "{s}");
         }
-        for s in ["(c) FVMD versus", "15 天内", "2018年", "3.5%", "and so", "12", "1.2", "Figure 1."] {
+        for s in [
+            "(c) FVMD versus",
+            "15 天内",
+            "2018年",
+            "3.5%",
+            "and so",
+            "12",
+            "1.2",
+            "Figure 1.",
+        ] {
             assert_eq!(enumerator(s), None, "{s}");
         }
     }
@@ -2335,17 +2569,47 @@ mod tests {
     #[test]
     fn ruled_tables_become_table_blocks_in_place() {
         use crate::import::PdfRule;
-        let mut lines = vec![wide("Text before the table runs the full width of the page.", 72.0, 700.0, 468.0, 10.0)];
-        for (r, row) in [["Stage", "T", "N"], ["I", "1", "0"], ["II", "2", "1"]].iter().enumerate() {
+        let mut lines = vec![wide(
+            "Text before the table runs the full width of the page.",
+            72.0,
+            700.0,
+            468.0,
+            10.0,
+        )];
+        for (r, row) in [["Stage", "T", "N"], ["I", "1", "0"], ["II", "2", "1"]]
+            .iter()
+            .enumerate()
+        {
             for (c, cell) in row.iter().enumerate() {
-                lines.push(line(cell, 110.0 + 100.0 * c as f32, 655.0 - 20.0 * r as f32, 10.0));
+                lines.push(line(
+                    cell,
+                    110.0 + 100.0 * c as f32,
+                    655.0 - 20.0 * r as f32,
+                    10.0,
+                ));
             }
         }
-        lines.push(wide("Text after the table runs the full width of the page too.", 72.0, 560.0, 468.0, 10.0));
+        lines.push(wide(
+            "Text after the table runs the full width of the page too.",
+            72.0,
+            560.0,
+            468.0,
+            10.0,
+        ));
         let mut p = page(lines);
         for k in 0..4 {
-            p.rules.push(PdfRule { x: 100.0, y: 670.0 - 20.0 * k as f32, width: 300.0, height: 0.5 });
-            p.rules.push(PdfRule { x: 100.0 + 100.0 * k as f32, y: 610.0, width: 0.5, height: 60.0 });
+            p.rules.push(PdfRule {
+                x: 100.0,
+                y: 670.0 - 20.0 * k as f32,
+                width: 300.0,
+                height: 0.5,
+            });
+            p.rules.push(PdfRule {
+                x: 100.0 + 100.0 * k as f32,
+                y: 610.0,
+                width: 0.5,
+                height: 60.0,
+            });
         }
         let doc = document(&[p]);
         assert_eq!(doc.blocks.len(), 3, "{:?}", texts(&doc));
@@ -2355,9 +2619,17 @@ mod tests {
         };
         let cells: Vec<Vec<String>> = rows
             .iter()
-            .map(|r| r.cells.iter().map(|c| eddy_model::runs_plain_text(&c.runs)).collect())
+            .map(|r| {
+                r.cells
+                    .iter()
+                    .map(|c| eddy_model::runs_plain_text(&c.runs))
+                    .collect()
+            })
             .collect();
-        assert_eq!(cells, [["Stage", "T", "N"], ["I", "1", "0"], ["II", "2", "1"]]);
+        assert_eq!(
+            cells,
+            [["Stage", "T", "N"], ["I", "1", "0"], ["II", "2", "1"]]
+        );
         assert!(texts(&doc)[2].starts_with("Text after"));
     }
 
@@ -2365,7 +2637,13 @@ mod tests {
     fn a_wide_caption_splits_columns_into_bands() {
         let mut lines = column(72.0, 220.0, 700.0, 8, "topleft");
         lines.extend(column(320.0, 220.0, 700.0, 8, "topright"));
-        lines.push(wide("Figure 1: something wide across the page.", 72.0, 580.0, 468.0, 10.0));
+        lines.push(wide(
+            "Figure 1: something wide across the page.",
+            72.0,
+            580.0,
+            468.0,
+            10.0,
+        ));
         lines.extend(column(72.0, 220.0, 560.0, 8, "botleft"));
         lines.extend(column(320.0, 220.0, 560.0, 8, "botright"));
         let doc = document(&[page(lines)]);
@@ -2376,24 +2654,43 @@ mod tests {
         assert!(pos("topright line 7") < pos("Figure 1"));
         assert!(pos("Figure 1") < pos("botleft line 0"));
         assert!(pos("botleft line 7") < pos("botright line 0"));
-        assert!(t.iter().any(|p| p.starts_with("Figure 1")), "caption is its own block: {t:?}");
+        assert!(
+            t.iter().any(|p| p.starts_with("Figure 1")),
+            "caption is its own block: {t:?}"
+        );
     }
 
     #[test]
     fn footnotes_under_a_column_read_after_the_page() {
         let mut lines = column(72.0, 220.0, 700.0, 20, "left");
         lines.extend(column(320.0, 220.0, 700.0, 20, "right"));
-        lines.push(wide("1 A footnote in small type under the left column.", 72.0, 80.0, 200.0, 8.0));
+        lines.push(wide(
+            "1 A footnote in small type under the left column.",
+            72.0,
+            80.0,
+            200.0,
+            8.0,
+        ));
         let doc = document(&[page(lines)]);
         let t = texts(&doc);
         assert_eq!(t.len(), 2, "{t:?}");
-        assert!(t[0].contains("left line 19 of the column text right line 0"), "{}", t[0]);
+        assert!(
+            t[0].contains("left line 19 of the column text right line 0"),
+            "{}",
+            t[0]
+        );
         assert!(t[1].starts_with("1 A footnote"));
     }
 
     #[test]
     fn single_column_text_is_not_split_by_an_indent() {
-        let mut lines = vec![wide("First paragraph starts here.", 92.0, 700.0, 440.0, 10.0)];
+        let mut lines = vec![wide(
+            "First paragraph starts here.",
+            92.0,
+            700.0,
+            440.0,
+            10.0,
+        )];
         lines.extend(column(72.0, 468.0, 688.0, 10, "body"));
         let doc = document(&[page(lines)]);
         let t = texts(&doc);
@@ -2405,17 +2702,42 @@ mod tests {
     fn headings_rank_by_size_and_bold_short_lines_count() {
         let lines = vec![
             bold(line("Big", 72.0, 740.0, 18.0)),
-            line("Body text after the big heading runs on.", 72.0, 720.0, 10.0),
+            line(
+                "Body text after the big heading runs on.",
+                72.0,
+                720.0,
+                10.0,
+            ),
             bold(line("Medium", 72.0, 700.0, 14.0)),
-            line("More body text after the medium heading.", 72.0, 680.0, 10.0),
+            line(
+                "More body text after the medium heading.",
+                72.0,
+                680.0,
+                10.0,
+            ),
             bold(line("Bold at body size", 72.0, 660.0, 10.0)),
             line("Body again.", 72.0, 640.0, 10.0),
             bold(wide(
                 "A bold paragraph that is far too long to be a heading because it runs on and on and on and on and keeps going past the limit set.",
-                72.0, 620.0, 468.0, 10.0,
+                72.0,
+                620.0,
+                468.0,
+                10.0,
             )),
-            bold(wide("and continues on a second bold line of the same size and weight here", 72.0, 608.0, 468.0, 10.0)),
-            bold(wide("and a third bold line to make it clearly a paragraph not a heading", 72.0, 596.0, 468.0, 10.0)),
+            bold(wide(
+                "and continues on a second bold line of the same size and weight here",
+                72.0,
+                608.0,
+                468.0,
+                10.0,
+            )),
+            bold(wide(
+                "and a third bold line to make it clearly a paragraph not a heading",
+                72.0,
+                596.0,
+                468.0,
+                10.0,
+            )),
         ];
         // Pad with body text so 10 pt is the body size.
         let mut all = lines;
@@ -2442,10 +2764,22 @@ mod tests {
     #[test]
     fn a_bold_term_ending_a_paragraph_is_not_a_heading() {
         let mut lines = vec![
-            wide("The variable that holds the last read line is called", 72.0, 700.0, 468.0, 10.0),
+            wide(
+                "The variable that holds the last read line is called",
+                72.0,
+                700.0,
+                468.0,
+                10.0,
+            ),
             bold(line("REPLY.", 72.0, 688.0, 10.0)),
             bold(line("4.2.2. New and Modified Builtins", 72.0, 668.0, 10.0)),
-            wide("Several builtins were added to the shell in this release.", 72.0, 652.0, 468.0, 10.0),
+            wide(
+                "Several builtins were added to the shell in this release.",
+                72.0,
+                652.0,
+                468.0,
+                10.0,
+            ),
         ];
         lines.extend(column(72.0, 468.0, 600.0, 10, "pad"));
         let doc = document(&[page(lines)]);
@@ -2459,16 +2793,38 @@ mod tests {
     fn a_run_in_bold_lead_stays_with_its_paragraph() {
         let mut lines = vec![
             line("Here we describe the evaluations:", 72.0, 700.0, 10.0),
-            bold(wide("Responsible Scaling Policy evaluations. The model advances the frontier and", 72.0, 680.0, 468.0, 10.0)),
-            wide("is the most capable one we have trained, so we tested its risk level.", 72.0, 668.0, 468.0, 10.0),
+            bold(wide(
+                "Responsible Scaling Policy evaluations. The model advances the frontier and",
+                72.0,
+                680.0,
+                468.0,
+                10.0,
+            )),
+            wide(
+                "is the most capable one we have trained, so we tested its risk level.",
+                72.0,
+                668.0,
+                468.0,
+                10.0,
+            ),
             bold(line("Cyber", 72.0, 648.0, 10.0)),
-            wide("A real heading above stands apart from this text by a gap.", 72.0, 630.0, 468.0, 10.0),
+            wide(
+                "A real heading above stands apart from this text by a gap.",
+                72.0,
+                630.0,
+                468.0,
+                10.0,
+            ),
             bold(line("12", 72.0, 610.0, 10.0)),
         ];
         lines.extend(column(72.0, 468.0, 590.0, 10, "pad"));
         let doc = document(&[page(lines)]);
         let t = texts(&doc);
-        assert!(t[1].starts_with("Responsible Scaling") && t[1].ends_with("risk level."), "{}", t[1]);
+        assert!(
+            t[1].starts_with("Responsible Scaling") && t[1].ends_with("risk level."),
+            "{}",
+            t[1]
+        );
         assert!(matches!(doc.blocks[1].kind, BlockKind::Paragraph { .. }));
         assert_eq!(t[2], "Cyber");
         assert!(matches!(doc.blocks[2].kind, BlockKind::Heading { .. }));
@@ -2479,15 +2835,63 @@ mod tests {
     #[test]
     fn paragraphs_break_on_gaps_indents_and_short_lines_and_join_hyphens() {
         let lines = vec![
-            wide("Importance sampling draws more samples where the inte-", 72.0, 700.0, 468.0, 10.0),
-            wide("grand is large and so reduces the variance of Monte", 72.0, 688.0, 468.0, 10.0),
+            wide(
+                "Importance sampling draws more samples where the inte-",
+                72.0,
+                700.0,
+                468.0,
+                10.0,
+            ),
+            wide(
+                "grand is large and so reduces the variance of Monte",
+                72.0,
+                688.0,
+                468.0,
+                10.0,
+            ),
             line("Carlo estimates.", 72.0, 676.0, 10.0),
-            wide("A new paragraph after a short line fills the width out", 72.0, 664.0, 468.0, 10.0),
-            wide("and then there is a vertical gap before the next one.", 72.0, 652.0, 468.0, 10.0),
-            wide("After the gap the text continues at full width again", 72.0, 630.0, 468.0, 10.0),
-            wide("and the following line is indented like a first line.", 72.0, 618.0, 468.0, 10.0),
-            wide("Indented first line of the last paragraph on the page", 92.0, 606.0, 448.0, 10.0),
-            wide("which continues at the margin in the normal fashion.", 72.0, 594.0, 468.0, 10.0),
+            wide(
+                "A new paragraph after a short line fills the width out",
+                72.0,
+                664.0,
+                468.0,
+                10.0,
+            ),
+            wide(
+                "and then there is a vertical gap before the next one.",
+                72.0,
+                652.0,
+                468.0,
+                10.0,
+            ),
+            wide(
+                "After the gap the text continues at full width again",
+                72.0,
+                630.0,
+                468.0,
+                10.0,
+            ),
+            wide(
+                "and the following line is indented like a first line.",
+                72.0,
+                618.0,
+                468.0,
+                10.0,
+            ),
+            wide(
+                "Indented first line of the last paragraph on the page",
+                92.0,
+                606.0,
+                448.0,
+                10.0,
+            ),
+            wide(
+                "which continues at the margin in the normal fashion.",
+                72.0,
+                594.0,
+                468.0,
+                10.0,
+            ),
         ];
         let doc = document(&[page(lines)]);
         let t = texts(&doc);
@@ -2505,28 +2909,82 @@ mod tests {
     #[test]
     fn hanging_indents_start_entries_at_the_outdented_line() {
         let lines = vec![
-            wide("Ada Lovelace. Notes on the analytical engine. In Scientific", 72.0, 700.0, 468.0, 10.0),
-            wide("Memoirs, volume 3, pages 666-731, 1843.", 90.0, 688.0, 250.0, 10.0),
-            wide("Charles Babbage. On the mathematical powers of the calculating", 72.0, 676.0, 468.0, 10.0),
-            wide("engine. Unpublished manuscript, 1837. Reprinted in the", 90.0, 664.0, 450.0, 10.0),
+            wide(
+                "Ada Lovelace. Notes on the analytical engine. In Scientific",
+                72.0,
+                700.0,
+                468.0,
+                10.0,
+            ),
+            wide(
+                "Memoirs, volume 3, pages 666-731, 1843.",
+                90.0,
+                688.0,
+                250.0,
+                10.0,
+            ),
+            wide(
+                "Charles Babbage. On the mathematical powers of the calculating",
+                72.0,
+                676.0,
+                468.0,
+                10.0,
+            ),
+            wide(
+                "engine. Unpublished manuscript, 1837. Reprinted in the",
+                90.0,
+                664.0,
+                450.0,
+                10.0,
+            ),
             wide("collected works, volume 2.", 90.0, 652.0, 120.0, 10.0),
-            wide("Grace Hopper. The education of a computer. In Proceedings", 72.0, 640.0, 468.0, 10.0),
-            wide("of the ACM National Meeting, pages 243-249, 1952.", 90.0, 628.0, 300.0, 10.0),
+            wide(
+                "Grace Hopper. The education of a computer. In Proceedings",
+                72.0,
+                640.0,
+                468.0,
+                10.0,
+            ),
+            wide(
+                "of the ACM National Meeting, pages 243-249, 1952.",
+                90.0,
+                628.0,
+                300.0,
+                10.0,
+            ),
         ];
         let doc = document(&[page(lines)]);
         let t = texts(&doc);
         assert_eq!(t.len(), 3, "{t:?}");
-        assert!(t[0].starts_with("Ada Lovelace") && t[0].ends_with("1843."), "{}", t[0]);
-        assert!(t[1].starts_with("Charles Babbage") && t[1].ends_with("volume 2."), "{}", t[1]);
+        assert!(
+            t[0].starts_with("Ada Lovelace") && t[0].ends_with("1843."),
+            "{}",
+            t[0]
+        );
+        assert!(
+            t[1].starts_with("Charles Babbage") && t[1].ends_with("volume 2."),
+            "{}",
+            t[1]
+        );
         assert!(t[2].starts_with("Grace Hopper"), "{}", t[2]);
     }
 
     #[test]
     fn cjk_lines_join_without_spaces_and_paragraphs_cross_pages() {
-        let first = page(vec![
-            wide("第二页的内容比较长一些，这一行写满了整个版面的宽度所以", 72.0, 100.0, 468.0, 10.0),
-        ]);
-        let second = page(vec![wide("继续到下一页，然后结束。", 72.0, 700.0, 468.0, 10.0)]);
+        let first = page(vec![wide(
+            "第二页的内容比较长一些，这一行写满了整个版面的宽度所以",
+            72.0,
+            100.0,
+            468.0,
+            10.0,
+        )]);
+        let second = page(vec![wide(
+            "继续到下一页，然后结束。",
+            72.0,
+            700.0,
+            468.0,
+            10.0,
+        )]);
         let doc = document(&[first, second]);
         assert_eq!(
             texts(&doc),
@@ -2570,13 +3028,22 @@ mod tests {
         let doc = document(&[p]);
         let t = texts(&doc);
         assert_eq!(t[0], "Text before the figure ends here.");
-        assert!(matches!(doc.blocks[1].kind, BlockKind::Image { .. }), "{t:?}");
+        assert!(
+            matches!(doc.blocks[1].kind, BlockKind::Image { .. }),
+            "{t:?}"
+        );
         assert_eq!(
             images(&doc),
-            [("pdf://key/0/5".to_string(), "Figure 1: Sampling error by method.".to_string())]
+            [(
+                "pdf://key/0/5".to_string(),
+                "Figure 1: Sampling error by method.".to_string()
+            )]
         );
         assert_eq!(t[2], "Text after the figure starts here.");
-        assert!(!t.iter().any(|s| s.contains("16 GB")), "labels on the figure go: {t:?}");
+        assert!(
+            !t.iter().any(|s| s.contains("16 GB")),
+            "labels on the figure go: {t:?}"
+        );
     }
 
     #[test]
@@ -2615,7 +3082,10 @@ mod tests {
             t[0].contains("left line 19 of the column text right line 0"),
             "the paragraph runs on past the figure: {t:?}"
         );
-        assert!(matches!(doc.blocks[1].kind, BlockKind::Image { .. }), "{t:?}");
+        assert!(
+            matches!(doc.blocks[1].kind, BlockKind::Image { .. }),
+            "{t:?}"
+        );
     }
 
     #[test]
@@ -2627,7 +3097,8 @@ mod tests {
                     line("Measured", 100.0, 560.0, 9.0),
                     line("Renderer", 300.0, 560.0, 9.0),
                 ]);
-                p.lines.extend(column(72.0, 468.0, 400.0, 3, &format!("notes{n}")));
+                p.lines
+                    .extend(column(72.0, 468.0, 400.0, 3, &format!("notes{n}")));
                 // The template background, the same on every slide, and
                 // the slide's fill and border.
                 p.images.push(image(2, 60.0, 460.0, 480.0, 270.0, 7));
@@ -2638,11 +3109,18 @@ mod tests {
             .collect();
         let doc = document(&pages);
         let t = texts(&doc);
-        assert!(!t.iter().any(|s| s.contains("Slide") || s.contains("Measured")), "{t:?}");
+        assert!(
+            !t.iter()
+                .any(|s| s.contains("Slide") || s.contains("Measured")),
+            "{t:?}"
+        );
         assert!(t.iter().any(|s| s.starts_with("notes2 line 0")), "{t:?}");
         let figures = images(&doc);
         assert_eq!(figures.len(), 4, "{figures:?}");
-        assert_eq!(figures[1].0, "pdf://key/1/9", "the border, which holds the whole slide");
+        assert_eq!(
+            figures[1].0, "pdf://key/1/9",
+            "the border, which holds the whole slide"
+        );
         let slides: Vec<&str> = doc
             .blocks
             .iter()
@@ -2658,7 +3136,9 @@ mod tests {
             .map(|n| page(column(72.0, 468.0, 700.0, 5, &format!("p{n}"))))
             .collect();
         pages[1].frames.push(image(3, 60.0, 300.0, 480.0, 270.0, 0));
-        pages[1].lines.push(line("Inside a box", 100.0, 400.0, 10.0));
+        pages[1]
+            .lines
+            .push(line("Inside a box", 100.0, 400.0, 10.0));
         let doc = document(&pages);
         assert!(images(&doc).is_empty());
         assert!(texts(&doc).iter().any(|s| s.contains("Inside a box")));
@@ -2676,14 +3156,23 @@ mod tests {
         let heading = t.iter().position(|s| s == "Second Part").unwrap();
         assert_eq!(doc.pages.len(), 3);
         assert_eq!(doc.pages[0], doc.blocks[0].id);
-        assert_eq!(doc.pages[1], doc.blocks[heading].id, "an empty page goes to the next");
+        assert_eq!(
+            doc.pages[1], doc.blocks[heading].id,
+            "an empty page goes to the next"
+        );
         assert_eq!(doc.pages[2], doc.blocks[heading].id);
     }
 
     #[test]
     fn page_starts_survive_paragraphs_split_around_formulas_and_stray_punctuation() {
         let first = vec![
-            wide("Energy is $$E = mc^2$$ which relates mass and energy here.", 72.0, 700.0, 468.0, 10.0),
+            wide(
+                "Energy is $$E = mc^2$$ which relates mass and energy here.",
+                72.0,
+                700.0,
+                468.0,
+                10.0,
+            ),
             line("-", 72.0, 660.0, 10.0),
             line(")", 72.0, 640.0, 10.0),
             line("Short end.", 72.0, 620.0, 10.0),
@@ -2691,14 +3180,33 @@ mod tests {
         let second = column(72.0, 468.0, 700.0, 3, "second");
         let doc = document(&[page(first), page(second)]);
         let t = texts(&doc);
-        assert!(doc.blocks.iter().any(|b| matches!(b.kind, BlockKind::Math { .. })), "{t:?}");
-        let second = t.iter().position(|s| s.starts_with("second line 0")).unwrap();
-        assert_eq!(doc.pages, [doc.blocks[0].id.clone(), doc.blocks[second].id.clone()]);
+        assert!(
+            doc.blocks
+                .iter()
+                .any(|b| matches!(b.kind, BlockKind::Math { .. })),
+            "{t:?}"
+        );
+        let second = t
+            .iter()
+            .position(|s| s.starts_with("second line 0"))
+            .unwrap();
+        assert_eq!(
+            doc.pages,
+            [doc.blocks[0].id.clone(), doc.blocks[second].id.clone()]
+        );
     }
 
     #[test]
     fn caption_shapes() {
-        for s in ["Figure 3: x", "Fig. 3", "FIGURE 2.", "Figure A1", "[Figure 2.2.4.1.A] Evals", "图 3 示意", "图3"] {
+        for s in [
+            "Figure 3: x",
+            "Fig. 3",
+            "FIGURE 2.",
+            "Figure A1",
+            "[Figure 2.2.4.1.A] Evals",
+            "图 3 示意",
+            "图3",
+        ] {
             assert!(is_caption(s), "{s}");
         }
         for s in ["Figures show", "Figure out how", "Fig tree", "图书馆"] {

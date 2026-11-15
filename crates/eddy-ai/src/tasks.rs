@@ -101,7 +101,9 @@ pub fn validate_translations(
     let text = cleaned.as_str();
     let found = markers(text);
     if found.is_empty() {
-        return Err(AiError::Format("模型未按段落标记返回译文，请重试或更换模型。".into()));
+        return Err(AiError::Format(
+            "模型未按段落标记返回译文，请重试或更换模型。".into(),
+        ));
     }
     if found.len() != segments.len() {
         return Err(AiError::Format("模型返回的段落数量不匹配，请重试。".into()));

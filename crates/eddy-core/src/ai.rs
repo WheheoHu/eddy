@@ -666,14 +666,10 @@ impl Inner {
             });
         }
         self.record_role_usage(AiRole::Summary, 1)?;
-        let summary = eddy_ai::summarize(
-            provider.as_ref(),
-            &title,
-            &doc.document.plain_text(),
-            &lang,
-        )
-        .await
-        .map_err(|e| EngineError::Invalid(e.to_string()))?;
+        let summary =
+            eddy_ai::summarize(provider.as_ref(), &title, &doc.document.plain_text(), &lang)
+                .await
+                .map_err(|e| EngineError::Invalid(e.to_string()))?;
         self.store.put_ai_artifact(
             &key,
             item_id,
@@ -1192,8 +1188,9 @@ impl Engine {
                 .filter(|k| !k.trim().is_empty())
                 .ok_or_else(|| EngineError::Invalid("还没有填写翻译 API Key。".into()))?,
         };
-        let service = ChatProvider::new(provider.protocol, &provider.base_url, &provider.model, &key)
-            .map_err(|e| EngineError::Invalid(e.to_string()))?;
+        let service =
+            ChatProvider::new(provider.protocol, &provider.base_url, &provider.model, &key)
+                .map_err(|e| EngineError::Invalid(e.to_string()))?;
         let total = provider.concurrency();
         let target = if target_language.trim().is_empty() {
             "English"
@@ -1245,8 +1242,9 @@ impl Engine {
                 .filter(|k| !k.trim().is_empty())
                 .ok_or_else(|| EngineError::Invalid("还没有填写摘要 API Key。".into()))?,
         };
-        let service = ChatProvider::new(provider.protocol, &provider.base_url, &provider.model, &key)
-            .map_err(|e| EngineError::Invalid(e.to_string()))?;
+        let service =
+            ChatProvider::new(provider.protocol, &provider.base_url, &provider.model, &key)
+                .map_err(|e| EngineError::Invalid(e.to_string()))?;
         let total = provider.concurrency();
         let lang = if summary_language.trim().is_empty() {
             "English"

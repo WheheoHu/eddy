@@ -233,13 +233,21 @@ impl Engine {
         // Exclude Collection Media and Gallery / media RSS items.
         if row.item.kind == ItemKind::Saved
             && row.item.series_id.is_none()
-            && row.item.url.as_deref().is_some_and(eddy_media::is_media_url)
+            && row
+                .item
+                .url
+                .as_deref()
+                .is_some_and(eddy_media::is_media_url)
         {
             return Ok(ExportOptions::ineligible(row.item.title));
         }
         if row.item.kind == ItemKind::Feed
             && (self.in_gallery(&row)?
-                || row.item.url.as_deref().is_some_and(eddy_media::is_media_url))
+                || row
+                    .item
+                    .url
+                    .as_deref()
+                    .is_some_and(eddy_media::is_media_url))
         {
             return Ok(ExportOptions::ineligible(row.item.title));
         }
@@ -359,7 +367,9 @@ impl Engine {
             return Ok(());
         }
 
-        let bundle = self.prepare_export_bundle(request, &options, &on_progress).await?;
+        let bundle = self
+            .prepare_export_bundle(request, &options, &on_progress)
+            .await?;
         self.inner.check_export_cancelled(&request.job_id)?;
 
         // Resolve and embed all referenced images (plus cover if any).
@@ -447,7 +457,9 @@ impl Engine {
     ) -> Result<PdfExportOutcome> {
         let job_id = request.job_id.clone();
         self.inner.export_cancels.lock().remove(&job_id);
-        let result = self.export_or_prepare_pdf_inner(&request, on_progress).await;
+        let result = self
+            .export_or_prepare_pdf_inner(&request, on_progress)
+            .await;
         self.inner.clear_export_job(&job_id);
         result
     }
@@ -487,7 +499,9 @@ impl Engine {
             return Ok(PdfExportOutcome::CopiedOriginal);
         }
 
-        let bundle = self.prepare_export_bundle(request, &options, &on_progress).await?;
+        let bundle = self
+            .prepare_export_bundle(request, &options, &on_progress)
+            .await?;
         self.inner.check_export_cancelled(&request.job_id)?;
 
         // Pre-warm images into the blob cache while the cancellable progress sheet is active.
@@ -523,7 +537,7 @@ impl Engine {
         }))
     }
 
-    async fn raw_series_epub_path(&self, series_id: &str) -> Result<Option< std::path::PathBuf>> {
+    async fn raw_series_epub_path(&self, series_id: &str) -> Result<Option<std::path::PathBuf>> {
         let chapters = self.inner.chapters(series_id)?;
         let Some(first) = chapters.first() else {
             return Ok(None);
@@ -590,8 +604,7 @@ impl Engine {
             inner.check_export_cancelled(&request.job_id)?;
             let item_id = row.item.id.clone();
 
-            if row.item.kind == ItemKind::Feed
-                && inner.full_text_on_open(&item_id).unwrap_or(false)
+            if row.item.kind == ItemKind::Feed && inner.full_text_on_open(&item_id).unwrap_or(false)
             {
                 report("Fetching full article…", idx as u32, total_chapters);
                 if let Err(e) = inner.fetch_full_text(&item_id, true).await {

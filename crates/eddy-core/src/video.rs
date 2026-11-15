@@ -415,7 +415,9 @@ impl Inner {
             });
 
             let source = rec.source.clone();
-            let outcome = run_video_pipeline(&source, &job_dir, &cfg, cancel.clone(), Some(progress_cb)).await;
+            let outcome =
+                run_video_pipeline(&source, &job_dir, &cfg, cancel.clone(), Some(progress_cb))
+                    .await;
 
             inner.video_cancels.lock().remove(&job_id);
 
@@ -424,35 +426,38 @@ impl Inner {
             };
 
             match outcome {
-                Ok(generated) => match inner.import_epub_bytes(&generated.epub_bytes, &generated.title) {
-                    Ok(imported) => {
-                        final_rec.title = imported.title;
-                        final_rec.phase = PipelinePhase::Completed.as_str().into();
-                        final_rec.status = "succeeded".into();
-                        final_rec.detail = format!("Imported {} chapters", generated.chapters_count);
-                        final_rec.error = None;
-                        final_rec.result_series_id = imported.series_id;
-                        final_rec.result_item_id = Some(imported.item_id);
-                        final_rec.updated_at = now_ms();
-                        let _ = inner.store.upsert_video_job(&final_rec);
+                Ok(generated) => {
+                    match inner.import_epub_bytes(&generated.epub_bytes, &generated.title) {
+                        Ok(imported) => {
+                            final_rec.title = imported.title;
+                            final_rec.phase = PipelinePhase::Completed.as_str().into();
+                            final_rec.status = "succeeded".into();
+                            final_rec.detail =
+                                format!("Imported {} chapters", generated.chapters_count);
+                            final_rec.error = None;
+                            final_rec.result_series_id = imported.series_id;
+                            final_rec.result_item_id = Some(imported.item_id);
+                            final_rec.updated_at = now_ms();
+                            let _ = inner.store.upsert_video_job(&final_rec);
 
-                        let _ = std::fs::remove_dir_all(&job_dir);
+                            let _ = std::fs::remove_dir_all(&job_dir);
 
-                        // In client mode connected to eddy-server, push the imported book ops + blob immediately.
-                        if !inner.options.server_role && inner.hub_client().is_some() {
-                            let eng = engine.clone();
-                            tokio::spawn(async move {
-                                let _ = eng.refresh().await;
-                            });
+                            // In client mode connected to eddy-server, push the imported book ops + blob immediately.
+                            if !inner.options.server_role && inner.hub_client().is_some() {
+                                let eng = engine.clone();
+                                tokio::spawn(async move {
+                                    let _ = eng.refresh().await;
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            final_rec.status = "failed".into();
+                            final_rec.error = Some(redact_text(&e.to_string(), &cfg.all_secrets()));
+                            final_rec.updated_at = now_ms();
+                            let _ = inner.store.upsert_video_job(&final_rec);
                         }
                     }
-                    Err(e) => {
-                        final_rec.status = "failed".into();
-                        final_rec.error = Some(redact_text(&e.to_string(), &cfg.all_secrets()));
-                        final_rec.updated_at = now_ms();
-                        let _ = inner.store.upsert_video_job(&final_rec);
-                    }
-                },
+                }
                 Err(VideoError::Canceled) => {
                     final_rec.status = "canceled".into();
                     final_rec.detail = "Canceled".into();
@@ -461,9 +466,10 @@ impl Inner {
                 }
                 Err(err) => {
                     let safe = redact_text(&err.to_string(), &cfg.all_secrets());
-                    inner
-                        .platform
-                        .log(LogLevel::Warn, &format!("video job {job_id} failed: {safe}"));
+                    inner.platform.log(
+                        LogLevel::Warn,
+                        &format!("video job {job_id} failed: {safe}"),
+                    );
                     final_rec.status = "failed".into();
                     final_rec.error = Some(safe);
                     final_rec.updated_at = now_ms();
@@ -557,7 +563,11 @@ impl Engine {
             .or_else(|| self.inner.platform.secret_get(role.secret_key()))
             .or_else(|| {
                 (role == VideoStageRole::Vlm || role == VideoStageRole::Stage1)
-                    .then(|| self.inner.platform.secret_get(VideoStageRole::Stage2.secret_key()))
+                    .then(|| {
+                        self.inner
+                            .platform
+                            .secret_get(VideoStageRole::Stage2.secret_key())
+                    })
                     .flatten()
             })
             .or_else(|| {
@@ -610,7 +620,9 @@ impl Engine {
     pub async fn start_video_job(&self, opts: StartVideoJobOptions) -> Result<VideoJobInfo> {
         let source = opts.source.trim().to_string();
         if source.is_empty() {
-            return Err(EngineError::Invalid("Enter a video URL or select a local video file.".into()));
+            return Err(EngineError::Invalid(
+                "Enter a video URL or select a local video file.".into(),
+            ));
         }
 
         if opts.target == VideoJobTarget::Server {

@@ -202,9 +202,9 @@ impl From<core::PdfExportOutcome> for PdfExportOutcomeView {
     fn from(o: core::PdfExportOutcome) -> Self {
         match o {
             core::PdfExportOutcome::CopiedOriginal => PdfExportOutcomeView::CopiedOriginal,
-            core::PdfExportOutcome::Prepared(p) => PdfExportOutcomeView::Prepared {
-                payload: p.into(),
-            },
+            core::PdfExportOutcome::Prepared(p) => {
+                PdfExportOutcomeView::Prepared { payload: p.into() }
+            }
         }
     }
 }

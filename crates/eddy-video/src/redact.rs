@@ -8,9 +8,13 @@ static HEADER_KEY_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)((?:x-goog-api-key|x-api-key|api[-_]?key|access[-_]?token|secret|signature|ossaccesskeyid)\s*[:=]\s*['"]?)([^\s"',;&]+)"#).unwrap()
 });
 static URL_QUERY_SECRET_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)([?&](?:key|api_key|token|signature|access_token|ossaccesskeyid)=)([^&#\s"']+)"#).unwrap()
+    Regex::new(
+        r#"(?i)([?&](?:key|api_key|token|signature|access_token|ossaccesskeyid)=)([^&#\s"']+)"#,
+    )
+    .unwrap()
 });
-static AIZA_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bAIza[0-9A-Za-z_-]{20,}\b").unwrap());
+static AIZA_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bAIza[0-9A-Za-z_-]{20,}\b").unwrap());
 
 /// Redacts credentials, bearer tokens, API keys and signed query parameters
 /// using `[已隐藏]`, matching Eddy workspace security conventions.

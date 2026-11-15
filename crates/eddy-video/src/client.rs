@@ -18,8 +18,7 @@ static JSON_FENCE_RE: LazyLock<Regex> =
 static MISSING_TYPE_KEY_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"\{\s*"(paragraph|subheading|bullet_list|numbered_list|quote|code|math|table|figure|figure_timestamp)"\s*,"#).unwrap()
 });
-static TRAILING_COMMA_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r",(\s*[}\]])").unwrap());
+static TRAILING_COMMA_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r",(\s*[}\]])").unwrap());
 
 #[derive(Clone, Debug)]
 pub enum UserPart {
@@ -67,13 +66,14 @@ pub(crate) fn format_network_error(err: &reqwest::Error, secrets: &[&str]) -> St
         cur = src.source();
     }
     let joined = chain.join(": ");
-    let labeled = if err.is_timeout() && !joined.to_ascii_lowercase().starts_with("request timed out") {
-        format!("Request timed out: {joined}")
-    } else if err.is_decode() && !err.is_timeout() {
-        format!("Connection closed before full response body arrived: {joined}")
-    } else {
-        joined
-    };
+    let labeled =
+        if err.is_timeout() && !joined.to_ascii_lowercase().starts_with("request timed out") {
+            format!("Request timed out: {joined}")
+        } else if err.is_decode() && !err.is_timeout() {
+            format!("Connection closed before full response body arrived: {joined}")
+        } else {
+            joined
+        };
     redact_text(&labeled, secrets)
 }
 
@@ -121,8 +121,9 @@ pub fn gemini_headers(endpoint: &StageEndpoint) -> Result<HeaderMap, VideoError>
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     headers.insert(
         "x-goog-api-key",
-        HeaderValue::from_str(key)
-            .map_err(|_| VideoError::Config("API key contains invalid header characters.".into()))?,
+        HeaderValue::from_str(key).map_err(|_| {
+            VideoError::Config("API key contains invalid header characters.".into())
+        })?,
     );
     if !endpoint.is_official_google_host() {
         let bearer = format!("Bearer {key}");
@@ -153,7 +154,15 @@ pub async fn call_stage_model(
     }
     match endpoint.resolved_protocol() {
         ResolvedProtocol::OpenAi => {
-            call_openai_chat(http, endpoint, system_prompt, parts, temperature, max_tokens).await
+            call_openai_chat(
+                http,
+                endpoint,
+                system_prompt,
+                parts,
+                temperature,
+                max_tokens,
+            )
+            .await
         }
         ResolvedProtocol::Gemini => {
             call_gemini_generate_content(
@@ -229,12 +238,7 @@ async fn call_openai_chat(
     let t0 = Instant::now();
     let mut attempt = 0usize;
     let text = loop {
-        let send_res = http
-            .post(&url)
-            .bearer_auth(key)
-            .json(&body)
-            .send()
-            .await;
+        let send_res = http.post(&url).bearer_auth(key).json(&body).send().await;
 
         let resp = match send_res {
             Ok(r) => r,
@@ -344,7 +348,11 @@ where
             }
             continue;
         }
-        if line.starts_with(':') || line.starts_with("event:") || line.starts_with("id:") || line.starts_with("retry:") {
+        if line.starts_with(':')
+            || line.starts_with("event:")
+            || line.starts_with("id:")
+            || line.starts_with("retry:")
+        {
             continue;
         }
         if let Some(rest) = line.strip_prefix("data:") {
@@ -459,7 +467,9 @@ fn extract_openai_message_text(parsed: &Value) -> Result<String, VideoError> {
             return Ok(joined.trim().to_string());
         }
     }
-    Err(VideoError::Format("Model returned empty message content.".into()))
+    Err(VideoError::Format(
+        "Model returned empty message content.".into(),
+    ))
 }
 
 pub async fn call_gemini_generate_content(
@@ -654,7 +664,11 @@ pub async fn call_gemini_generate_content_with_retries(
     })
 }
 
-fn append_gemini_candidate_parts(val: &Value, answer_buf: &mut String, thought_buf: &mut String) -> bool {
+fn append_gemini_candidate_parts(
+    val: &Value,
+    answer_buf: &mut String,
+    thought_buf: &mut String,
+) -> bool {
     let Some(cands) = val["candidates"].as_array() else {
         return false;
     };

@@ -87,7 +87,9 @@ pub async fn probe_asr_endpoint(
                     mime: "audio/wav".into(),
                     bytes: wav,
                 },
-                UserPart::Text("Transcribe any speech in this audio clip, or reply OK if silent.".into()),
+                UserPart::Text(
+                    "Transcribe any speech in this audio clip, or reply OK if silent.".into(),
+                ),
             ],
             0.0,
             128,
@@ -100,29 +102,17 @@ pub async fn probe_asr_endpoint(
     let model_lower = endpoint.model.to_ascii_lowercase();
     if model_lower.contains("whisper")
         || model_lower.contains("transcribe")
-        || endpoint.url.trim_end_matches('/').ends_with("/audio/transcriptions")
+        || endpoint
+            .url
+            .trim_end_matches('/')
+            .ends_with("/audio/transcriptions")
     {
-        let _ = call_openai_audio_transcriptions(
-            http,
-            endpoint,
-            "probe.wav",
-            "audio/wav",
-            wav,
-            0,
-            450,
-        )
-        .await?;
+        let _ =
+            call_openai_audio_transcriptions(http, endpoint, "probe.wav", "audio/wav", wav, 0, 450)
+                .await?;
     } else {
-        let _ = call_openai_chat_input_audio(
-            http,
-            endpoint,
-            &wav,
-            "audio/wav",
-            "wav",
-            0,
-            450,
-        )
-        .await?;
+        let _ =
+            call_openai_chat_input_audio(http, endpoint, &wav, "audio/wav", "wav", 0, 450).await?;
     }
     Ok(t0.elapsed().as_millis() as u64)
 }
@@ -154,7 +144,8 @@ pub async fn transcribe_with_api(
 
     // ~110s target (max 165s, min 40s): well within Qwen3-ASR-Flash's 5-min / 10MB limit,
     // reducing an 80-minute lecture from ~150 calls down to ~42 calls.
-    let windows = plan_vad_windows_ms(ffmpeg, ffprobe, audio_path, 110_000, 165_000, 40_000).await?;
+    let windows =
+        plan_vad_windows_ms(ffmpeg, ffprobe, audio_path, 110_000, 165_000, 40_000).await?;
     let total_chunks = windows.len();
     let sliced = slice_audio_windows(ffmpeg, audio_path, &windows, &chunks_dir).await?;
 
@@ -185,7 +176,8 @@ pub async fn transcribe_with_api(
             }
 
             let _permit = sem.acquire_owned().await.unwrap();
-            let segs = transcribe_single_chunk(&http, &ep, &chunk_path, start_ms, end_ms, &hint).await?;
+            let segs =
+                transcribe_single_chunk(&http, &ep, &chunk_path, start_ms, end_ms, &hint).await?;
             let _ = std::fs::write(&cache_json, serde_json::to_vec(&segs).unwrap_or_default());
 
             let done = done_ref.fetch_add(1, Ordering::Relaxed) + 1;
@@ -264,7 +256,10 @@ async fn transcribe_single_chunk(
     let model_lower = endpoint.model.to_ascii_lowercase();
     if model_lower.contains("whisper")
         || model_lower.contains("transcribe")
-        || endpoint.url.trim_end_matches('/').ends_with("/audio/transcriptions")
+        || endpoint
+            .url
+            .trim_end_matches('/')
+            .ends_with("/audio/transcriptions")
     {
         let fname = chunk_path
             .file_name()
@@ -353,12 +348,7 @@ async fn call_openai_chat_input_audio(
 
     let mut attempt = 0usize;
     let (status, headers, ct, raw) = loop {
-        let send_res = http
-            .post(&url)
-            .bearer_auth(key)
-            .json(&payload)
-            .send()
-            .await;
+        let send_res = http.post(&url).bearer_auth(key).json(&payload).send().await;
 
         let resp = match send_res {
             Ok(r) => r,
@@ -618,8 +608,10 @@ async fn slice_audio_windows(
         let chunk_path = out_dir.join(format!("vad_{idx:04}_{start_ms:08}_{end_ms:08}.mp3"));
         if !chunk_path.is_file() {
             let start_s = format!("{:.3}", start_ms as f64 / 1000.0);
-            let dur_s =
-                format!("{:.3}", (end_ms.saturating_sub(start_ms)).max(200) as f64 / 1000.0);
+            let dur_s = format!(
+                "{:.3}",
+                (end_ms.saturating_sub(start_ms)).max(200) as f64 / 1000.0
+            );
             let out_str = chunk_path.to_string_lossy().into_owned();
             run_cmd(
                 ffmpeg,
@@ -683,8 +675,14 @@ pub fn interpolate_sentences(text: &str, start_ms: u64, end_ms: u64) -> Vec<Tran
         }];
     }
 
-    let total_chars: usize = sentences.iter().map(|s| s.chars().count()).sum::<usize>().max(1);
-    let span_ms = end_ms.saturating_sub(start_ms).max(sentences.len() as u64 * 100);
+    let total_chars: usize = sentences
+        .iter()
+        .map(|s| s.chars().count())
+        .sum::<usize>()
+        .max(1);
+    let span_ms = end_ms
+        .saturating_sub(start_ms)
+        .max(sentences.len() as u64 * 100);
     let mut cursor = start_ms;
     let mut out = Vec::with_capacity(sentences.len());
     let last_idx = sentences.len() - 1;
@@ -692,7 +690,8 @@ pub fn interpolate_sentences(text: &str, start_ms: u64, end_ms: u64) -> Vec<Tran
         let next_ms = if i == last_idx {
             end_ms.max(cursor + 100)
         } else {
-            let share = ((span_ms as f64) * (sent.chars().count() as f64 / total_chars as f64)).round() as u64;
+            let share = ((span_ms as f64) * (sent.chars().count() as f64 / total_chars as f64))
+                .round() as u64;
             (cursor + share.max(100)).min(end_ms)
         };
         out.push(TranscriptSegment {

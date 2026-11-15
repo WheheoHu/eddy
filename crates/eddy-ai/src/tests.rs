@@ -258,9 +258,8 @@ fn reply(content: serde_json::Value) -> ResponseTemplate {
 }
 
 fn reply_text(content: &str) -> ResponseTemplate {
-    ResponseTemplate::new(200).set_body_json(
-        serde_json::json!({"choices": [{"message": {"content": content}}]}),
-    )
+    ResponseTemplate::new(200)
+        .set_body_json(serde_json::json!({"choices": [{"message": {"content": content}}]}))
 }
 
 #[tokio::test]
@@ -269,7 +268,9 @@ async fn openai_compatible_provider_runs_all_tasks() {
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .and(header("authorization", "Bearer key-123"))
-        .and(body_string_contains("Translate each input segment into 简体中文"))
+        .and(body_string_contains(
+            "Translate each input segment into 简体中文",
+        ))
         .respond_with(reply_text("<<<s0>>>\n你好\n<<<s1>>>\n世界"))
         .mount(&server)
         .await;
@@ -395,10 +396,11 @@ fn legacy_ai_settings_migrate_to_independent_translation_and_summary_providers()
     });
     let migrated: AiSettings = serde_json::from_value(legacy).unwrap();
     assert_eq!(
-        migrated
-            .translation_provider
-            .as_ref()
-            .map(|p| (p.base_url.as_str(), p.model.as_str(), p.max_concurrency)),
+        migrated.translation_provider.as_ref().map(|p| (
+            p.base_url.as_str(),
+            p.model.as_str(),
+            p.max_concurrency
+        )),
         Some(("https://api.example.com/v1", "gpt-4.1-mini", 3))
     );
     assert_eq!(migrated.summary_provider, migrated.translation_provider);
@@ -431,7 +433,9 @@ async fn gemini_native_provider_runs_tasks_skips_thoughts_and_redacts_keys() {
         .and(path("/v1beta/models/gemini-2.5-flash:generateContent"))
         .and(header("x-goog-api-key", gemini_key))
         .and(body_string_contains("systemInstruction"))
-        .and(body_string_contains("Translate each input segment into 简体中文"))
+        .and(body_string_contains(
+            "Translate each input segment into 简体中文",
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "candidates": [{
                 "content": {
@@ -504,4 +508,3 @@ async fn gemini_native_provider_runs_tasks_skips_thoughts_and_redacts_keys() {
         .to_string();
     assert!(err.contains("403") && !err.contains(gemini_key) && err.contains("[已隐藏]"));
 }
-

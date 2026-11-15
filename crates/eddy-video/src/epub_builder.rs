@@ -104,7 +104,10 @@ pub fn build_epub_bytes(doc: &ArticleDocument) -> Result<(Vec<u8>, u32), VideoEr
         for sec in &doc.sections {
             combined.push(build_section_xhtml(doc, sec, &image_map, true));
         }
-        xhtml_payloads.push((fname.clone(), wrap_xhtml(&doc.title, lang, &combined.join("\n"))));
+        xhtml_payloads.push((
+            fname.clone(),
+            wrap_xhtml(&doc.title, lang, &combined.join("\n")),
+        ));
         chapter_files.push(("chap_01".into(), fname, doc.title.clone()));
     }
 
@@ -200,7 +203,8 @@ pub fn build_epub_bytes(doc: &ArticleDocument) -> Result<(Vec<u8>, u32), VideoEr
     let mut cursor = Cursor::new(Vec::new());
     {
         let mut zip = ZipWriter::new(&mut cursor);
-        let stored = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let stored =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
         let deflated =
             SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
@@ -233,7 +237,8 @@ pub fn build_epub_bytes(doc: &ArticleDocument) -> Result<(Vec<u8>, u32), VideoEr
                 zip.write_all(&img_bytes)?;
             }
         }
-        zip.finish().map_err(|e| VideoError::Format(e.to_string()))?;
+        zip.finish()
+            .map_err(|e| VideoError::Format(e.to_string()))?;
     }
 
     let chapters_count = chapter_files.len() as u32;
@@ -261,11 +266,16 @@ fn wrap_xhtml(title: &str, lang: &str, body_inner: &str) -> String {
 fn build_overview_xhtml(doc: &ArticleDocument) -> String {
     let mut parts = Vec::new();
     if !doc.subtitle.trim().is_empty() {
-        parts.push(format!("<p><em>{}</em></p>", escape_xml(doc.subtitle.trim())));
+        parts.push(format!(
+            "<p><em>{}</em></p>",
+            escape_xml(doc.subtitle.trim())
+        ));
     }
     if let Some(url) = doc.source_url.as_deref().filter(|u| !u.trim().is_empty()) {
         let esc = escape_xml(url);
-        parts.push(format!(r#"<p>Original Video: <a href="{esc}">{esc}</a></p>"#));
+        parts.push(format!(
+            r#"<p>Original Video: <a href="{esc}">{esc}</a></p>"#
+        ));
     }
     if !doc.executive_summary.trim().is_empty() {
         parts.push(format!(
@@ -365,7 +375,10 @@ fn block_to_xhtml(
             format!("<ol>{lis}</ol>")
         }
         "quote" if !blk.text.trim().is_empty() => {
-            format!("<blockquote><p>{}</p></blockquote>", escape_xml(blk.text.trim()))
+            format!(
+                "<blockquote><p>{}</p></blockquote>",
+                escape_xml(blk.text.trim())
+            )
         }
         "code" if !blk.text.trim().is_empty() => {
             let cls = blk
@@ -374,7 +387,10 @@ fn block_to_xhtml(
                 .filter(|l| !l.trim().is_empty())
                 .map(|l| format!(r#" class="language-{}""#, escape_xml(l.trim())))
                 .unwrap_or_default();
-            format!("<pre><code{cls}>{}</code></pre>", escape_xml(blk.text.trim_end_matches('\n')))
+            format!(
+                "<pre><code{cls}>{}</code></pre>",
+                escape_xml(blk.text.trim_end_matches('\n'))
+            )
         }
         "math" => {
             let tex = blk

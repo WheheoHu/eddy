@@ -164,7 +164,10 @@ impl Engine {
             progress_throttle: parking_lot::Mutex::new(Default::default()),
             translation_cancels: parking_lot::Mutex::new(Default::default()),
             translation_focus: parking_lot::Mutex::new(Default::default()),
-            translation_gate: parking_lot::Mutex::new((1, Arc::new(tokio::sync::Semaphore::new(1)))),
+            translation_gate: parking_lot::Mutex::new((
+                1,
+                Arc::new(tokio::sync::Semaphore::new(1)),
+            )),
             summary_gate: parking_lot::Mutex::new((1, Arc::new(tokio::sync::Semaphore::new(1)))),
             ai_requests: parking_lot::Mutex::new(Default::default()),
             full_text_tried: parking_lot::Mutex::new(Default::default()),

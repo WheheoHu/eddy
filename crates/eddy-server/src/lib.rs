@@ -210,7 +210,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/config", get(config))
         .route("/v1/config/{key}", put(put_config).delete(delete_config))
         .route("/v1/search", get(search))
-        .route("/v1/video-jobs", get(list_video_jobs).post(create_video_job))
+        .route(
+            "/v1/video-jobs",
+            get(list_video_jobs).post(create_video_job),
+        )
         .route("/v1/video-jobs/{id}/retry", post(retry_video_job))
         .route("/v1/video-jobs/{id}/cancel", post(cancel_video_job))
         .route("/v1/video-jobs/{id}", delete(dismiss_video_job))
@@ -474,7 +477,9 @@ async fn create_video_job(
 ) -> Result<Json<RemoteVideoJob>, ApiError> {
     let src = req.source.trim();
     if !(src.starts_with("https://") || src.starts_with("http://")) {
-        return Err(ApiError::bad("Server video jobs only accept http:// or https:// URLs."));
+        return Err(ApiError::bad(
+            "Server video jobs only accept http:// or https:// URLs.",
+        ));
     }
     let pipeline = match req.pipeline.as_deref() {
         Some("gemini_two_stage") => Some(VideoPipelineMode::GeminiTwoStage),
@@ -538,7 +543,9 @@ async fn cancel_video_job(
     _d: Device,
     Path(id): Path<String>,
 ) -> Result<Json<RemoteVideoJob>, ApiError> {
-    s.engine.cancel_local_video_job(&id).map_err(ApiError::bad)?;
+    s.engine
+        .cancel_local_video_job(&id)
+        .map_err(ApiError::bad)?;
     s.announce_video_job_event();
     let rec = s
         .engine

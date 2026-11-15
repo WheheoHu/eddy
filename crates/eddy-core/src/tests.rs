@@ -2815,18 +2815,12 @@ async fn segments_already_in_target_language_are_not_sent_to_the_model() {
         seg("b", "This one is English and needs translating."),
         seg("c", "另一段中文。"),
     ];
-    let all = engine
-        .translate_text("page", segments, None)
-        .await
-        .unwrap();
+    let all = engine.translate_text("page", segments, None).await.unwrap();
     // Every segment gets an answer; the Chinese ones are their own.
     assert_eq!(all.len(), 3);
     assert_eq!(all["a"], "这一段已经是中文了，不需要翻译。");
     assert_eq!(all["c"], "另一段中文。");
-    assert_eq!(
-        all["b"],
-        "译：This one is English and needs translating."
-    );
+    assert_eq!(all["b"], "译：This one is English and needs translating.");
     let sent = requested_segments(&llm.received_requests().await.unwrap()[0]);
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].0, "b");
@@ -2887,11 +2881,15 @@ async fn split_translation_and_summary_providers_use_independent_keys_quotas_and
     let trans_llm = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
-        .and(wiremock::matchers::header("authorization", "Bearer sk-trans-only"))
+        .and(wiremock::matchers::header(
+            "authorization",
+            "Bearer sk-trans-only",
+        ))
         .respond_with(|req: &wiremock::Request| {
             let segs = requested_segments(req);
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"choices": [{"message": {"content": echo_translation(&segs)}}]}))
+            ResponseTemplate::new(200).set_body_json(
+                json!({"choices": [{"message": {"content": echo_translation(&segs)}}]}),
+            )
         })
         .mount(&trans_llm)
         .await;
@@ -2899,7 +2897,10 @@ async fn split_translation_and_summary_providers_use_independent_keys_quotas_and
     let sum_llm = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1beta/models/gemini-2.5-pro:generateContent"))
-        .and(wiremock::matchers::header("x-goog-api-key", "AIzaSySummarySecretKey0000000000"))
+        .and(wiremock::matchers::header(
+            "x-goog-api-key",
+            "AIzaSySummarySecretKey0000000000",
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "candidates": [{
                 "content": {
@@ -2920,7 +2921,9 @@ async fn split_translation_and_summary_providers_use_independent_keys_quotas_and
     assert!(platform.secret_get("ai:api-key").is_none());
 
     // Removing translation key does not resurrect on reopen, while summary key stays.
-    engine.set_ai_role_key(crate::AiRole::Translation, None).unwrap();
+    engine
+        .set_ai_role_key(crate::AiRole::Translation, None)
+        .unwrap();
     drop(engine);
     let engine = Engine::open(dir.path(), platform.clone(), EngineOptions::default()).unwrap();
     assert!(!engine.has_ai_role_key(crate::AiRole::Translation));
@@ -2967,7 +2970,9 @@ async fn split_translation_and_summary_providers_use_independent_keys_quotas_and
     let sum = engine.summarize(&row.item.id, false).await.unwrap();
     assert_eq!(sum.summary.tldr, "独立摘要模型");
 
-    let trans_used = engine.ai_role_usage_today(crate::AiRole::Translation).unwrap();
+    let trans_used = engine
+        .ai_role_usage_today(crate::AiRole::Translation)
+        .unwrap();
     let sum_used = engine.ai_role_usage_today(crate::AiRole::Summary).unwrap();
     assert!(trans_used >= 3);
     assert_eq!(sum_used, 1);
@@ -3093,7 +3098,10 @@ async fn export_handles_eligibility_passthrough_bilingual_epub_and_unfetched_web
         )
         .await
         .unwrap();
-    assert!(matches!(pdf_outcome, crate::PdfExportOutcome::CopiedOriginal));
+    assert!(matches!(
+        pdf_outcome,
+        crate::PdfExportOutcome::CopiedOriginal
+    ));
     assert_eq!(std::fs::read(&passthrough_pdf).unwrap(), raw_pdf_bytes);
 
     let bi_pdf_outcome = engine
@@ -3130,7 +3138,11 @@ async fn export_handles_eligibility_passthrough_bilingual_epub_and_unfetched_web
         )
         .unwrap();
     let ws_chapters_before = engine.inner.chapters(&ws_id).unwrap();
-    assert!(ws_chapters_before.iter().all(|r| r.item.current_version.is_none()));
+    assert!(
+        ws_chapters_before
+            .iter()
+            .all(|r| r.item.current_version.is_none())
+    );
 
     let ws_pdf_outcome = engine
         .export_or_prepare_pdf(
@@ -3149,10 +3161,14 @@ async fn export_handles_eligibility_passthrough_bilingual_epub_and_unfetched_web
     match ws_pdf_outcome {
         crate::PdfExportOutcome::Prepared(payload) => {
             assert_eq!(payload.chapters.len(), 2);
-            assert!(payload.chapters.iter().all(|c| !c.document.blocks.is_empty()));
+            assert!(
+                payload
+                    .chapters
+                    .iter()
+                    .all(|c| !c.document.blocks.is_empty())
+            );
             assert!(payload.chapters.iter().all(|c| !c.translations.is_empty()));
         }
         crate::PdfExportOutcome::CopiedOriginal => panic!("expected prepared WebSeries PDF"),
     }
 }
-

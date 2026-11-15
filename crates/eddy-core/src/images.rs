@@ -117,7 +117,9 @@ impl Inner {
                     _ => None,
                 };
                 if let Some(path) = path {
-                    inner.render_pdf_figures(&reader, &file, &path, requests).await;
+                    inner
+                        .render_pdf_figures(&reader, &file, &path, requests)
+                        .await;
                 }
                 inner.pdf_warming.lock().remove(&file);
             });
@@ -150,7 +152,9 @@ impl Inner {
                 return;
             };
             for ((page, index), picture) in page.into_iter().zip(pictures) {
-                let Some((bytes, mime)) = picture else { continue };
+                let Some((bytes, mime)) = picture else {
+                    continue;
+                };
                 if bytes.len() > MAX_IMAGE_BYTES {
                     continue;
                 }
