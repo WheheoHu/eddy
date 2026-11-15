@@ -21,3 +21,8 @@ rulepacks/private/
 
 # Chrome extension signing material
 extensions/chrome/*.pem
+
+# Windows app
+windows/eddy-win/node_modules/
+windows/eddy-win/dist/
+windows/eddy-win/src-tauri/gen/

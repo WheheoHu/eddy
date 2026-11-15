@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Eddy</title>
+  <link rel="stylesheet" href="./src/style.css" />
+</head>
+<body>
+  <div id="app">
+    <header id="topbar">
+      <div class="brand">Eddy</div>
+      <input id="save-input" type="text" placeholder="Save a page from its URL…" spellcheck="false" />
+      <button id="save-btn" title="Save page">Save</button>
+      <div class="sep"></div>
+      <button id="refresh-btn" title="Refresh sources">⟳ Refresh</button>
+      <button id="import-btn" title="Import EPUB or PDF">Import…</button>
+      <div class="grow"></div>
+      <span id="sync-badge" hidden></span>
+      <button id="search-btn" title="Search everything">Search</button>
+      <button id="settings-btn" title="Settings">Settings</button>
+    </header>
+
+    <div id="main">
+      <nav id="sidebar"></nav>
+      <section id="list"></section>
+      <article id="reader"></article>
+    </div>
+
+    <aside id="summary-panel" hidden>
+      <header>
+        <b>Summary</b>
+        <button id="summary-close" class="ghost">✕</button>
+      </header>
+      <div id="summary-body"></div>
+    </aside>
+
+    <div id="search-overlay" hidden>
+      <div id="search-box">
+        <input id="search-input" type="text" placeholder="Search your library…" spellcheck="false" />
+        <div id="search-results"></div>
+      </div>
+    </div>
+
+    <div id="settings-overlay" hidden>
+      <div id="settings-panel">
+        <header>
+          <b>Settings</b>
+          <button id="settings-close" class="ghost">✕</button>
+        </header>
+        <div id="settings-body"></div>
+      </div>
+    </div>
+
+    <div id="toast" hidden></div>
+  </div>
+  <script type="module" src="./src/main.ts"></script>
+</body>
+</html>
