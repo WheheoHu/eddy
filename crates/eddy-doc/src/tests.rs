@@ -387,6 +387,15 @@ fn bare_text_and_br_become_paragraph_text() {
 }
 
 #[test]
+fn source_line_breaks_between_chinese_leave_no_space() {
+    let d = doc("<p>又是一年\n  过去了。\n而我 也<b>同往年\n</b>一样，use\nRust 写\n代码</p>");
+    assert_eq!(
+        d.blocks[0].plain_text(),
+        "又是一年过去了。而我 也同往年一样，use Rust 写代码"
+    );
+}
+
+#[test]
 fn translation_segments_cover_text_blocks() {
     let d = doc(
         "<h2>Title</h2><p>Body with $x$ math.</p><figure><img src='/i.png'><figcaption>Cap</figcaption></figure><pre>code</pre><p>123</p>",

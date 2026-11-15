@@ -34,7 +34,7 @@ pub(crate) struct EpubPackageInput<'a> {
 }
 
 const EPUB_CSS: &str = r#"body {
-  font-family: -apple-system, BlinkMacSystemFont, "Georgia", serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Georgia", "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei", serif;
   line-height: 1.65;
   color: #1c1c1e;
   margin: 1.2em;
@@ -264,10 +264,7 @@ pub(crate) fn build_epub_archive(input: &EpubPackageInput<'_>) -> Result<Vec<u8>
 
     let mut cover_assigned = false;
     for (idx, (orig_url, img)) in sorted_images.iter().enumerate() {
-        let is_cover = !cover_assigned
-            && input
-                .cover_src
-                .is_some_and(|c| c == orig_url.as_str());
+        let is_cover = !cover_assigned && input.cover_src.is_some_and(|c| c == orig_url.as_str());
         let props = if is_cover {
             cover_assigned = true;
             r#" properties="cover-image""#
@@ -347,7 +344,8 @@ pub(crate) fn build_epub_archive(input: &EpubPackageInput<'_>) -> Result<Vec<u8>
     let mut cursor = Cursor::new(Vec::new());
     {
         let mut zip = ZipWriter::new(&mut cursor);
-        let stored = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let stored =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
         let deflated =
             SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
@@ -425,17 +423,38 @@ fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
 
 fn normalize_epub_lang(raw: &str) -> String {
     let lower = raw.trim().to_lowercase();
-    if lower.contains("中文") || lower.contains("chinese") || lower == "cmn" || lower.starts_with("zh") {
+    if lower.contains("中文")
+        || lower.contains("chinese")
+        || lower == "cmn"
+        || lower.starts_with("zh")
+    {
         "zh-CN".into()
-    } else if lower.contains("日本") || lower.contains("japanese") || lower == "jpn" || lower == "ja" {
+    } else if lower.contains("日本")
+        || lower.contains("japanese")
+        || lower == "jpn"
+        || lower == "ja"
+    {
         "ja".into()
-    } else if lower.contains("한국") || lower.contains("korean") || lower == "kor" || lower == "ko" {
+    } else if lower.contains("한국") || lower.contains("korean") || lower == "kor" || lower == "ko"
+    {
         "ko".into()
-    } else if lower.contains("français") || lower.contains("french") || lower == "fra" || lower == "fr" {
+    } else if lower.contains("français")
+        || lower.contains("french")
+        || lower == "fra"
+        || lower == "fr"
+    {
         "fr".into()
-    } else if lower.contains("deutsch") || lower.contains("german") || lower == "deu" || lower == "de" {
+    } else if lower.contains("deutsch")
+        || lower.contains("german")
+        || lower == "deu"
+        || lower == "de"
+    {
         "de".into()
-    } else if lower.contains("español") || lower.contains("spanish") || lower == "spa" || lower == "es" {
+    } else if lower.contains("español")
+        || lower.contains("spanish")
+        || lower == "spa"
+        || lower == "es"
+    {
         "es".into()
     } else {
         "en".into()
@@ -497,9 +516,11 @@ fn extract_headings(
         {
             let orig = runs_plain_text(runs).trim().to_string();
             let text = match mode {
-                ExportContentMode::Translation => distinct_translation(translations, &block.id, &orig)
-                    .map(str::to_string)
-                    .unwrap_or(orig),
+                ExportContentMode::Translation => {
+                    distinct_translation(translations, &block.id, &orig)
+                        .map(str::to_string)
+                        .unwrap_or(orig)
+                }
                 _ => orig,
             };
             if !text.is_empty() {
@@ -524,7 +545,11 @@ fn render_nested_nav_ol(entries: &[(String, String, usize)]) -> String {
     let mut depth = 0usize;
     for (i, (href, label, raw_level)) in entries.iter().enumerate() {
         // Clamp jumps so a heading never skips more than 1 level deeper than current depth.
-        let target = if i == 0 { 0 } else { (*raw_level).min(depth + 1) };
+        let target = if i == 0 {
+            0
+        } else {
+            (*raw_level).min(depth + 1)
+        };
         if i > 0 {
             if target > depth {
                 out.push_str("\n      <ol>\n");
@@ -552,10 +577,7 @@ fn render_nested_nav_ol(entries: &[(String, String, usize)]) -> String {
     out
 }
 
-fn render_chapter_body(
-    ch: &PreparedExportChapter,
-    input: &EpubPackageInput<'_>,
-) -> (String, bool) {
+fn render_chapter_body(ch: &PreparedExportChapter, input: &EpubPackageInput<'_>) -> (String, bool) {
     let mut out = String::new();
     let mut has_math = false;
 
@@ -580,7 +602,12 @@ fn render_chapter_body(
     }
 
     let mut meta_parts = Vec::new();
-    if let Some(author) = ch.author.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(author) = ch
+        .author
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         meta_parts.push(escape_xml(author));
     }
     if let Some(source) = ch
@@ -591,7 +618,12 @@ fn render_chapter_body(
     {
         meta_parts.push(escape_xml(source));
     }
-    if let Some(url) = ch.url.as_deref().map(str::trim).filter(|u| u.starts_with("http")) {
+    if let Some(url) = ch
+        .url
+        .as_deref()
+        .map(str::trim)
+        .filter(|u| u.starts_with("http"))
+    {
         let esc = escape_xml(url);
         meta_parts.push(format!(r#"<a href="{esc}">Original</a>"#));
     }
@@ -661,12 +693,8 @@ fn render_chapter_body(
             if !*marker && list_stack.len() == target_len && li_open {
                 // Continuation of the current list item without a new bullet.
                 out.push_str("<br/>");
-                let (inline_html, m) = render_text_runs_for_mode(
-                    runs,
-                    &ch.translations,
-                    &block.id,
-                    input,
-                );
+                let (inline_html, m) =
+                    render_text_runs_for_mode(runs, &ch.translations, &block.id, input);
                 has_math |= m;
                 out.push_str(&inline_html);
                 continue;
@@ -706,12 +734,8 @@ fn render_chapter_body(
                 out.push_str("</li>\n");
             }
             out.push_str(&format!(r#"    <li id="{}">"#, escape_xml(&block.id)));
-            let (inline_html, m) = render_text_runs_for_mode(
-                runs,
-                &ch.translations,
-                &block.id,
-                input,
-            );
+            let (inline_html, m) =
+                render_text_runs_for_mode(runs, &ch.translations, &block.id, input);
             has_math |= m;
             out.push_str(&inline_html);
             li_open = true;
@@ -776,16 +800,25 @@ fn render_non_list_block(
             match input.mode {
                 ExportContentMode::Original => {
                     let (inner, m) = render_runs(runs, input);
-                    (format!("  <h{tag_level} id=\"{id_attr}\">{inner}</h{tag_level}>\n"), m)
+                    (
+                        format!("  <h{tag_level} id=\"{id_attr}\">{inner}</h{tag_level}>\n"),
+                        m,
+                    )
                 }
                 ExportContentMode::Translation => {
                     if let Some(tr) = distinct_translation(translations, &block.id, &orig_plain) {
                         let tr_runs = translated_runs(tr);
                         let (inner, m) = render_runs(&tr_runs, input);
-                        (format!("  <h{tag_level} id=\"{id_attr}\">{inner}</h{tag_level}>\n"), m)
+                        (
+                            format!("  <h{tag_level} id=\"{id_attr}\">{inner}</h{tag_level}>\n"),
+                            m,
+                        )
                     } else {
                         let (inner, m) = render_runs(runs, input);
-                        (format!("  <h{tag_level} id=\"{id_attr}\">{inner}</h{tag_level}>\n"), m)
+                        (
+                            format!("  <h{tag_level} id=\"{id_attr}\">{inner}</h{tag_level}>\n"),
+                            m,
+                        )
                     }
                 }
                 ExportContentMode::Bilingual => {
@@ -1099,7 +1132,9 @@ fn render_highlighted_code(text: &str, highlights: &[HighlightSpan]) -> String {
             continue;
         }
         if start > cursor {
-            out.push_str(&escape_xml(&String::from_utf16_lossy(&units[cursor..start])));
+            out.push_str(&escape_xml(&String::from_utf16_lossy(
+                &units[cursor..start],
+            )));
         }
         let class = match span.class {
             TokenClass::Keyword => "tok-keyword",

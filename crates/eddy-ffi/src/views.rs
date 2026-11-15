@@ -605,3 +605,35 @@ pub struct ImageData {
     pub bytes: Vec<u8>,
     pub mime: String,
 }
+
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TypoKindView {
+    /// Set in the Chinese font.
+    Cjk,
+    /// Pull the next character in by half an em.
+    Squeeze,
+    /// Push the next character out by a quarter em.
+    Gap,
+}
+
+/// A range of text in UTF-16 code units.
+#[derive(uniffi::Record, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TypoSpanView {
+    pub start: u32,
+    pub end: u32,
+    pub kind: TypoKindView,
+}
+
+impl From<eddy_core::TypoSpan> for TypoSpanView {
+    fn from(s: eddy_core::TypoSpan) -> Self {
+        TypoSpanView {
+            start: s.start,
+            end: s.end,
+            kind: match s.kind {
+                eddy_core::TypoKind::Cjk => TypoKindView::Cjk,
+                eddy_core::TypoKind::Squeeze => TypoKindView::Squeeze,
+                eddy_core::TypoKind::Gap => TypoKindView::Gap,
+            },
+        }
+    }
+}

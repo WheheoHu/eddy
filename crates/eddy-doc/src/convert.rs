@@ -293,10 +293,22 @@ impl Converter {
         }
         let mut normalized = String::with_capacity(text.len());
         let mut last_space = self.ends_with_space();
-        for ch in text.chars() {
+        let mut chars = text.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == SOFT_BREAK {
+                continue;
+            }
             if ch.is_whitespace() && ch != '\u{a0}' {
+                let mut wrapped = ch == '\n' || ch == '\r';
+                while let Some(&next) = chars.peek() {
+                    if !next.is_whitespace() || next == '\u{a0}' {
+                        break;
+                    }
+                    wrapped |= next == '\n' || next == '\r';
+                    chars.next();
+                }
                 if !last_space {
-                    normalized.push(' ');
+                    normalized.push(if wrapped { SOFT_BREAK } else { ' ' });
                     last_space = true;
                 }
             } else {
@@ -312,7 +324,7 @@ impl Converter {
     fn ends_with_space(&self) -> bool {
         match self.runs.last() {
             None => true,
-            Some(r) => r.text.ends_with(' ') || r.text.ends_with('\n'),
+            Some(r) => r.text.ends_with([' ', '\n', SOFT_BREAK]),
         }
     }
 
@@ -335,6 +347,7 @@ impl Converter {
 
     fn take_runs(&mut self) -> Vec<Run> {
         let mut runs = std::mem::take(&mut self.runs);
+        resolve_soft_breaks(&mut runs);
         if let Some(first) = runs.iter_mut().find(|r| !r.math) {
             let trimmed = first.text.trim_start_matches([' ', '\n']).to_string();
             first.text = trimmed;
@@ -899,4 +912,44 @@ fn assign_ids(blocks: Vec<(u8, BlockKind)>) -> Vec<Block> {
             }
         })
         .collect()
+}
+
+/// Stands in for whitespace that held a line break of the HTML source until
+/// the characters on both sides are known.
+const SOFT_BREAK: char = '\u{1}';
+
+/// A source line break is a space between words, and nothing between two
+/// Chinese characters, which are not separated by spaces.
+fn resolve_soft_breaks(runs: &mut [Run]) {
+    if !runs.iter().any(|r| !r.math && r.text.contains(SOFT_BREAK)) {
+        return;
+    }
+    // A formula stands between its neighbours like a Latin word.
+    let chars: Vec<char> = runs
+        .iter()
+        .flat_map(|r| if r.math { "x".chars() } else { r.text.chars() })
+        .collect();
+    let mut at = 0usize;
+    for run in runs.iter_mut() {
+        if run.math {
+            at += 1;
+            continue;
+        }
+        let mut text = String::with_capacity(run.text.len());
+        for ch in run.text.chars() {
+            if ch != SOFT_BREAK {
+                text.push(ch);
+            } else {
+                let before = at.checked_sub(1).map(|i| chars[i]);
+                let after = chars.get(at + 1).copied();
+                let joined = before.is_some_and(crate::typo::is_cjk)
+                    && after.is_some_and(crate::typo::is_cjk);
+                if !joined {
+                    text.push(' ');
+                }
+            }
+            at += 1;
+        }
+        run.text = text;
+    }
 }

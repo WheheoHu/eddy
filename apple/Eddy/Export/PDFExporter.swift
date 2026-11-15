@@ -60,7 +60,7 @@ enum PDFExporter {
         payload: PreparedPdfExportView,
         images: [String: Data],
         destination: URL,
-        serif: Bool,
+        fonts: ReaderFonts,
         translatedRuns: @escaping (String) -> [RunView],
         isCancelled: @escaping () -> Bool
     ) throws {
@@ -72,7 +72,7 @@ enum PDFExporter {
                     payload: payload,
                     images: images,
                     destination: destination,
-                    serif: serif,
+                    fonts: fonts,
                     translatedRuns: translatedRuns,
                     isCancelled: isCancelled
                 )
@@ -87,11 +87,11 @@ enum PDFExporter {
         payload: PreparedPdfExportView,
         images: [String: Data],
         destination: URL,
-        serif: Bool,
+        fonts: ReaderFonts,
         translatedRuns: @escaping (String) -> [RunView],
         isCancelled: @escaping () -> Bool
     ) throws {
-        let style = PrintStyle(serif: serif)
+        let style = PrintStyle(fonts: fonts)
         let decodedImages = decodeImages(images)
 
         var mediaBox = CGRect(x: 0, y: 0, width: pageWidth, height: pageHeight)
@@ -157,7 +157,8 @@ enum PDFExporter {
     private struct PrintStyle {
         let baseSize: CGFloat = 11.5
         let lineHeight: CGFloat = 1.44
-        let serif: Bool
+        /// The reader's typefaces.
+        let fonts: ReaderFonts
 
         let textPrimary = NSColor(calibratedWhite: 0.11, alpha: 1.0)
         let textSecondary = NSColor(calibratedWhite: 0.36, alpha: 1.0)
@@ -169,10 +170,14 @@ enum PDFExporter {
         let borderColor = NSColor(calibratedWhite: 0.82, alpha: 1.0)
 
         func font(size: CGFloat? = nil, weight: NSFont.Weight = .regular) -> NSFont {
-            let pt = size ?? baseSize
-            let base = NSFont.systemFont(ofSize: pt, weight: weight)
-            guard serif, let desc = base.fontDescriptor.withDesign(.serif) else { return base }
-            return NSFont(descriptor: desc, size: pt) ?? base
+            fonts.latinFont(size: size ?? baseSize, weight: weight)
+        }
+
+        /// The Chinese in its own font, with the reader's spacing.
+        func typeset(_ text: NSAttributedString) -> NSAttributedString {
+            let s = NSMutableAttributedString(attributedString: text)
+            fonts.typeset(s)
+            return s
         }
 
         func mono(size: CGFloat? = nil) -> NSFont {
@@ -208,6 +213,14 @@ enum PDFExporter {
         case figure(image: CGImage?, size: CGSize, caption: NSAttributedString?)
         case table(rows: [[TableCellSpec]])
         case rule
+
+        /// Whether it draws quote bars.
+        var isQuoted: Bool {
+            switch self {
+            case let .heading(_, _, _, depth, _, _), let .paragraph(_, depth, _, _), let .codeBox(_, _, depth): depth > 0
+            default: false
+            }
+        }
     }
 
     private struct TableCellSpec {
@@ -250,7 +263,7 @@ enum PDFExporter {
         )
         let topBookmarkLevel = Int(chapter.chapterLevel) + 1
         items.append(.heading(
-            attr: titleAttr,
+            attr: style.typeset(titleAttr),
             bookmarkTitle: multiChapter ? shownTitle : nil,
             bookmarkLevel: topBookmarkLevel,
             quoteDepth: 0,
@@ -267,7 +280,7 @@ enum PDFExporter {
                     .paragraphStyle: style.paragraph(lineHeight: 1.2),
                 ]
             )
-            items.append(.paragraph(attr: subAttr, quoteDepth: 0, spaceBefore: 0, spaceAfter: 5))
+            items.append(.paragraph(attr: style.typeset(subAttr), quoteDepth: 0, spaceBefore: 0, spaceAfter: 5))
         }
 
         // Metadata byline
@@ -291,7 +304,7 @@ enum PDFExporter {
                     .paragraphStyle: style.paragraph(lineHeight: 1.2),
                 ]
             )
-            items.append(.paragraph(attr: metaAttr, quoteDepth: 0, spaceBefore: 0, spaceAfter: 14))
+            items.append(.paragraph(attr: style.typeset(metaAttr), quoteDepth: 0, spaceBefore: 0, spaceAfter: 14))
         }
 
         // Optional AI Summary card
@@ -314,9 +327,9 @@ enum PDFExporter {
                     string: pt,
                     attributes: [.font: style.font(size: style.baseSize * 0.92), .foregroundColor: style.textPrimary, .paragraphStyle: p]
                 ))
-                return s
+                return style.typeset(s)
             }
-            items.append(.summaryBox(tldr: tldrAttr, points: pointAttrs))
+            items.append(.summaryBox(tldr: style.typeset(tldrAttr), points: pointAttrs))
         }
 
         let baseHeadingLevelOffset = multiChapter ? (topBookmarkLevel) : 0
@@ -465,7 +478,7 @@ enum PDFExporter {
                 if src.hasPrefix("http"), let url = URL(string: src) {
                     attrs[.link] = url
                 }
-                items.append(.paragraph(attr: NSAttributedString(string: label, attributes: attrs), quoteDepth: quote, spaceBefore: 2, spaceAfter: 8))
+                items.append(.paragraph(attr: style.typeset(NSAttributedString(string: label, attributes: attrs)), quoteDepth: quote, spaceBefore: 2, spaceAfter: 8))
 
             case .rule:
                 items.append(.rule)
@@ -540,6 +553,7 @@ enum PDFExporter {
             attrs[.foregroundColor] = fg
             out.append(NSAttributedString(string: run.text, attributes: attrs))
         }
+        style.fonts.typeset(out)
         return out
     }
 
@@ -706,6 +720,10 @@ enum PDFExporter {
         var pageIndex = -1
         var pageOpen = false
         var cursorY: CGFloat = 0
+        /// Where the quote bars of the item before end, for the next
+        /// quoted item to take them up: a quote has one bar, not one per
+        /// paragraph.
+        var quoteTail: (depth: Int, y: CGFloat, page: Int)?
         var bookmarks: [Bookmark] = []
 
         mutating func beginPage() {
@@ -775,6 +793,7 @@ enum PDFExporter {
         }
 
         mutating func layout(_ item: LayoutItem) {
+            defer { if !item.isQuoted { quoteTail = nil } }
             switch item {
             case let .heading(attr, bookmarkTitle, bookmarkLevel, quoteDepth, spaceBefore, spaceAfter):
                 if cursorY < PDFExporter.topY - 1 {
@@ -909,9 +928,12 @@ enum PDFExporter {
                     ctx.setFillColor(style.accent.withAlphaComponent(0.55).cgColor)
                     for level in 0..<quoteDepth {
                         let barX = x + CGFloat(level) * 16 + 2
-                        ctx.fill(CGRect(x: barX, y: bottomEdge - 1, width: 2.5, height: max(4, topEdge - bottomEdge + 2)))
+                        var top = max(bottomEdge + 3, topEdge + 1)
+                        if loc == 0, let tail = quoteTail, tail.page == pageIndex, level < tail.depth { top = max(top, tail.y) }
+                        ctx.fill(CGRect(x: barX, y: bottomEdge - 1, width: 2.5, height: top - (bottomEdge - 1)))
                     }
                     ctx.restoreGState()
+                    quoteTail = (quoteDepth, bottomEdge - 1, pageIndex)
                 }
 
                 drawFrameDecorations(lines: lines, origins: origins, frameOrigin: frameRect.origin, beforeText: true)
@@ -1078,8 +1100,11 @@ enum PDFExporter {
                 if quoteDepth > 0 {
                     ctx.setFillColor(style.accent.withAlphaComponent(0.55).cgColor)
                     for level in 0..<quoteDepth {
-                        ctx.fill(CGRect(x: PDFExporter.marginLeft + CGFloat(level) * 16 + 2, y: boxRect.minY, width: 2.5, height: boxRect.height))
+                        var top = boxRect.maxY
+                        if firstSlice, let tail = quoteTail, tail.page == pageIndex, level < tail.depth { top = max(top, tail.y) }
+                        ctx.fill(CGRect(x: PDFExporter.marginLeft + CGFloat(level) * 16 + 2, y: boxRect.minY, width: 2.5, height: top - boxRect.minY))
                     }
+                    quoteTail = (quoteDepth, boxRect.minY, pageIndex)
                 }
                 ctx.restoreGState()
 

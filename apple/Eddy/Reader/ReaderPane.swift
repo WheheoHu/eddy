@@ -75,7 +75,10 @@ struct ReaderPane: View {
     @AppStorage("reader.openLinksInApp") private var openLinksInApp = true
 
     @AppStorage("reader.fontSize") private var fontSize = 17.0
-    @AppStorage("reader.serif") private var serif = false
+    @AppStorage(ReaderFonts.latinKey) private var latinFont = ReaderFonts.systemSans
+    @AppStorage(ReaderFonts.cjkKey) private var cjkFont = ReaderFonts.systemSans
+    @AppStorage(ReaderFonts.spacingKey) private var cjkLatinSpacing = true
+    @AppStorage(ReaderFonts.justifyKey) private var justify = false
     @AppStorage("reader.width") private var width = 700.0
     @AppStorage("reader.lineHeight") private var lineHeight = 1.45
     @AppStorage("reader.appearance") private var appearance: ReaderAppearance = .app
@@ -83,7 +86,7 @@ struct ReaderPane: View {
     @Environment(\.colorScheme) private var appScheme
 
     private var style: ReaderStyle {
-        ReaderStyle(fontSize: fontSize, serif: serif, lineHeight: lineHeight, maxWidth: width)
+        ReaderStyle(fontSize: fontSize, fonts: ReaderFonts(latin: latinFont, cjk: cjkFont, spacing: cjkLatinSpacing), justify: justify, lineHeight: lineHeight, maxWidth: width)
     }
 
     /// The content's own scheme; the toolbar keeps the app's.
@@ -203,7 +206,7 @@ struct ReaderPane: View {
                 WebPageView(url: url, gestures: covered ? EdgeGestures() : gestures, onEscape: escape, focused: focused && !covered, onFocus: onFocus, appearance: appearance.nsAppearance, translator: webTranslator, onLink: openLinksInApp ? openLink : nil)
                     .transition(.push(from: rendererArrival))
             } else if let document {
-                let version = "\(document.contentHash)|\(mode.rawValue)|\(translations.count)|\(fontSize)|\(serif)|\(lineHeight)|\(scheme)|\(codeEdits)"
+                let version = "\(document.contentHash)|\(mode.rawValue)|\(translations.count)|\(fontSize)|\(latinFont)|\(cjkFont)|\(cjkLatinSpacing)|\(justify)|\(lineHeight)|\(scheme)|\(codeEdits)"
                 let article = cache.article(version) {
                     // Formulas are images drawn now, in the content's colors.
                     var built: BuiltArticle!
@@ -532,7 +535,10 @@ struct ReaderPane: View {
             Slider(value: $fontSize, in: 13...26, step: 1) { Text("Size") }
             Slider(value: $width, in: 520...900, step: 20) { Text("Line Width") }
             Slider(value: $lineHeight, in: 1.2...1.9, step: 0.05) { Text("Line Spacing") }
-            Toggle("Serif", isOn: $serif)
+            ReaderFontPicker(title: "Latin Font", selection: $latinFont, families: ReaderFonts.latinFamilies)
+            ReaderFontPicker(title: "Chinese Font", selection: $cjkFont, families: ReaderFonts.cjkFamilies)
+            Toggle("Space Chinese and Latin", isOn: $cjkLatinSpacing)
+            Toggle("Justify Text", isOn: $justify)
             Picker("Appearance", selection: $appearance) {
                 ForEach(ReaderAppearance.allCases) { Text($0.rawValue).tag($0) }
             }

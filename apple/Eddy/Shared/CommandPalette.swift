@@ -44,7 +44,8 @@ struct CommandPalette: View {
     @Environment(\.openSettings) private var openSettings
     @AppStorage("app.mode") private var mode: AppMode = .threePane
     @AppStorage("reader.appearance") private var appearance: ReaderAppearance = .app
-    @AppStorage("reader.serif") private var serif = false
+    @AppStorage(ReaderFonts.latinKey) private var latinFont = ReaderFonts.systemSans
+    @AppStorage(ReaderFonts.cjkKey) private var cjkFont = ReaderFonts.systemSans
     @AppStorage("settings.tab") private var settingsTab: SettingsTab = .accounts
     @AppStorage("threePane.contents") private var threePaneContents = false
     @AppStorage("library.contents") private var libraryContents = true
@@ -360,7 +361,11 @@ struct CommandPalette: View {
                 subtitle: option == appearance ? String(localized: "Current") : nil, icon: "circle.lefthalf.filled"
             ) { appearance = option })
         }
-        items.append(PaletteItem(id: "serif", group: .settings, title: serif ? String(localized: "Use Sans-Serif Text") : String(localized: "Use Serif Text"), icon: "textformat") { serif.toggle() })
+        let serif = latinFont == ReaderFonts.systemSerif && cjkFont == ReaderFonts.systemSerif
+        items.append(PaletteItem(id: "serif", group: .settings, title: serif ? String(localized: "Use Sans-Serif Text") : String(localized: "Use Serif Text"), icon: "textformat") {
+            latinFont = serif ? ReaderFonts.systemSans : ReaderFonts.systemSerif
+            cjkFont = latinFont
+        })
         for other in AppMode.allCases where other != mode {
             items.append(PaletteItem(id: "mode:\(other.rawValue)", group: .settings, title: String(localized: "Switch to \(String(localized: String.LocalizationValue(other.rawValue)))"), icon: other.icon) { mode = other })
         }

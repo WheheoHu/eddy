@@ -435,14 +435,12 @@ struct ArticleTextView: NSViewRepresentable {
         nonisolated func textLayoutManager(_ textLayoutManager: NSTextLayoutManager, textLayoutFragmentFor location: any NSTextLocation, in textElement: NSTextElement) -> NSTextLayoutFragment {
             if let paragraph = textElement as? NSTextParagraph, paragraph.attributedString.length > 0 {
                 let attrs = paragraph.attributedString.attributes(at: 0, effectiveRange: nil)
-                if let mark = attrs[.eddyCode] {
+                let quote = attrs[.eddyQuote] as? Int ?? 0
+                if attrs[.eddyCode] != nil || quote > 0 {
                     let f = DecoratedFragment(textElement: textElement, range: textElement.elementRange)
-                    f.kind = .code(mark as? CodeBlockMark)
-                    return f
-                }
-                if let depth = attrs[.eddyQuote] as? Int, depth > 0 {
-                    let f = DecoratedFragment(textElement: textElement, range: textElement.elementRange)
-                    f.kind = .quote(depth)
+                    f.kind = attrs[.eddyCode].map { .code($0 as? CodeBlockMark) } ?? .plain
+                    f.quoteDepth = quote
+                    f.nextQuoteDepth = attrs[.eddyQuoteNext] as? Int ?? 0
                     return f
                 }
             }

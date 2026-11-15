@@ -353,14 +353,14 @@ extension AppModel {
                         }
                     }
 
-                    let serif = UserDefaults.standard.bool(forKey: "reader.serif")
+                    let fonts = ReaderFonts.stored
                     let flagBox = CancelFlagBox(state)
                     try await Task.detached(priority: .userInitiated) {
                         try PDFExporter.render(
                             payload: payload,
                             images: imageMap,
                             destination: destination,
-                            serif: serif,
+                            fonts: fonts,
                             translatedRuns: { text in
                                 engine.translatedRuns(text: text)
                             },

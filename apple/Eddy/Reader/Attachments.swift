@@ -447,8 +447,12 @@ final class CodeBlockMark: NSObject {
 /// `labelRect` (in the fragment's own coordinates) is where that is, for
 /// clicks on it.
 final class DecoratedFragment: NSTextLayoutFragment {
-    enum Kind { case code(CodeBlockMark?), quote(Int) }
-    var kind: Kind = .code(nil)
+    enum Kind { case code(CodeBlockMark?), plain }
+    var kind: Kind = .plain
+    /// Block quotes the paragraph is inside; each gets a bar.
+    var quoteDepth = 0
+    /// The same for the paragraph after this one.
+    var nextQuoteDepth = 0
     private(set) var labelRect: CGRect = .zero
     /// How much wider the code is than the room it has; it scrolls by that.
     private(set) var codeOverflow: CGFloat = 0
@@ -466,14 +470,29 @@ final class DecoratedFragment: NSTextLayoutFragment {
 
     override var renderingSurfaceBounds: CGRect {
         let own = layoutFragmentFrame.offsetBy(dx: -layoutFragmentFrame.minX, dy: -layoutFragmentFrame.minY).insetBy(dx: -8, dy: -6)
-        if case .code = kind {
-            return super.renderingSurfaceBounds.union(own).union(codeBox.insetBy(dx: -2, dy: -6))
-        }
-        return super.renderingSurfaceBounds.union(own)
+        var bounds = super.renderingSurfaceBounds.union(own)
+        if case .code = kind { bounds = bounds.union(codeBox.insetBy(dx: -2, dy: -6)) }
+        for level in 0..<quoteDepth { bounds = bounds.union(quoteBar(level)) }
+        return bounds
+    }
+
+    /// The bar of one quote level, in the fragment's own coordinates. The
+    /// fragment starts at the paragraph's indent; the bars stand in the
+    /// column's margin, left of it. A bar stops with the text when its
+    /// quote ends here, and runs through the space below the paragraph
+    /// when the next one is still inside the quote.
+    private func quoteBar(_ level: Int) -> CGRect {
+        let height = layoutFragmentFrame.height - (level < nextQuoteDepth ? 0 : paragraphSpacingBelow())
+        return CGRect(x: CGFloat(level) * 20 + 2 - layoutFragmentFrame.minX, y: 0, width: 3, height: height)
     }
 
     override func draw(at point: CGPoint, in context: CGContext) {
-        let frame = CGRect(origin: point, size: layoutFragmentFrame.size)
+        if quoteDepth > 0 {
+            context.saveGState()
+            context.setFillColor(NSColor.controlAccentColor.withAlphaComponent(0.55).cgColor)
+            for level in 0..<quoteDepth { context.fill(quoteBar(level).offsetBy(dx: point.x, dy: point.y)) }
+            context.restoreGState()
+        }
         switch kind {
         case let .code(mark):
             let rect = codeBox.offsetBy(dx: point.x, dy: point.y)
@@ -513,13 +532,8 @@ final class DecoratedFragment: NSTextLayoutFragment {
             }
             context.restoreGState()
             return
-        case let .quote(depth):
-            context.saveGState()
-            context.setFillColor(NSColor.controlAccentColor.withAlphaComponent(0.55).cgColor)
-            for level in 0..<depth {
-                context.fill(CGRect(x: frame.minX + CGFloat(level) * 20 + 2, y: frame.minY, width: 3, height: frame.height - paragraphSpacingBelow()))
-            }
-            context.restoreGState()
+        case .plain:
+            break
         }
         super.draw(at: point, in: context)
     }

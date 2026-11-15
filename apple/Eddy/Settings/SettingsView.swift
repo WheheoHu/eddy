@@ -524,7 +524,10 @@ extension FullTextModeView {
 private struct ReadingSettings: View {
     @AppStorage("app.mode") private var mode: AppMode = .threePane
     @AppStorage("reader.fontSize") private var fontSize = 17.0
-    @AppStorage("reader.serif") private var serif = false
+    @AppStorage(ReaderFonts.latinKey) private var latinFont = ReaderFonts.systemSans
+    @AppStorage(ReaderFonts.cjkKey) private var cjkFont = ReaderFonts.systemSans
+    @AppStorage(ReaderFonts.spacingKey) private var cjkLatinSpacing = true
+    @AppStorage(ReaderFonts.justifyKey) private var justify = false
     @AppStorage("reader.width") private var width = 700.0
     @AppStorage("reader.lineHeight") private var lineHeight = 1.45
     @AppStorage("reader.appearance") private var appearance: ReaderAppearance = .app
@@ -541,7 +544,16 @@ private struct ReadingSettings: View {
                 Slider(value: $fontSize, in: 13...26, step: 1) { Text("Size: \(Int(fontSize)) pt") }
                 Slider(value: $width, in: 520...900, step: 20) { Text("Line width") }
                 Slider(value: $lineHeight, in: 1.2...1.9, step: 0.05) { Text("Line spacing") }
-                Toggle("Serif typeface", isOn: $serif)
+            }
+            Section {
+                ReaderFontPicker(title: "Latin font", selection: $latinFont, families: ReaderFonts.latinFamilies)
+                ReaderFontPicker(title: "Chinese font", selection: $cjkFont, families: ReaderFonts.cjkFamilies)
+                Toggle("Space between Chinese and Latin text", isOn: $cjkLatinSpacing)
+                Toggle("Justify text", isOn: $justify)
+            } header: {
+                Text("Typeface")
+            } footer: {
+                Text("Fonts come from the ones installed on this Mac; add more in Font Book. Exported PDFs use the same fonts.").foregroundStyle(.secondary)
             }
             Section {
                 Picker("Content appearance", selection: $appearance) {

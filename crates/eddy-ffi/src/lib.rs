@@ -157,6 +157,16 @@ impl Platform for PlatformAdapter {
     }
 }
 
+/// Where a renderer acts on mixed Chinese and Latin text: which ranges take
+/// the Chinese font, and which characters get tighter or looser spacing.
+#[uniffi::export]
+pub fn typography_spans(text: String) -> Vec<TypoSpanView> {
+    eddy_core::typography_spans(&text)
+        .into_iter()
+        .map(TypoSpanView::from)
+        .collect()
+}
+
 #[uniffi::export]
 pub fn core_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()

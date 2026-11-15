@@ -37,6 +37,10 @@ struct EddyApp: App {
     @State private var model = AppModel()
     @AppStorage("app.mode") private var mode: AppMode = .threePane
 
+    init() {
+        ReaderFonts.migrate()
+    }
+
     var body: some Scene {
         WindowGroup("Eddy") {
             RootView(mode: mode)

@@ -33,10 +33,16 @@ pub use eddy_ai::{
     AiProtocol, AiSettings, AutoAction, AutoRule, MAX_CONCURRENCY, ProviderSettings, RuleScope,
     Summary,
 };
-pub use eddy_doc::{Segment, highlight_languages, translated_runs};
+pub use eddy_doc::{
+    Segment, TypoKind, TypoSpan, highlight_languages, translated_runs, typography_spans,
+};
 pub use eddy_extract::{ChapterLink, SeriesProposal};
 pub use eddy_fetch::WebRenderer;
 pub use eddy_media::{MediaItem, MediaSet, MediaStatus, MediaType, is_media_url};
+pub use eddy_video::{
+    PipelinePhase, ProtocolKind, StageEndpointSettings, ToolchainStatus, TranscriptPolicy,
+    VideoPipelineMode, VideoProbe, VideoSettings, VideoStageRole, is_video_file_path, is_video_url,
+};
 pub use engine::{
     Engine, EngineOptions, EngineStatus, Mode, RefreshSummary, SourceInfo, SourceStats,
 };
@@ -60,10 +66,6 @@ pub use search::SearchResult;
 pub use upstream::HistoryCallback;
 pub use video::{
     StartVideoJobOptions, VideoJobCallback, VideoJobInfo, VideoJobTarget, record_to_remote,
-};
-pub use eddy_video::{
-    PipelinePhase, ProtocolKind, StageEndpointSettings, ToolchainStatus, TranscriptPolicy,
-    VideoPipelineMode, VideoProbe, VideoSettings, VideoStageRole, is_video_file_path, is_video_url,
 };
 
 pub use eddy_store::{ItemFilter, ItemQuery, ItemRow};
