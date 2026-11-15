@@ -1,0 +1,506 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Eddy Server</title>
+<style>
+:root {
+  --bg: #f5f5f2; --card: #ffffff; --text: #1d1d1b; --muted: #6b6b66; --line: #e2e2dc;
+  --accent: #2f6fde; --accent-text: #ffffff; --good: #2e8b57; --warn: #b7791f; --bad: #c0392b;
+  --field: #ffffff; --code-bg: #f0f0ea;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161615; --card: #201f1e; --text: #ecebe6; --muted: #a09f98; --line: #34332f;
+    --accent: #6f9dff; --accent-text: #10100f; --good: #5dc48a; --warn: #e0b05a; --bad: #f08374;
+    --field: #191918; --code-bg: #2a2927;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+main { max-width: 960px; margin: 0 auto; padding: 24px 16px 64px; }
+header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
+h2 { font-size: 16px; margin: 0; }
+.grow { flex: 1; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin-bottom: 16px; }
+.card-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px 20px; margin: 0; }
+.facts div { min-width: 0; }
+.facts dt { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+.facts dd { margin: 2px 0 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px; border-radius: 999px; font-size: 13px; border: 1px solid var(--line); white-space: nowrap; }
+.pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.pill.good::before { background: var(--good); }
+.pill.warn::before { background: var(--warn); }
+.pill.bad::before { background: var(--bad); }
+.pill.busy::before { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) { .pill.busy::before { animation: none; } }
+button {
+  font: inherit; color: var(--text); background: transparent; border: 1px solid var(--line);
+  border-radius: 8px; padding: 6px 12px; cursor: pointer;
+}
+button:hover { border-color: var(--muted); }
+button:disabled { opacity: 0.5; cursor: default; }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+button.danger { color: var(--bad); }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+input, select {
+  font: inherit; color: var(--text); background: var(--field); border: 1px solid var(--line);
+  border-radius: 8px; padding: 6px 10px; min-width: 0;
+}
+label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+.row { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; }
+.row label { flex: 1 1 180px; }
+.table-wrap { overflow-x: auto; margin: 0 -18px; padding: 0 18px; }
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; font-size: 12px; font-weight: 500; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; padding: 6px 12px 6px 0; white-space: nowrap; }
+td { padding: 10px 12px 10px 0; border-top: 1px solid var(--line); vertical-align: top; }
+td:last-child, th:last-child { padding-right: 0; text-align: right; white-space: nowrap; }
+td.wrap { overflow-wrap: anywhere; min-width: 160px; }
+code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+.code-box {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 12px;
+  background: var(--code-bg); border-radius: 10px; padding: 12px 14px;
+}
+.code-box .code { font: 600 26px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.08em; }
+.error { color: var(--bad); overflow-wrap: anywhere; }
+.empty { color: var(--muted); padding: 6px 0; }
+.bar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; min-width: 80px; margin-top: 6px; }
+.bar i { display: block; height: 100%; background: var(--accent); }
+details { margin-top: 12px; }
+summary { cursor: pointer; color: var(--muted); }
+details .row { margin-top: 10px; }
+#toast {
+  position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); max-width: calc(100vw - 32px);
+  background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px; display: none;
+}
+#login { max-width: 360px; margin: 12vh auto 0; }
+#login form { display: grid; gap: 12px; }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <section id="login" class="card" hidden>
+    <h1>Eddy Server</h1>
+    <p class="muted">Sign in with the admin password set on the server (<code>EDDY_ADMIN_PASSWORD</code>).</p>
+    <form id="login-form">
+      <label>Password <input id="password" type="password" autocomplete="current-password" required></label>
+      <button class="primary" type="submit">Sign In</button>
+      <div id="login-error" class="error small" role="alert"></div>
+    </form>
+  </section>
+
+  <div id="app" hidden>
+    <header>
+      <h1>Eddy Server</h1>
+      <span id="version" class="muted"></span>
+      <span class="grow"></span>
+      <span id="stale" class="pill warn" hidden>Not updating</span>
+      <button id="logout">Sign Out</button>
+    </header>
+
+    <section class="card" aria-labelledby="h-service">
+      <div class="card-head">
+        <h2 id="h-service">Service</h2>
+        <span id="service-pill" class="pill"></span>
+      </div>
+      <dl id="service-facts" class="facts"></dl>
+    </section>
+
+    <section class="card" aria-labelledby="h-devices">
+      <div class="card-head">
+        <h2 id="h-devices">Devices</h2>
+        <span class="grow"></span>
+        <label class="small" style="display:flex;align-items:center;gap:6px">Valid for
+          <select id="code-minutes">
+            <option value="15">15 minutes</option>
+            <option value="60">1 hour</option>
+            <option value="1440">24 hours</option>
+          </select>
+        </label>
+        <button id="new-code" class="primary">New Pairing Code</button>
+      </div>
+      <div id="code-box" class="code-box" hidden>
+        <span id="code" class="code"></span>
+        <button id="copy-code">Copy</button>
+        <span id="code-note" class="muted small"></span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Name</th><th>Paired</th><th>Last seen</th><th></th></tr></thead>
+          <tbody id="devices"></tbody>
+        </table>
+      </div>
+      <p class="muted small">A pairing code lets one new device join and read everything on this server. It works once. Enter it in Eddy under Settings, Accounts.</p>
+    </section>
+
+    <section class="card" aria-labelledby="h-fresh">
+      <div class="card-head">
+        <h2 id="h-fresh">FreshRSS</h2>
+        <span id="fresh-pill" class="pill"></span>
+        <span class="grow"></span>
+        <button id="refresh">Refresh Now</button>
+      </div>
+      <dl id="fresh-facts" class="facts"></dl>
+      <div id="fresh-error" class="error small" style="margin-top:10px" hidden></div>
+      <details id="account-details">
+        <summary id="account-summary">Change account</summary>
+        <form id="account-form">
+          <div class="row">
+            <label>Address <input id="acct-url" type="url" placeholder="https://rss.example.com" required></label>
+            <label>Username <input id="acct-user" autocomplete="off" required></label>
+            <label>API password <input id="acct-pass" type="password" autocomplete="off" required></label>
+            <button class="primary" type="submit">Save</button>
+          </div>
+          <p class="muted small">Use the address your devices use for FreshRSS: article IDs are derived from it. Changing to a different account does not remove the old account's articles.</p>
+        </form>
+      </details>
+    </section>
+
+    <section class="card" aria-labelledby="h-video">
+      <div class="card-head">
+        <h2 id="h-video">Video to Book</h2>
+        <span id="video-pill" class="pill"></span>
+      </div>
+      <form id="video-form" class="row">
+        <label>Video link <input id="video-url" type="url" placeholder="https://www.youtube.com/watch?v=…" required></label>
+        <button class="primary" type="submit">Convert</button>
+      </form>
+      <p id="video-note" class="muted small" hidden>Video jobs are not set up on this server. Set <code>EDDY_VIDEO_STAGE2_*</code> in <code>.env</code> and restart it.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Video</th><th>Status</th><th>Updated</th><th></th></tr></thead>
+          <tbody id="jobs"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</main>
+<div id="toast" role="status"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+let state = null;
+let timer = null;
+let lastOk = 0;
+let codeExpires = 0;
+
+function el(tag, props, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(props || {})) {
+    if (k === "class") node.className = v;
+    else if (k === "onclick") node.addEventListener("click", v);
+    else if (v !== false && v != null) node.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of children) if (c != null) node.append(c);
+  return node;
+}
+
+function toast(text) {
+  const t = $("toast");
+  t.textContent = text;
+  t.style.display = "block";
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => { t.style.display = "none"; }, 5000);
+}
+
+async function api(method, path, body) {
+  const res = await fetch("/admin/api/" + path, {
+    method,
+    credentials: "same-origin",
+    headers: Object.assign({ "x-eddy-admin": "1" }, body ? { "content-type": "application/json" } : {}),
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (res.status === 401 && path !== "login") {
+    showLogin();
+    throw new Error("Signed out.");
+  }
+  if (!res.ok) {
+    let message = res.statusText || ("HTTP " + res.status);
+    try { message = (await res.json()).error || message; } catch (_) {}
+    throw new Error(message);
+  }
+  return res.status === 204 || res.status === 202 ? null : res.json();
+}
+
+function ago(ms, now) {
+  if (!ms) return "Never";
+  const s = Math.max(0, Math.round((now - ms) / 1000));
+  if (s < 5) return "Just now";
+  if (s < 60) return s + " seconds ago";
+  const m = Math.round(s / 60);
+  if (m < 60) return m + (m === 1 ? " minute ago" : " minutes ago");
+  const h = Math.round(m / 60);
+  if (h < 48) return h + (h === 1 ? " hour ago" : " hours ago");
+  return Math.round(h / 24) + " days ago";
+}
+
+function span(seconds) {
+  if (seconds < 90) return Math.round(seconds) + " seconds";
+  const m = Math.round(seconds / 60);
+  if (m < 90) return m + " minutes";
+  const h = Math.round(m / 60);
+  if (h < 48) return h + " hours";
+  return Math.round(h / 24) + " days";
+}
+
+function bytes(n) {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return (i === 0 ? n : n.toFixed(n < 10 ? 1 : 0)) + " " + units[i];
+}
+
+function day(ms) {
+  return new Date(ms).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+function facts(target, pairs) {
+  target.replaceChildren(...pairs.map(([k, v, title]) =>
+    el("div", null, el("dt", null, k), el("dd", title ? { title } : null, v))));
+}
+
+function pill(node, kind, text) {
+  node.className = "pill " + kind;
+  node.textContent = text;
+}
+
+function render() {
+  const s = state;
+  const now = s.service.now;
+  $("version").textContent = "Core " + s.service.version;
+
+  pill($("service-pill"), s.service.healthy ? "good" : "bad", s.service.healthy ? "Running" : "Database unavailable");
+  facts($("service-facts"), [
+    ["Uptime", span((now - s.service.started_at) / 1000)],
+    ["Sync protocol", s.service.min_protocol === s.service.protocol
+      ? String(s.service.protocol) : s.service.protocol + " (accepts " + s.service.min_protocol + "+)"],
+    ["Changes logged", s.service.cursor.toLocaleString()],
+    ["Connected now", s.service.live_connections + (s.service.live_connections === 1 ? " device" : " devices")],
+    ["Database", bytes(s.service.database_bytes)],
+    ["Content", bytes(s.service.content_bytes)],
+    ["Search index", bytes(s.service.index_bytes)],
+    ["Server ID", el("span", { class: "mono" }, s.service.server_id.slice(0, 8)), s.service.server_id],
+  ]);
+
+  const devices = $("devices");
+  devices.replaceChildren(...s.devices.map((d) => el("tr", null,
+    el("td", { class: "wrap" }, d.name || "Unnamed", el("div", { class: "muted small mono", title: d.id }, d.id.slice(0, 8))),
+    el("td", null, day(d.created_at)),
+    el("td", null, ago(d.last_seen, now)),
+    el("td", null, el("button", { class: "danger", onclick: () => revoke(d) }, "Revoke")))));
+  if (!s.devices.length) {
+    devices.append(el("tr", null, el("td", { colspan: "4", class: "empty" }, "No devices yet. Create a pairing code to add one.")));
+  }
+
+  const f = s.freshrss;
+  if (!f.account) pill($("fresh-pill"), "warn", "No account");
+  else if (f.refreshing) pill($("fresh-pill"), "busy", "Refreshing");
+  else if (f.last_error) pill($("fresh-pill"), "bad", "Last refresh failed");
+  else if (f.loading_history) pill($("fresh-pill"), "busy", "Loading older articles");
+  else pill($("fresh-pill"), "good", "Up to date");
+  facts($("fresh-facts"), [
+    ["Account", f.account ? f.account.username + " · " + f.account.base_url : "Not set"],
+    ["Last refresh", ago(f.last_refresh, now)],
+    ["Refreshes every", f.interval ? span(f.interval) : "Not scheduled"],
+    ["Feeds", f.feeds.toLocaleString()],
+    ["Articles", f.articles.toLocaleString()],
+  ]);
+  $("fresh-error").hidden = !f.last_error;
+  $("fresh-error").textContent = f.last_error || "";
+  $("refresh").disabled = !f.account || f.refreshing;
+  $("account-summary").textContent = f.account ? "Change account" : "Set account";
+  if (!f.account) $("account-details").open = true;
+
+  const v = s.video;
+  pill($("video-pill"), v.capable ? "good" : "", v.capable ? "Ready" : "Not set up");
+  $("video-form").hidden = !v.capable;
+  $("video-note").hidden = v.capable;
+  const jobs = $("jobs");
+  jobs.replaceChildren(...v.jobs.map((j) => jobRow(j, now)));
+  if (!v.jobs.length) jobs.append(el("tr", null, el("td", { colspan: "4", class: "empty" }, "No video jobs.")));
+}
+
+const JOB_STATUS = {
+  queued: ["", "Queued"], running: ["busy", "Running"], succeeded: ["good", "Done"],
+  failed: ["bad", "Failed"], canceled: ["warn", "Canceled"],
+};
+
+function jobRow(j, now) {
+  const [kind, label] = JOB_STATUS[j.status] || ["", j.status];
+  const active = j.status === "queued" || j.status === "running";
+  const status = el("td", { class: "wrap" }, el("span", { class: "pill " + kind }, label));
+  if (j.status === "running") {
+    const text = j.total_chapters
+      ? j.phase + " · " + j.completed_chapters + " of " + j.total_chapters + " chapters" : j.phase;
+    status.append(el("div", { class: "muted small" }, text));
+    if (j.total_chapters) {
+      const fill = el("i");
+      fill.style.width = Math.round(100 * j.completed_chapters / j.total_chapters) + "%";
+      status.append(el("div", { class: "bar" }, fill));
+    }
+  }
+  if (j.detail && active) status.append(el("div", { class: "muted small" }, j.detail));
+  if (j.error) status.append(el("div", { class: "error small" }, j.error));
+  const actions = el("td");
+  if (active) actions.append(el("button", { onclick: () => jobAction(j, "cancel") }, "Cancel"));
+  else {
+    if (j.status !== "succeeded") actions.append(el("button", { onclick: () => jobAction(j, "retry") }, "Retry"), " ");
+    actions.append(el("button", { onclick: () => jobAction(j, "dismiss") }, "Clear"));
+  }
+  return el("tr", null,
+    el("td", { class: "wrap" }, j.title || "Untitled", el("div", { class: "muted small" }, j.source)),
+    status, el("td", null, ago(j.updated_at, now)), actions);
+}
+
+async function load() {
+  try {
+    state = await api("GET", "state");
+    lastOk = Date.now();
+    $("stale").hidden = true;
+    $("login").hidden = true;
+    $("app").hidden = false;
+    render();
+  } catch (e) {
+    if (!$("app").hidden && Date.now() - lastOk > 15000) {
+      $("stale").hidden = false;
+      $("stale").title = e.message;
+    }
+  }
+  schedule();
+}
+
+function schedule() {
+  clearTimeout(timer);
+  if ($("app").hidden) return;
+  const busy = state && (state.freshrss.refreshing || state.freshrss.loading_history
+    || state.video.jobs.some((j) => j.status === "queued" || j.status === "running"));
+  timer = setTimeout(load, document.hidden ? 30000 : busy ? 2000 : 6000);
+}
+
+function showLogin() {
+  clearTimeout(timer);
+  state = null;
+  $("app").hidden = true;
+  $("login").hidden = false;
+  $("code-box").hidden = true;
+  $("password").focus();
+}
+
+async function act(run, done) {
+  try {
+    await run();
+    if (done) toast(done);
+    await load();
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+function revoke(d) {
+  if (!confirm("Revoke “" + (d.name || d.id) + "”? It stops syncing until it is paired again. Nothing on the device is deleted.")) return;
+  act(() => api("DELETE", "devices/" + encodeURIComponent(d.id)), "Device revoked.");
+}
+
+function jobAction(j, action) {
+  if (action === "dismiss") return act(() => api("DELETE", "video-jobs/" + encodeURIComponent(j.id)));
+  act(() => api("POST", "video-jobs/" + encodeURIComponent(j.id) + "/" + action));
+}
+
+function tickCode() {
+  if ($("code-box").hidden) return;
+  const left = Math.round((codeExpires - Date.now()) / 1000);
+  if (left <= 0) {
+    $("code-box").hidden = true;
+    return;
+  }
+  $("code-note").textContent = "Works once. Expires in " + span(left) + ".";
+  setTimeout(tickCode, 1000);
+}
+
+$("login-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $("login-error").textContent = "";
+  try {
+    await api("POST", "login", { password: $("password").value });
+    $("password").value = "";
+    await load();
+  } catch (err) {
+    $("login-error").textContent = err.message;
+  }
+});
+
+$("logout").addEventListener("click", async () => {
+  try { await api("POST", "logout"); } catch (_) {}
+  showLogin();
+});
+
+$("new-code").addEventListener("click", () => act(async () => {
+  const made = await api("POST", "pairing-codes", { minutes: Number($("code-minutes").value) });
+  $("code").textContent = made.code;
+  // Count down on this clock, from how long the server said the code lives.
+  codeExpires = Date.now() + (made.expires_at - (state ? state.service.now : Date.now()));
+  $("code-box").hidden = false;
+  tickCode();
+}));
+
+$("copy-code").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText($("code").textContent);
+    toast("Copied.");
+  } catch (_) {
+    toast("Could not copy. Select the code and copy it by hand.");
+  }
+});
+
+$("refresh").addEventListener("click", () => act(() => api("POST", "refresh")));
+
+$("account-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const current = state && state.freshrss.account;
+  if (current && !confirm("Replace the FreshRSS account " + current.username + " · " + current.base_url + "? Every device follows the server's account.")) return;
+  act(async () => {
+    await api("POST", "account", {
+      base_url: $("acct-url").value.trim(), username: $("acct-user").value.trim(), password: $("acct-pass").value,
+    });
+    $("acct-pass").value = "";
+    $("account-details").open = false;
+  }, "Account saved. Loading articles…");
+});
+
+$("video-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  act(async () => {
+    await api("POST", "video-jobs", { source: $("video-url").value.trim() });
+    $("video-url").value = "";
+  }, "Video queued.");
+});
+
+document.addEventListener("visibilitychange", () => { if (!document.hidden && !$("app").hidden) load(); });
+
+(async () => {
+  try {
+    state = await api("GET", "state");
+    lastOk = Date.now();
+    $("app").hidden = false;
+    render();
+    schedule();
+  } catch (_) {
+    showLogin();
+  }
+})();
+</script>
+</body>
+</html>

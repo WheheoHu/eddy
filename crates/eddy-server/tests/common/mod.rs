@@ -210,9 +210,19 @@ impl TestServer {
     }
 
     pub async fn start_at(dir: &Path, addr: SocketAddr) -> TestServer {
+        Self::launch(dir, addr, None).await
+    }
+
+    /// With the admin page turned on.
+    pub async fn start_with_admin(dir: &Path, password: &str) -> TestServer {
+        Self::launch(dir, "127.0.0.1:0".parse().unwrap(), Some(password)).await
+    }
+
+    async fn launch(dir: &Path, addr: SocketAddr, admin: Option<&str>) -> TestServer {
         let state = AppState::open(&ServerConfig {
             data_dir: dir.to_path_buf(),
             master_key: [9u8; 32],
+            admin_password: admin.map(String::from),
         })
         .unwrap();
         let listener = tokio::net::TcpListener::bind(addr).await.unwrap();

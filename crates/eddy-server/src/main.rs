@@ -6,7 +6,7 @@
 //!
 //! Environment: EDDY_DATA_DIR (default /data), EDDY_BIND (default
 //! 0.0.0.0:8080), EDDY_MASTER_KEY (base64, 32 bytes), EDDY_REFRESH_MINUTES
-//! (default 15).
+//! (default 15), EDDY_ADMIN_PASSWORD (turns on the admin page at /admin).
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -74,6 +74,9 @@ async fn serve(data_dir: PathBuf) {
     let state = AppState::open(&ServerConfig {
         data_dir,
         master_key,
+        admin_password: std::env::var("EDDY_ADMIN_PASSWORD")
+            .ok()
+            .filter(|p| !p.trim().is_empty()),
     })
     .unwrap_or_else(|e| fail(&e));
     let minutes: u64 = env("EDDY_REFRESH_MINUTES", "15")

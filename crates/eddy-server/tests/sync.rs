@@ -83,6 +83,7 @@ async fn standalone_client_migrates_and_a_second_device_joins() {
     let state = AppState::open(&ServerConfig {
         data_dir: server_dir.path().to_path_buf(),
         master_key: [9u8; 32],
+        admin_password: None,
     })
     .unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -290,6 +291,7 @@ async fn server_loads_history_in_the_background_and_announces_it() {
     let state = AppState::open(&ServerConfig {
         data_dir: server_dir.path().to_path_buf(),
         master_key: [3u8; 32],
+        admin_password: None,
     })
     .unwrap();
     state
@@ -330,6 +332,7 @@ async fn unauthenticated_and_tampered_requests_are_rejected() {
     let state = AppState::open(&ServerConfig {
         data_dir: server_dir.path().to_path_buf(),
         master_key: [1u8; 32],
+        admin_password: None,
     })
     .unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -18,9 +18,20 @@ The port is mapped to `127.0.0.1:8787` only. `docker compose ps` shows the conta
 
 To check a build end to end before trusting it with data, run `scripts/test-server-smoke.sh` from the repository root: it starts a throwaway server, pairs two `eddy-cli` devices with it, stops it, makes changes offline, starts it again and checks that both devices converge.
 
+## Admin page
+
+Set `EDDY_ADMIN_PASSWORD` in `.env` and restart (`docker compose up -d`) to turn on the admin page at <http://127.0.0.1:8787/admin>. Signed in with that password you can:
+
+- create pairing codes, see paired devices and when each last synced, and revoke one;
+- see whether FreshRSS is in step (last refresh, last error, feeds and articles), refresh now, and set or change the account;
+- watch video-to-book jobs, queue a link, and retry, cancel or clear jobs;
+- check the service: version, uptime, connected devices and disk use.
+
+Without the variable the page does not exist (`/admin` answers 404) and everything below still works from the command line. A pairing code gives a new device everything on the server, so treat the password accordingly: sign-in attempts slow down after a few wrong ones, a session lasts 12 hours and ends when the server restarts, and if the server is ever reachable from outside this machine it must be behind HTTPS.
+
 ## Pairing devices
 
-Each device needs a one-time pairing code (valid for 15 minutes by default):
+Each device needs a one-time pairing code (valid for 15 minutes by default), from the admin page or:
 
 ```sh
 docker compose exec eddy-server eddy-server pairing-code
