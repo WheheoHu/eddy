@@ -180,6 +180,24 @@ public final class KeychainPlatform: PlatformServices, @unchecked Sendable {
 }
 
 public enum EddyPaths {
+    /// Keychain service that holds this data directory's secrets. A
+    /// directory chosen with `EDDY_DATA_DIR` (development, tests) gets its
+    /// own, so trying things out there (pairing with a test server, say)
+    /// never writes into the secrets of the real installation.
+    public static var keychainService: String {
+        let standard = "dev.eddy.Eddy"
+        guard let override = ProcessInfo.processInfo.environment["EDDY_DATA_DIR"], !override.isEmpty else {
+            return standard
+        }
+        let path = URL(fileURLWithPath: override, isDirectory: true).standardizedFileURL.path
+        // FNV-1a: stable across launches, unlike `hashValue`.
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in path.utf8 {
+            hash = (hash ^ UInt64(byte)) &* 0x100_0000_01b3
+        }
+        return "\(standard).dev.\(String(hash, radix: 16))"
+    }
+
     /// `~/Library/Application Support/Eddy`, created on first use.
     /// Development builds can point elsewhere with `EDDY_DATA_DIR`.
     public static var dataDirectory: URL {

@@ -23,6 +23,15 @@ pub struct StatusView {
     pub account: Option<AccountView>,
     pub last_refresh: Option<i64>,
     pub last_error: Option<String>,
+    /// Server mode: whether the last request reached the server.
+    pub server_online: bool,
+    /// Local changes waiting to be uploaded to the server.
+    pub pending_uploads: u32,
+    /// Changes the server refused for good.
+    pub rejected_uploads: u32,
+    /// Server mode: new articles still arrive (from FreshRSS directly)
+    /// while the server is offline.
+    pub offline_refresh: bool,
 }
 
 impl From<EngineStatus> for StatusView {
@@ -39,6 +48,10 @@ impl From<EngineStatus> for StatusView {
             }),
             last_refresh: s.last_refresh,
             last_error: s.last_error,
+            server_online: s.server_online,
+            pending_uploads: s.pending_uploads,
+            rejected_uploads: s.rejected_uploads,
+            offline_refresh: s.offline_refresh,
         }
     }
 }
@@ -48,6 +61,8 @@ pub struct RefreshSummaryView {
     pub new_items: u32,
     pub state_changes: u32,
     pub sources: u32,
+    /// The server was unreachable: new articles came straight from FreshRSS.
+    pub offline: bool,
 }
 
 impl From<RefreshSummary> for RefreshSummaryView {
@@ -56,6 +71,7 @@ impl From<RefreshSummary> for RefreshSummaryView {
             new_items: s.new_items,
             state_changes: s.state_changes,
             sources: s.sources,
+            offline: s.offline,
         }
     }
 }

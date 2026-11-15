@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::progress::{SearchResultView, TextRangeView};
 use crate::{AccountView, EddyEngine, EddyError};
 
@@ -8,6 +10,14 @@ pub struct ServerStatusView {
     pub account: Option<AccountView>,
     pub cursor: i64,
     pub video_capable: bool,
+    /// The server's core version, e.g. `0.2.0 (1a2b3c4)`.
+    pub version: String,
+}
+
+/// Told when a background sync changed local data, so lists can reload.
+#[uniffi::export(with_foreign)]
+pub trait SyncListener: Send + Sync {
+    fn on_change(&self);
 }
 
 impl From<eddy_core::ServerStatus> for ServerStatusView {
@@ -21,6 +31,7 @@ impl From<eddy_core::ServerStatus> for ServerStatusView {
             }),
             cursor: s.cursor,
             video_capable: s.video_capable,
+            version: s.version,
         }
     }
 }
@@ -38,6 +49,12 @@ type R<T> = Result<T, EddyError>;
 
 #[uniffi::export]
 impl EddyEngine {
+    pub fn set_sync_listener(&self, listener: Option<Arc<dyn SyncListener>>) {
+        self.engine.set_change_listener(
+            listener.map(|l| Arc::new(move || l.on_change()) as Arc<dyn Fn() + Send + Sync>),
+        );
+    }
+
     /// Per-source totals (articles, unread, latest update, last read) for
     /// library shelves.
     pub fn source_overview(&self) -> R<Vec<SourceStatsView>> {

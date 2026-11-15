@@ -130,10 +130,22 @@ const MIGRATIONS: &[&str] = &[
     "#,
 ];
 
+/// How many migrations this build knows: the schema version it writes.
+pub const SCHEMA_VERSION: usize = MIGRATIONS.len();
+
+/// The schema version of the database, before any migration runs.
+pub fn version(conn: &Connection) -> rusqlite::Result<usize> {
+    Ok(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? as usize)
+}
+
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
-    let current: usize =
-        conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? as usize;
-    for (i, sql) in MIGRATIONS.iter().enumerate().skip(current) {
+    migrate_to(conn, SCHEMA_VERSION)
+}
+
+/// Runs the migrations up to schema version `target`.
+pub(crate) fn migrate_to(conn: &mut Connection, target: usize) -> rusqlite::Result<()> {
+    let current = version(conn)?;
+    for (i, sql) in MIGRATIONS.iter().enumerate().take(target).skip(current) {
         let tx = conn.transaction()?;
         tx.execute_batch(sql)?;
         tx.pragma_update(None, "user_version", (i + 1) as i64)?;

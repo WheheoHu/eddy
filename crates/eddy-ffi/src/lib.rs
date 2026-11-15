@@ -30,6 +30,15 @@ pub enum EddyError {
     NotConfigured,
     #[error("找不到这篇内容。")]
     NotFound,
+    /// The sync server cannot be reached. Local work continues.
+    #[error("{0}")]
+    Offline(String),
+    /// The server no longer accepts this device: pair again.
+    #[error("{0}")]
+    Unauthorized(String),
+    /// Client and server versions are too far apart to sync.
+    #[error("{0}")]
+    UpgradeRequired(String),
     #[error("{0}")]
     Failed(String),
 }
@@ -39,6 +48,9 @@ impl From<EngineError> for EddyError {
         match e {
             EngineError::NotConfigured => EddyError::NotConfigured,
             EngineError::NotFound => EddyError::NotFound,
+            EngineError::Offline(_) => EddyError::Offline(e.to_string()),
+            EngineError::Unauthorized => EddyError::Unauthorized(e.to_string()),
+            EngineError::UpgradeRequired(_) => EddyError::UpgradeRequired(e.to_string()),
             other => EddyError::Failed(other.to_string()),
         }
     }
@@ -167,9 +179,22 @@ pub fn typography_spans(text: String) -> Vec<TypoSpanView> {
         .collect()
 }
 
+/// Version of the Rust core, e.g. `0.2.0`. The app has its own version.
 #[uniffi::export]
 pub fn core_version() -> String {
-    env!("CARGO_PKG_VERSION").to_string()
+    eddy_core::CORE_VERSION.to_string()
+}
+
+/// Short hash of the commit the core was built from.
+#[uniffi::export]
+pub fn core_commit() -> String {
+    eddy_core::CORE_COMMIT.to_string()
+}
+
+/// Version of the sync protocol the core speaks.
+#[uniffi::export]
+pub fn core_protocol_version() -> u32 {
+    eddy_core::SYNC_PROTOCOL_VERSION
 }
 
 #[derive(uniffi::Object)]

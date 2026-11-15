@@ -2,151 +2,16 @@
 //! (separate data directory) joins, and changes flow between them and back to
 //! FreshRSS.
 
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+mod common;
+
 use std::time::Duration;
 
-use eddy_core::{Engine, EngineOptions, ItemFilter, ItemQuery, MemoryPlatform, Mode};
+use common::*;
+use eddy_core::{Engine, ItemFilter, ItemQuery, Mode};
 use eddy_server::{AppState, ServerConfig, create_pairing_code, router};
 use serde_json::json;
 use wiremock::matchers::{method, path, path_regex, query_param, query_param_is_missing};
-use wiremock::{Mock, MockServer, Request, ResponseTemplate};
-
-const READ: &str = "user/-/state/com.google/read";
-const STARRED: &str = "user/-/state/com.google/starred";
-
-#[derive(Default)]
-struct FreshState {
-    listed: Vec<u64>,
-    unread: HashSet<u64>,
-    starred: HashSet<u64>,
-}
-
-/// FreshRSS mock whose read/starred state changes with edit-tag calls.
-async fn stateful_freshrss() -> (MockServer, Arc<Mutex<FreshState>>) {
-    let server = MockServer::start().await;
-    let state = Arc::new(Mutex::new(FreshState {
-        listed: vec![1, 2, 3],
-        unread: [2, 3].into(),
-        starred: [1].into(),
-    }));
-    let titles = [
-        (1u64, "Old post"),
-        (2, "New post"),
-        (3, "Unread elsewhere"),
-        (4, "Read on the web"),
-    ];
-
-    let item = move |st: &FreshState, n: u64| {
-        let title = titles.iter().find(|(i, _)| *i == n).unwrap().1;
-        let mut cats = vec!["user/-/state/com.google/reading-list".to_string()];
-        if !st.unread.contains(&n) {
-            cats.push(READ.into());
-        }
-        if st.starred.contains(&n) {
-            cats.push(STARRED.into());
-        }
-        json!({
-            "id": format!("tag:google.com,2005:reader/item/{n:016x}"), "title": title, "published": 1_700_000_000 + n,
-            "categories": cats, "alternate": [{"href": format!("https://blog.example/{n}")}],
-            "summary": {"content": format!("<p>Body of {title} about path tracing and radiance.</p>")},
-            "origin": {"streamId": "feed/1", "title": "Graphics Blog"}
-        })
-    };
-
-    Mock::given(method("POST"))
-        .and(path("/api/greader.php/accounts/ClientLogin"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("Auth=t\n"))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/api/greader.php/reader/api/0/token"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("T"))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/api/greader.php/reader/api/0/subscription/list"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"subscriptions": [{"id": "feed/1", "title": "Graphics Blog", "categories": [{"label": "Tech"}]}]})))
-        .mount(&server)
-        .await;
-    let st = state.clone();
-    Mock::given(method("GET"))
-        .and(path("/api/greader.php/reader/api/0/stream/items/ids"))
-        .respond_with(move |req: &Request| {
-            let q: std::collections::HashMap<String, String> = req.url.query_pairs().into_owned().collect();
-            let s = st.lock().unwrap();
-            let ids: Vec<u64> = if q.get("s").map(String::as_str) == Some(STARRED) { s.starred.iter().copied().collect() } else { s.unread.iter().copied().collect() };
-            ResponseTemplate::new(200).set_body_json(json!({"itemRefs": ids.iter().map(|i| json!({"id": i.to_string()})).collect::<Vec<_>>()}))
-        })
-        .mount(&server)
-        .await;
-    let st = state.clone();
-    let it = item;
-    Mock::given(method("GET"))
-        .and(path_regex(
-            "^/api/greader.php/reader/api/0/stream/contents/.*",
-        ))
-        .respond_with(move |_: &Request| {
-            let s = st.lock().unwrap();
-            let items: Vec<_> = s.listed.iter().map(|n| it(&s, *n)).collect();
-            ResponseTemplate::new(200).set_body_json(json!({ "items": items }))
-        })
-        .mount(&server)
-        .await;
-    let st = state.clone();
-    Mock::given(method("POST"))
-        .and(path("/api/greader.php/reader/api/0/stream/items/contents"))
-        .respond_with(move |req: &Request| {
-            let s = st.lock().unwrap();
-            let items: Vec<_> = url::form_urlencoded::parse(&req.body)
-                .filter(|(k, _)| k == "i")
-                .filter_map(|(_, v)| u64::from_str_radix(v.rsplit('/').next()?, 16).ok())
-                .filter(|n| s.listed.contains(n))
-                .map(|n| item(&s, n))
-                .collect();
-            ResponseTemplate::new(200).set_body_json(json!({ "items": items }))
-        })
-        .mount(&server)
-        .await;
-    let st = state.clone();
-    Mock::given(method("POST"))
-        .and(path("/api/greader.php/reader/api/0/edit-tag"))
-        .respond_with(move |req: &Request| {
-            let form: Vec<(String, String)> = url::form_urlencoded::parse(&req.body)
-                .into_owned()
-                .collect();
-            let ids: Vec<u64> = form
-                .iter()
-                .filter(|(k, _)| k == "i")
-                .filter_map(|(_, v)| u64::from_str_radix(v.rsplit('/').next()?, 16).ok())
-                .collect();
-            let mut s = st.lock().unwrap();
-            for (k, tag) in form.iter().filter(|(k, _)| k == "a" || k == "r") {
-                for id in &ids {
-                    let add = k == "a";
-                    match (tag.as_str(), add) {
-                        (READ, true) => {
-                            s.unread.remove(id);
-                        }
-                        (READ, false) => {
-                            s.unread.insert(*id);
-                        }
-                        (STARRED, true) => {
-                            s.starred.insert(*id);
-                        }
-                        (STARRED, false) => {
-                            s.starred.remove(id);
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            ResponseTemplate::new(200).set_body_string("OK")
-        })
-        .mount(&server)
-        .await;
-    (server, state)
-}
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 async fn pages() -> MockServer {
     let server = MockServer::start().await;
@@ -180,36 +45,6 @@ fn book() -> Vec<u8> {
         zip.write_all(body).unwrap();
     }
     zip.finish().unwrap().into_inner()
-}
-
-fn client(dir: &std::path::Path) -> Engine {
-    Engine::open(
-        dir,
-        Arc::new(MemoryPlatform::default()),
-        EngineOptions::default(),
-    )
-    .unwrap()
-}
-
-fn find(engine: &Engine, title: &str) -> eddy_core::ItemRow {
-    let mut all = engine
-        .items(&ItemQuery {
-            limit: 1000,
-            ..Default::default()
-        })
-        .unwrap();
-    all.retain(|r| r.item.title == title);
-    all.pop().unwrap_or_else(|| panic!("{title} missing"))
-}
-
-async fn eventually(mut check: impl FnMut() -> bool) -> bool {
-    for _ in 0..100 {
-        if check() {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(30)).await;
-    }
-    false
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -248,6 +83,7 @@ async fn standalone_client_migrates_and_a_second_device_joins() {
     let state = AppState::open(&ServerConfig {
         data_dir: server_dir.path().to_path_buf(),
         master_key: [9u8; 32],
+        admin_password: None,
     })
     .unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -455,6 +291,7 @@ async fn server_loads_history_in_the_background_and_announces_it() {
     let state = AppState::open(&ServerConfig {
         data_dir: server_dir.path().to_path_buf(),
         master_key: [3u8; 32],
+        admin_password: None,
     })
     .unwrap();
     state
@@ -495,6 +332,7 @@ async fn unauthenticated_and_tampered_requests_are_rejected() {
     let state = AppState::open(&ServerConfig {
         data_dir: server_dir.path().to_path_buf(),
         master_key: [1u8; 32],
+        admin_password: None,
     })
     .unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

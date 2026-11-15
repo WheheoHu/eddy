@@ -2,10 +2,11 @@
 //! eddy-server pairing-code [MIN] print a one-time pairing code (default 15 minutes)
 //! eddy-server devices            list paired devices
 //! eddy-server remove-device ID   revoke a device
+//! eddy-server --version          print the core version and commit
 //!
 //! Environment: EDDY_DATA_DIR (default /data), EDDY_BIND (default
 //! 0.0.0.0:8080), EDDY_MASTER_KEY (base64, 32 bytes), EDDY_REFRESH_MINUTES
-//! (default 15).
+//! (default 15), EDDY_ADMIN_PASSWORD (turns on the admin page at /admin).
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -31,8 +32,12 @@ async fn main() {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
-    let data_dir = PathBuf::from(env("EDDY_DATA_DIR", "/data"));
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if matches!(args.first().map(String::as_str), Some("--version" | "-V")) {
+        println!("eddy-server {}", eddy_core::core_version());
+        return;
+    }
+    let data_dir = PathBuf::from(env("EDDY_DATA_DIR", "/data"));
     match args.first().map(String::as_str).unwrap_or("serve") {
         "serve" => serve(data_dir).await,
         "pairing-code" => {
@@ -69,6 +74,9 @@ async fn serve(data_dir: PathBuf) {
     let state = AppState::open(&ServerConfig {
         data_dir,
         master_key,
+        admin_password: std::env::var("EDDY_ADMIN_PASSWORD")
+            .ok()
+            .filter(|p| !p.trim().is_empty()),
     })
     .unwrap_or_else(|e| fail(&e));
     let minutes: u64 = env("EDDY_REFRESH_MINUTES", "15")
@@ -80,11 +88,38 @@ async fn serve(data_dir: PathBuf) {
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
         .unwrap_or_else(|e| fail(&format!("bind {bind}: {e}")));
-    tracing::info!("eddy-server listening on {bind}");
+    tracing::info!(
+        "eddy-server {} listening on {bind}",
+        eddy_core::core_version()
+    );
+    let closing = state.clone();
     axum::serve(listener, router(state))
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
+        .with_graceful_shutdown(async move {
+            shutdown().await;
+            tracing::info!("shutting down");
+            closing.closing.notify_waiters();
         })
         .await
         .unwrap_or_else(|e| fail(&e.to_string()));
+}
+
+/// Ctrl-C, or SIGTERM from `docker stop`: open requests finish first.
+async fn shutdown() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = term.recv() => {}
+            },
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }

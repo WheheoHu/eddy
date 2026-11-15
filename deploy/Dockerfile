@@ -6,6 +6,9 @@
 
 FROM rust:1-bookworm AS build
 WORKDIR /src
+# The build context has no .git; the commit comes in as a build argument.
+ARG EDDY_GIT_HASH=
+ENV EDDY_GIT_HASH=${EDDY_GIT_HASH}
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
@@ -26,6 +29,8 @@ ENV EDDY_DATA_DIR=/data \
     EDDY_BIND=0.0.0.0:8080 \
     RUST_LOG=info
 EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --start-interval=2s --retries=3 \
+  CMD curl -fsS http://127.0.0.1:8080/v1/health || exit 1
 VOLUME ["/data"]
 ENTRYPOINT ["eddy-server"]
 CMD ["serve"]

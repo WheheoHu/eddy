@@ -63,12 +63,28 @@ pub use platform::{LogLevel, MemoryPlatform, Platform};
 pub use progress::{ResumePoint, SeriesInfo};
 pub use rules::RulePackSummary;
 pub use search::SearchResult;
+pub use server::{AppliedOps, ServerOverview};
 pub use upstream::HistoryCallback;
 pub use video::{
     StartVideoJobOptions, VideoJobCallback, VideoJobInfo, VideoJobTarget, record_to_remote,
 };
 
 pub use eddy_store::{ItemFilter, ItemQuery, ItemRow};
+
+/// Version of the core (the Rust crates: engine, server, CLI). The apps
+/// carry their own version; see docs/adr/0009.
+pub const CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Version of the sync protocol this core speaks.
+pub const SYNC_PROTOCOL_VERSION: u32 = eddy_sync::PROTOCOL_VERSION;
+
+/// Short hash of the commit this core was built from, or `unknown`.
+pub const CORE_COMMIT: &str = env!("EDDY_GIT_HASH");
+
+/// `0.2.0 (1a2b3c4)`, for About screens and `--version`.
+pub fn core_version() -> String {
+    format!("{CORE_VERSION} ({CORE_COMMIT})")
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -82,6 +98,15 @@ pub enum EngineError {
     NotFound,
     #[error("网络请求失败：{0}")]
     Network(String),
+    /// The sync server cannot be reached; local work continues and is
+    /// uploaded when it comes back.
+    #[error("连不上服务端：{0}")]
+    Offline(String),
+    #[error("服务端拒绝了这台设备，请重新配对。")]
+    Unauthorized,
+    /// Client and server speak incompatible protocol versions.
+    #[error("{0}")]
+    UpgradeRequired(String),
     #[error("{0}")]
     Invalid(String),
 }

@@ -15,6 +15,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 pub use items::{ItemFilter, ItemQuery, ItemRow};
 pub use ops::{OpOrigin, StoredOp};
+pub use schema::SCHEMA_VERSION;
 pub use server::Device;
 pub use video_jobs::VideoJobRecord;
 
@@ -28,6 +29,11 @@ pub enum StoreError {
     Json(#[from] serde_json::Error),
     #[error("{0}")]
     Invalid(String),
+    /// The data was written by a newer Eddy than this one.
+    #[error(
+        "This data was created by a newer version of Eddy (data format {found}, this version reads up to {supported}). Update Eddy to open it."
+    )]
+    Newer { found: usize, supported: usize },
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;
@@ -49,6 +55,14 @@ impl Store {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        // An older build must not write into a schema it does not know.
+        let found = schema::version(&conn)?;
+        if found > schema::SCHEMA_VERSION {
+            return Err(StoreError::Newer {
+                found,
+                supported: schema::SCHEMA_VERSION,
+            });
+        }
         schema::migrate(&mut conn)?;
         Ok(Store {
             conn: Mutex::new(conn),

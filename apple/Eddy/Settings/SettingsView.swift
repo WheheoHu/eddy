@@ -12,6 +12,7 @@ enum SettingsTab: CaseIterable, Identifiable, RawRepresentable {
     case translation
     case summaries
     case video
+    case about
 
     init?(rawValue: String) {
         switch rawValue {
@@ -22,6 +23,7 @@ enum SettingsTab: CaseIterable, Identifiable, RawRepresentable {
         case "Translation", "AI": self = .translation
         case "Summaries": self = .summaries
         case "Video": self = .video
+        case "About": self = .about
         default: return nil
         }
     }
@@ -35,6 +37,7 @@ enum SettingsTab: CaseIterable, Identifiable, RawRepresentable {
         case .translation: "Translation"
         case .summaries: "Summaries"
         case .video: "Video"
+        case .about: "About"
         }
     }
 
@@ -49,6 +52,7 @@ enum SettingsTab: CaseIterable, Identifiable, RawRepresentable {
         case .translation: "translate"
         case .summaries: "sparkles"
         case .video: "film.stack"
+        case .about: "info.circle"
         }
     }
 
@@ -62,12 +66,13 @@ enum SettingsTab: CaseIterable, Identifiable, RawRepresentable {
         case .translation: .cyan
         case .summaries: .purple
         case .video: .indigo
+        case .about: .gray
         }
     }
 
     var group: SettingsGroup {
         switch self {
-        case .accounts, .reading, .saving, .storage: .general
+        case .accounts, .reading, .saving, .storage, .about: .general
         case .translation, .summaries, .video: .intelligence
         }
     }
@@ -126,6 +131,7 @@ struct SettingsView: View {
         case .reading: ReadingSettings()
         case .saving: SavingSettings()
         case .storage: StorageSettings()
+        case .about: AboutSettings()
         }
     }
 }
@@ -200,26 +206,54 @@ private struct AccountsSettings: View {
     @State private var pairingCode = ""
     @State private var note = ""
     @State private var working = false
+    /// What the server says about itself; nil while unknown or unreachable.
+    @State private var server: ServerStatusView?
+
+    private var status: StatusView? { model.status }
+    private var serverMode: Bool { status?.mode == .server }
 
     var body: some View {
         Form {
             Section("Status") {
                 LabeledContent("Mode", value: modeText)
-                if let account = model.status?.account {
+                if let account = status?.account {
                     LabeledContent("FreshRSS", value: "\(account.username) · \(account.baseUrl)")
                 }
-                if let error = model.status?.lastError {
+                if serverMode, let status {
+                    LabeledContent("Server") {
+                        Label(status.serverOnline ? "Online" : "Offline", systemImage: status.serverOnline ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                            .foregroundStyle(status.serverOnline ? .green : .orange)
+                    }
+                    if let server {
+                        LabeledContent("Server version", value: server.version.isEmpty ? "Unknown" : server.version)
+                    }
+                    if status.pendingUploads > 0 {
+                        LabeledContent("Waiting to upload", value: "\(status.pendingUploads) changes")
+                    }
+                    if status.rejectedUploads > 0 {
+                        LabeledContent("Refused by the server", value: "\(status.rejectedUploads) changes")
+                    }
+                    if !status.serverOnline {
+                        Text(status.offlineRefresh
+                            ? "Everything on this Mac keeps working. New articles come straight from FreshRSS, and your changes upload when the server is back."
+                            : "Everything on this Mac keeps working, and your changes upload when the server is back. New articles wait for the server.")
+                            .foregroundStyle(.secondary).font(.callout)
+                    }
+                }
+                if let error = status?.lastError, !(serverMode && status?.serverOnline == false) {
                     Text(error).foregroundStyle(.red).font(.callout)
                 }
             }
-            if model.status?.mode != .server {
+            if serverMode {
+                serverFreshRSS
+            } else {
                 Section {
                     TextField("Server address", text: $freshURL, prompt: Text("https://rss.example.com"))
                     TextField("Username", text: $freshUser)
                     SecureField("API password", text: $freshPassword)
                     HStack {
                         Button("Connect") { connectFresh() }.disabled(working || freshURL.isEmpty || freshUser.isEmpty || freshPassword.isEmpty)
-                        if model.status?.mode == .standalone {
+                        if status?.mode == .standalone {
                             Button("Remove Account", role: .destructive) {
                                 try? model.engine?.removeAccount()
                                 model.reload()
@@ -234,9 +268,10 @@ private struct AccountsSettings: View {
             }
             WebSignInSection()
             Section {
-                if model.status?.mode == .server {
+                if serverMode {
                     Button("Disconnect from Server", role: .destructive) {
                         try? model.engine?.disconnectServer()
+                        server = nil
                         model.reload()
                     }
                 } else {
@@ -247,7 +282,9 @@ private struct AccountsSettings: View {
             } header: {
                 Text("Sync Server (optional)")
             } footer: {
-                Text("Pairing moves your FreshRSS account and everything you read and saved on this Mac to your eddy-server. Create a code with “eddy-server pairing-code”.")
+                Text(serverMode
+                    ? "Disconnecting keeps everything on this Mac. With a FreshRSS account here it carries on directly with FreshRSS."
+                    : "Pairing gives your eddy-server your FreshRSS account and uploads everything you read and saved on this Mac. The account also stays here, so new articles still arrive while the server is offline. Create a code with “eddy-server pairing-code”.")
                     .foregroundStyle(.secondary)
             }
             if !note.isEmpty {
@@ -255,14 +292,61 @@ private struct AccountsSettings: View {
             }
         }
         .formStyle(.grouped)
+        .task(id: status?.mode) { await loadServer() }
+    }
+
+    /// Server mode: the account the server reads, and whether this Mac can
+    /// read it too while the server is offline.
+    @ViewBuilder private var serverFreshRSS: some View {
+        let onServer = server?.account
+        Section {
+            if let onServer {
+                LabeledContent("On the server", value: "\(onServer.username) · \(onServer.baseUrl)")
+            } else if server != nil {
+                LabeledContent("On the server", value: "Not set")
+            }
+            if status?.offlineRefresh == true {
+                LabeledContent("On this Mac", value: "Used while the server is offline")
+                Button("Remove from This Mac", role: .destructive) {
+                    try? model.engine?.removeAccount()
+                    model.reload()
+                }
+            } else {
+                if onServer == nil {
+                    TextField("Server address", text: $freshURL, prompt: Text("https://rss.example.com"))
+                    TextField("Username", text: $freshUser)
+                }
+                SecureField("API password", text: $freshPassword)
+                Button(onServer == nil ? "Connect" : "Use While Offline") { connectFreshInServerMode() }
+                    .disabled(working || freshPassword.isEmpty || (onServer == nil && (freshURL.isEmpty || freshUser.isEmpty)))
+            }
+        } header: {
+            Text("FreshRSS")
+        } footer: {
+            Text(status?.offlineRefresh == true
+                ? "The server reads FreshRSS and keeps your devices in step. This Mac keeps the account in its keychain only to fetch new articles while the server is offline."
+                : onServer == nil
+                    ? "The server has no FreshRSS account yet. Enter one to load your subscriptions."
+                    : "Enter the API password to let this Mac fetch new articles from FreshRSS while the server is offline. It is stored in your keychain.")
+                .foregroundStyle(.secondary)
+        }
     }
 
     private var modeText: String {
-        switch model.status?.mode {
+        switch status?.mode {
         case .server: "Syncing through a server"
         case .standalone: "Connected to FreshRSS"
         default: "This Mac only"
         }
+    }
+
+    private func loadServer() async {
+        guard serverMode, let engine = model.engine else {
+            server = nil
+            return
+        }
+        server = try? await engine.serverStatus()
+        model.reload()
     }
 
     private func connectFresh() {
@@ -283,6 +367,31 @@ private struct AccountsSettings: View {
         }
     }
 
+    /// Gives the server its account if it has none, then keeps the same
+    /// account on this Mac for refreshing while the server is offline.
+    private func connectFreshInServerMode() {
+        let onServer = server?.account
+        let (u, n, p) = (onServer?.baseUrl ?? freshURL, onServer?.username ?? freshUser, freshPassword)
+        freshPassword = ""
+        working = true
+        note = "Connecting…"
+        Task {
+            defer { working = false }
+            do {
+                if onServer == nil {
+                    try await model.engine?.configureServerFreshrss(url: u, username: n, password: p)
+                }
+                _ = try await model.engine?.configureFreshrss(url: u, username: n, password: p)
+                note = ""
+                await loadServer()
+                await model.refresh()
+            } catch {
+                note = error.localizedDescription
+                await loadServer()
+            }
+        }
+    }
+
     private func connectServer() {
         let (url, code) = (serverURL, pairingCode)
         pairingCode = ""
@@ -292,12 +401,56 @@ private struct AccountsSettings: View {
             defer { working = false }
             do {
                 _ = try await model.engine?.connectServer(url: url, pairingCode: code, deviceName: Host.current().localizedName ?? "Mac")
-                note = "Paired. Everything on this Mac now syncs."
                 model.reload()
+                await loadServer()
+                let waiting = model.status?.pendingUploads ?? 0
+                note = waiting > 0
+                    ? "Paired. \(waiting) changes are still uploading."
+                    : "Paired. Everything on this Mac now syncs."
             } catch {
                 note = error.localizedDescription
+                model.reload()
             }
         }
+    }
+}
+
+// MARK: - About
+
+/// The app and the core are versioned separately: the app can ship an
+/// update on its own, and the core's version is what a server is compared
+/// with.
+private struct AboutSettings: View {
+    private var appVersion: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        return "\(version) (\(build))"
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("Eddy for Mac", value: appVersion)
+                LabeledContent("Core", value: EddyCore.build)
+                LabeledContent("Sync protocol", value: "\(coreProtocolVersion())")
+            } header: {
+                Text("Versions")
+            } footer: {
+                Text("The core holds the reading, saving and syncing logic and is shared with eddy-server. A server and its devices sync as long as their sync protocols are compatible, whatever their versions.")
+                    .foregroundStyle(.secondary)
+            }
+            Section("Data") {
+                LabeledContent("Location") {
+                    Text(EddyPaths.dataDirectory.path)
+                        .textSelection(.enabled)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                }
+            }
+        }
+        .formStyle(.grouped)
     }
 }
 

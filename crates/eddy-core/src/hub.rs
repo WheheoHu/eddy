@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -15,13 +14,38 @@ use crate::{EngineError, LogLevel, Result};
 const TOKEN_KEY: &str = "server:token";
 const URL_META: &str = "server_url";
 const CURSOR_META: &str = "sync_cursor";
+/// The server this device last synced with. A different one has none of
+/// this device's history, whatever the local bookkeeping says.
+const SERVER_ID_META: &str = "server_id";
+/// Protocol the server spoke last time; a newer one may accept ops the old
+/// one refused.
+const SERVER_PROTOCOL_META: &str = "server_protocol";
+/// ID of the FreshRSS account the server manages.
+pub(crate) const SERVER_ACCOUNT_META: &str = "server_account";
+/// Set when a pull skipped ops this version cannot read; the next version
+/// pulls the log again to pick them up.
+const SKIPPED_META: &str = "sync_skipped";
+/// Protocol version of the build that last synced this data.
+const CLIENT_PROTOCOL_META: &str = "sync_protocol";
+const ARTIFACT_BATCH: usize = 100;
+const ARTIFACT_BATCH_BYTES: usize = 8 * 1024 * 1024;
+/// After a failed request the server counts as offline this long before
+/// interactive features (search, video jobs) try it again.
+const OFFLINE_GRACE: Duration = Duration::from_secs(60);
 const PUSH_BATCH: u32 = 500;
 const PULL_BATCH: u32 = 1000;
 const PREFETCH_CAP: usize = 200;
 
 impl From<SyncError> for EngineError {
     fn from(e: SyncError) -> Self {
-        EngineError::Network(e.to_string())
+        match e {
+            SyncError::Network(message) => EngineError::Offline(message),
+            // A proxy in front of a stopped server answers like this.
+            SyncError::Http(502..=504, _) => EngineError::Offline(e.to_string()),
+            SyncError::Unauthorized => EngineError::Unauthorized,
+            SyncError::Upgrade(message) => EngineError::UpgradeRequired(message),
+            other => EngineError::Network(other.to_string()),
+        }
     }
 }
 
@@ -37,6 +61,8 @@ pub struct ServerStatus {
     pub account: Option<eddy_sync::AccountInfo>,
     pub cursor: i64,
     pub video_capable: bool,
+    /// The server's software version.
+    pub version: String,
 }
 
 impl HubUpstream {
@@ -70,28 +96,47 @@ impl HubUpstream {
         Ok(())
     }
 
-    /// Synced AI results travel as artifact ops generated at upload time.
+    /// Synced AI results travel as artifact ops generated at upload time,
+    /// in batches small enough for one request.
     async fn upload_artifacts(&self, inner: &Inner) -> Result<()> {
-        let artifacts = inner.store.unuploaded_ai_artifacts()?;
-        if artifacts.is_empty() {
-            return Ok(());
+        let mut artifacts = inner
+            .store
+            .unuploaded_ai_artifacts()?
+            .into_iter()
+            .peekable();
+        while artifacts.peek().is_some() {
+            let mut ops = Vec::new();
+            let mut keys = Vec::new();
+            let mut bytes = 0;
+            while let Some((key, item_id, kind, content_hash, lang, model, payload)) = artifacts
+                .next_if(|a| {
+                    ops.is_empty()
+                        || (ops.len() < ARTIFACT_BATCH && bytes + a.6.len() <= ARTIFACT_BATCH_BYTES)
+                })
+            {
+                bytes += payload.len();
+                ops.push(Op {
+                    op_id: ids::new_local_id(),
+                    hlc: inner.clock.now(),
+                    entity: Entity::Artifact,
+                    entity_id: key.clone(),
+                    field: fields::CREATE.into(),
+                    value: serde_json::json!({ "item_id": item_id, "kind": kind, "content_hash": content_hash, "lang": lang, "model": model, "payload": payload }),
+                });
+                keys.push(key);
+            }
+            self.client.push(ops).await?;
+            inner.store.mark_ai_artifacts_uploaded(&keys)?;
         }
-        let mut ops = Vec::new();
-        let mut keys = Vec::new();
-        for (key, item_id, kind, content_hash, lang, model, payload) in artifacts {
-            ops.push(Op {
-                op_id: ids::new_local_id(),
-                hlc: inner.clock.now(),
-                entity: Entity::Artifact,
-                entity_id: key.clone(),
-                field: fields::CREATE.into(),
-                value: serde_json::json!({ "item_id": item_id, "kind": kind, "content_hash": content_hash, "lang": lang, "model": model, "payload": payload }),
-            });
-            keys.push(key);
-        }
-        self.client.push(ops).await?;
-        inner.store.mark_ai_artifacts_uploaded(&keys)?;
         Ok(())
+    }
+
+    /// Checks the server is one this build can sync with, and notices when
+    /// it is not the server this device synced with before.
+    async fn handshake(&self, inner: &Inner) -> Result<()> {
+        let info = self.client.info().await?;
+        info.check_protocol()?;
+        inner.adopt_server(&info)
     }
 
     /// Two-way union of private rule packs: local packs the server lacks (or
@@ -113,6 +158,31 @@ impl HubUpstream {
                 ))
             })
             .collect();
+        // A pack removed on any device stays on the server as an empty
+        // entry, so it is removed everywhere instead of being uploaded again
+        // by the devices that still have it.
+        let removed_here = inner.removed_rule_packs();
+        for name in &removed_here {
+            let key = format!("rulepack:{name}");
+            if remote.iter().any(|e| e.key == key && !e.value.is_empty()) {
+                self.client.put_config(&key, "").await?;
+            }
+        }
+        inner.clear_removed_rule_packs()?;
+        // Only packs this device already shared with the server follow a
+        // removal; one imported since is new and goes up instead.
+        let shared = inner.shared_rule_packs();
+        let mut local = local;
+        local.retain(|(name, _)| {
+            let key = format!("rulepack:{name}");
+            let gone =
+                shared.contains(name) && remote.iter().any(|e| e.key == key && e.value.is_empty());
+            if gone {
+                let _ = std::fs::remove_file(dir.join(format!("{name}.toml")));
+                changed = true;
+            }
+            !gone
+        });
         for (name, text) in &local {
             let key = format!("rulepack:{name}");
             if remote
@@ -127,7 +197,9 @@ impl HubUpstream {
             let Some(name) = entry.key.strip_prefix("rulepack:") else {
                 continue;
             };
-            if local.iter().any(|(n, _)| n == name)
+            if entry.value.is_empty()
+                || removed_here.iter().any(|n| n == name)
+                || local.iter().any(|(n, _)| n == name)
                 || !name
                     .chars()
                     .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'))
@@ -137,8 +209,11 @@ impl HubUpstream {
             std::fs::create_dir_all(&dir).map_err(|e| EngineError::Invalid(e.to_string()))?;
             std::fs::write(dir.join(format!("{name}.toml")), &entry.value)
                 .map_err(|e| EngineError::Invalid(e.to_string()))?;
+            local.push((name.to_string(), entry.value.clone()));
             changed = true;
         }
+        let names: Vec<&String> = local.iter().map(|(name, _)| name).collect();
+        inner.set_shared_rule_packs(&names)?;
         if changed {
             inner.rebuild_fetcher()?;
         }
@@ -187,6 +262,7 @@ impl Upstream for HubUpstream {
     }
 
     async fn push(&self, inner: &Inner) -> Result<()> {
+        let _one = inner.push_lock.lock().await;
         loop {
             let pending = inner.store.unuploaded_ops(PUSH_BATCH)?;
             if pending.is_empty() {
@@ -194,15 +270,29 @@ impl Upstream for HubUpstream {
             }
             self.upload_blobs(inner, &pending).await?;
             let seqs: Vec<i64> = pending.iter().map(|o| o.seq).collect();
-            self.client
+            let response = self
+                .client
                 .push(pending.into_iter().map(|o| o.op).collect())
                 .await?;
             inner.store.mark_uploaded(&seqs)?;
+            if !response.rejected.is_empty() {
+                // Refused for good: sending them again would only fail again
+                // and hold up everything behind them.
+                for r in &response.rejected {
+                    inner.platform.log(
+                        LogLevel::Warn,
+                        &format!("server refused change {}: {}", r.op_id, r.reason),
+                    );
+                }
+                let ids: Vec<String> = response.rejected.into_iter().map(|r| r.op_id).collect();
+                inner.store.mark_rejected(&ids)?;
+            }
         }
         self.upload_artifacts(inner).await
     }
 
     async fn sync(&self, inner: &Inner) -> Result<RefreshSummary> {
+        self.handshake(inner).await?;
         self.push(inner).await?;
         if let Err(e) = self.client.refresh().await {
             inner
@@ -220,13 +310,24 @@ impl Upstream for HubUpstream {
         let mut state_changes = 0;
         loop {
             let page = self.client.pull(cursor, PULL_BATCH).await?;
+            if page.skipped > 0 {
+                inner.store.meta_set(SKIPPED_META, "1")?;
+            }
             for op in &page.ops {
                 inner.clock.observe(&op.hlc);
+                // An article this device already has (it was here before
+                // connecting, or came straight from FreshRSS while the server
+                // was offline) is not new.
+                let known = op.entity == Entity::Item
+                    && op.field == fields::CREATE
+                    && inner.store.item(&op.entity_id)?.is_some();
                 let applied = inner.store.apply_remote(op)?;
                 match (op.entity, op.field.as_str()) {
                     // Items the server ingested already read (backfilled
                     // history included) are not new to this device.
-                    (Entity::Item, fields::CREATE) if applied && op.value["read"] != true => {
+                    (Entity::Item, fields::CREATE)
+                        if applied && !known && op.value["read"] != true =>
+                    {
                         new_item_ids.push(op.entity_id.clone())
                     }
                     (Entity::Item, fields::VERSION) if applied => {
@@ -258,6 +359,7 @@ impl Upstream for HubUpstream {
             state_changes,
             sources,
             new_item_ids,
+            offline: false,
         })
     }
 
@@ -277,6 +379,56 @@ impl Inner {
         let client = SyncClient::new(&url, Some(token))?;
         *self.upstream.write() = Some(Arc::new(HubUpstream { client }));
         Ok(true)
+    }
+
+    /// The server client for interactive features that have a local
+    /// fallback: `None` right after the server failed to answer, so they do
+    /// not wait for another timeout.
+    pub(crate) fn reachable_hub_client(&self) -> Option<SyncClient> {
+        if self
+            .hub_down_since
+            .lock()
+            .is_some_and(|at| at.elapsed() < OFFLINE_GRACE)
+        {
+            return None;
+        }
+        self.hub_client()
+    }
+
+    /// Remembers which server this device syncs with. Against a server it
+    /// has not synced with before (another one, or the same one wiped) the
+    /// whole log is queued again and pulling starts over.
+    pub(crate) fn adopt_server(&self, info: &ServerInfo) -> Result<()> {
+        let store = &self.store;
+        if store.meta_get(SERVER_ID_META)?.as_deref() != Some(info.server_id.as_str()) {
+            if store.meta_get(SERVER_ID_META)?.is_some() || store.meta_get(CURSOR_META)?.is_some() {
+                self.platform
+                    .log(LogLevel::Info, "new server: uploading the full history");
+            }
+            store.reset_uploaded()?;
+            store.meta_delete(CURSOR_META)?;
+            store.meta_set(SERVER_ID_META, &info.server_id)?;
+        }
+        // A newer server may take what an older one refused.
+        let protocol = info.protocol.to_string();
+        if store.meta_get(SERVER_PROTOCOL_META)?.as_deref() != Some(protocol.as_str()) {
+            store.retry_rejected()?;
+            store.meta_set(SERVER_PROTOCOL_META, &protocol)?;
+        }
+        // This build may read ops an older one had to skip.
+        let ours = eddy_sync::PROTOCOL_VERSION.to_string();
+        if store.meta_get(CLIENT_PROTOCOL_META)?.as_deref() != Some(ours.as_str()) {
+            if store.meta_get(SKIPPED_META)?.is_some() {
+                store.meta_delete(CURSOR_META)?;
+                store.meta_delete(SKIPPED_META)?;
+            }
+            store.meta_set(CLIENT_PROTOCOL_META, &ours)?;
+        }
+        match &info.account {
+            Some(account) => store.meta_set(SERVER_ACCOUNT_META, &server_account_id(account))?,
+            None => store.meta_delete(SERVER_ACCOUNT_META)?,
+        }
+        Ok(())
     }
 
     pub(crate) fn hub_client(&self) -> Option<SyncClient> {
@@ -301,8 +453,14 @@ impl Inner {
 
 impl Engine {
     /// Pairs this device with eddy-server and switches to server mode. Local
-    /// data migrates: the FreshRSS account moves to the server if it has
-    /// none, and every local change is uploaded and merged by HLC.
+    /// data migrates: the FreshRSS account is given to the server if it has
+    /// none, and every local change is uploaded and merged by HLC. The
+    /// account also stays on this device, for refreshing while the server is
+    /// offline.
+    ///
+    /// Nothing local changes until the server has accepted the device and
+    /// the account. Once connected, a failed first sync does not undo the
+    /// connection: it is retried like any other.
     pub async fn connect_server(
         &self,
         url: &str,
@@ -320,19 +478,31 @@ impl Engine {
             .await?;
         let client = SyncClient::new(url, Some(paired.token.clone()))?;
         let mut info: ServerInfo = paired.info;
+        info.check_protocol()?;
 
         let local_account = inner.direct.read().as_ref().map(|d| d.account.clone());
-        if info.account.is_none()
-            && let Some(account) = &local_account
-            && let Some(password) = inner.platform.secret_get(&account_secret_key(&account.id))
-        {
-            info = client
-                .set_account(&AccountRequest {
-                    base_url: account.base_url.clone(),
-                    username: account.username.clone(),
-                    password,
-                })
-                .await?;
+        match (&info.account, &local_account) {
+            // Two different accounts would show every feed twice, with
+            // reading state attached to articles the server does not have.
+            (Some(remote), Some(local)) if server_account_id(remote) != local.id => {
+                return Err(EngineError::Invalid(format!(
+                    "服务端已经在用另一个 FreshRSS 账号（{} @ {}）。请先在这台设备上移除本机的 FreshRSS 账号，或让服务端改用同一个账号，再重新配对。",
+                    remote.username, remote.base_url
+                )));
+            }
+            (None, Some(account)) => {
+                if let Some(password) = inner.platform.secret_get(&account_secret_key(&account.id))
+                {
+                    info = client
+                        .set_account(&AccountRequest {
+                            base_url: account.base_url.clone(),
+                            username: account.username.clone(),
+                            password,
+                        })
+                        .await?;
+                }
+            }
+            _ => {}
         }
         // Let the server ingest FreshRSS first so uploaded read/star changes
         // land on items it already has.
@@ -348,13 +518,7 @@ impl Engine {
             ));
         }
         inner.store.meta_set(URL_META, client.base_url())?;
-        for account in inner.store.accounts()? {
-            inner
-                .platform
-                .secret_delete(&account_secret_key(&account.id));
-            inner.store.delete_account(&account.id)?;
-        }
-        *inner.direct.write() = None;
+        inner.adopt_server(&info)?;
         // FreshRSS pushes are now the server's job.
         let pending: Vec<i64> = inner
             .store
@@ -364,8 +528,14 @@ impl Engine {
             .collect();
         inner.store.clear_upstream_pending(&pending)?;
         *inner.upstream.write() = Some(Arc::new(HubUpstream { client }));
+        *inner.hub_down_since.lock() = None;
 
-        self.refresh().await?;
+        if let Err(e) = self.refresh().await {
+            inner
+                .platform
+                .log(LogLevel::Warn, &format!("first sync failed: {e}"));
+            inner.schedule_push();
+        }
         let cursor = inner
             .store
             .meta_get(CURSOR_META)?
@@ -377,17 +547,26 @@ impl Engine {
             account: info.account,
             cursor,
             video_capable: info.video_capable,
+            version: info.version,
         })
     }
 
-    /// Leaves server mode. Local data stays; FreshRSS can be configured
-    /// again for standalone use.
+    /// Leaves server mode. Local data stays, and with a FreshRSS account on
+    /// this device it carries on in standalone mode: read/star changes the
+    /// server never received go to FreshRSS instead.
     pub fn disconnect_server(&self) -> Result<()> {
+        let inner = &self.inner;
         self.stop_live_sync();
-        self.inner.platform.secret_delete(TOKEN_KEY);
-        self.inner.store.meta_delete(URL_META)?;
-        self.inner.store.meta_delete(CURSOR_META)?;
-        *self.inner.upstream.write() = None;
+        inner.platform.secret_delete(TOKEN_KEY);
+        inner.store.meta_delete(URL_META)?;
+        inner.store.meta_delete(CURSOR_META)?;
+        inner.store.meta_delete(SERVER_ACCOUNT_META)?;
+        *inner.hub_down_since.lock() = None;
+        let direct = inner.direct.read().clone();
+        if direct.is_some() {
+            inner.store.requeue_unuploaded_for_upstream()?;
+        }
+        *inner.upstream.write() = direct.map(|d| d as Arc<dyn Upstream>);
         Ok(())
     }
 
@@ -395,7 +574,14 @@ impl Engine {
         let Some(client) = self.inner.hub_client() else {
             return Ok(None);
         };
-        let info = client.info().await?;
+        let info = client.info().await;
+        self.inner
+            .note_hub(&info.as_ref().map(|_| ()).map_err(|e| match e {
+                SyncError::Network(m) => EngineError::Offline(m.clone()),
+                other => EngineError::Network(other.to_string()),
+            }));
+        let info = info?;
+        self.inner.adopt_server(&info)?;
         let cursor = self
             .inner
             .store
@@ -408,6 +594,7 @@ impl Engine {
             account: info.account,
             cursor,
             video_capable: info.video_capable,
+            version: info.version,
         }))
     }
 
@@ -432,10 +619,14 @@ impl Engine {
     /// Searches the server's full history when connected, falling back to
     /// local search offline.
     pub async fn search_all(&self, query: &str, limit: u32) -> Result<Vec<SearchResult>> {
-        let Some(client) = self.inner.hub_client() else {
+        // Right after the server failed to answer, search this device at
+        // once instead of waiting for another timeout.
+        let Some(client) = self.inner.reachable_hub_client() else {
             return self.search(query, limit);
         };
-        match client.search(query, limit).await {
+        let found = client.search(query, limit).await.map_err(EngineError::from);
+        self.inner.note_hub(&found);
+        match found {
             Ok(hits) => {
                 let ids: Vec<String> = hits.iter().map(|h| h.item_id.clone()).collect();
                 let rows = self.inner.store.items(&eddy_store::ItemQuery {
@@ -462,27 +653,30 @@ impl Engine {
     }
 
     /// While the app is open, listens for server changes and syncs as they
-    /// arrive. Reconnects with backoff until stopped.
+    /// arrive. Reconnects with backoff until stopped. Starting it again
+    /// while it runs does nothing.
     pub fn start_live_sync(&self) {
-        let inner = &self.inner;
-        if inner.live.swap(true, Ordering::SeqCst) {
+        let mut live = self.inner.live.lock();
+        if live.as_ref().is_some_and(|task| !task.is_finished()) {
             return;
         }
         let engine = self.clone();
-        tokio::spawn(async move {
+        *live = Some(tokio::spawn(async move {
             let mut backoff = Duration::from_secs(2);
-            while engine.inner.live.load(Ordering::SeqCst) {
+            loop {
                 let Some(client) = engine.inner.hub_client() else {
                     break;
                 };
                 let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<i64>();
-                let listener = tokio::spawn(async move {
+                // Dropped with this task, so stopping closes the connection.
+                let listener = AbortOnDrop(tokio::spawn(async move {
                     client
                         .listen(move |cursor| {
                             let _ = tx.send(cursor);
                         })
                         .await
-                });
+                }));
+                let mut greeted = false;
                 while let Some(cursor) = rx.recv().await {
                     backoff = Duration::from_secs(2);
                     if cursor < 0 {
@@ -497,7 +691,16 @@ impl Engine {
                         .flatten()
                         .and_then(|v| v.parse().ok())
                         .unwrap_or(0);
-                    if cursor > local && engine.inner.live.load(Ordering::SeqCst) {
+                    // The first message means the server is reachable
+                    // (again): changes made meanwhile go up now.
+                    let pending = !std::mem::replace(&mut greeted, true)
+                        && engine
+                            .inner
+                            .store
+                            .upload_counts()
+                            .is_ok_and(|(pending, _)| pending > 0);
+                    *engine.inner.hub_down_since.lock() = None;
+                    if cursor > local || pending {
                         if let Err(e) = engine.refresh().await {
                             engine
                                 .inner
@@ -506,17 +709,19 @@ impl Engine {
                         }
                         engine.inner.notify_video_listener();
                     }
+                    engine.inner.notify_changed();
                 }
-                let _ = listener.await;
+                drop(listener);
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(Duration::from_secs(60));
             }
-            engine.inner.live.store(false, Ordering::SeqCst);
-        });
+        }));
     }
 
     pub fn stop_live_sync(&self) {
-        self.inner.live.store(false, Ordering::SeqCst);
+        if let Some(task) = self.inner.live.lock().take() {
+            task.abort();
+        }
     }
 
     /// Ensures blobs of the item's current version are local, downloading
@@ -577,4 +782,20 @@ impl Engine {
 pub fn plausible_hlc(hlc: &Hlc) -> bool {
     let now = eddy_model::now_ms().max(0) as u64;
     hlc.wall_ms <= now + 24 * 3600 * 1000
+}
+
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// ID of the account a server reports, as this device would compute it for
+/// the same FreshRSS address and user.
+fn server_account_id(account: &eddy_sync::AccountInfo) -> String {
+    let base = eddy_source_greader::normalize_base(&account.base_url)
+        .unwrap_or_else(|_| account.base_url.clone());
+    ids::account_id("greader", &base, account.username.trim())
 }

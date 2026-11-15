@@ -81,6 +81,15 @@ struct CommandPalette: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
                 Divider()
+                if results != nil, model.serverOffline {
+                    Text("The sync server is offline. Showing matches from this Mac only.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 6)
+                    Divider()
+                }
                 list(items)
             }
             .frame(width: 580)
