@@ -141,7 +141,7 @@ details .row { margin-top: 10px; }
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Name</th><th>Paired</th><th>Last seen</th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>Paired</th><th>Last seen</th><th>Sync</th><th></th></tr></thead>
           <tbody id="devices"></tbody>
         </table>
       </div>
@@ -303,9 +303,11 @@ function render() {
     el("td", { class: "wrap" }, d.name || "Unnamed", el("div", { class: "muted small mono", title: d.id }, d.id.slice(0, 8))),
     el("td", null, day(d.created_at)),
     el("td", null, ago(d.last_seen, now)),
+    el("td", { title: d.synced_at == null ? "This device has not synced since the server started." : "Last synced " + ago(d.synced_at, now) },
+      d.behind == null ? "—" : d.behind === 0 ? "Up to date" : d.behind.toLocaleString() + " behind"),
     el("td", null, el("button", { class: "danger", onclick: () => revoke(d) }, "Revoke")))));
   if (!s.devices.length) {
-    devices.append(el("tr", null, el("td", { colspan: "4", class: "empty" }, "No devices yet. Create a pairing code to add one.")));
+    devices.append(el("tr", null, el("td", { colspan: "5", class: "empty" }, "No devices yet. Create a pairing code to add one.")));
   }
 
   const f = s.freshrss;

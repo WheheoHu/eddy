@@ -267,6 +267,11 @@ struct DeviceView {
     name: String,
     created_at: i64,
     last_seen: Option<i64>,
+    /// Changes it has not pulled yet; `None` until it syncs after a
+    /// server start.
+    behind: Option<i64>,
+    /// When it last pulled.
+    synced_at: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -324,6 +329,7 @@ async fn state(State(s): State<Arc<AppState>>, _a: Session) -> Result<Json<State
         .filter_map(|name| std::fs::metadata(s.data_dir.join(name)).ok())
         .map(|m| m.len())
         .sum();
+    let cursor = s.engine.server_cursor().map_err(ApiError::internal)?;
     Ok(Json(StateView {
         service: ServiceView {
             version: eddy_core::core_version(),
@@ -333,7 +339,7 @@ async fn state(State(s): State<Arc<AppState>>, _a: Session) -> Result<Json<State
             started_at: s.started_at,
             now: now_ms(),
             healthy: s.engine.server_healthy(),
-            cursor: s.engine.server_cursor().map_err(ApiError::internal)?,
+            cursor,
             database_bytes,
             content_bytes: overview.content_bytes,
             index_bytes: dir_bytes(&s.data_dir.join("index")),
@@ -344,11 +350,16 @@ async fn state(State(s): State<Arc<AppState>>, _a: Session) -> Result<Json<State
             .devices()
             .map_err(ApiError::internal)?
             .into_iter()
-            .map(|d| DeviceView {
-                id: d.id,
-                name: d.name,
-                created_at: d.created_at,
-                last_seen: d.last_seen,
+            .map(|d| {
+                let position = s.sync_log.position(&d.id);
+                DeviceView {
+                    behind: position.map(|p| (cursor - p.cursor).max(0)),
+                    synced_at: position.map(|p| p.at),
+                    id: d.id,
+                    name: d.name,
+                    created_at: d.created_at,
+                    last_seen: d.last_seen,
+                }
             })
             .collect(),
         freshrss: FreshRssView {

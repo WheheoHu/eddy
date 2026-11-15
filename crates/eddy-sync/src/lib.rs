@@ -179,6 +179,10 @@ pub struct PullResponse {
     pub ops: Vec<Op>,
     pub cursor: i64,
     pub more: bool,
+    /// The newest change the server has, for showing how far a pull has to
+    /// go. Older servers do not send it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<i64>,
 }
 
 /// A push as the server reads it: ops it cannot parse (from a newer client)
@@ -196,6 +200,8 @@ pub struct PulledPage {
     pub cursor: i64,
     pub more: bool,
     pub skipped: u32,
+    /// The newest change the server has, when it says.
+    pub head: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -203,6 +209,8 @@ struct RawPullResponse {
     ops: Vec<serde_json::Value>,
     cursor: i64,
     more: bool,
+    #[serde(default)]
+    head: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -247,6 +255,8 @@ pub fn normalize_server_url(input: &str) -> Result<String> {
     Ok(url.to_string().trim_end_matches('/').to_string())
 }
 
+/// Cheap to clone: clones share one connection pool.
+#[derive(Clone)]
 pub struct SyncClient {
     http: reqwest::Client,
     base: String,
@@ -363,6 +373,7 @@ impl SyncClient {
             ops,
             cursor: raw.cursor,
             more: raw.more,
+            head: raw.head,
         })
     }
 

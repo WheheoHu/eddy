@@ -227,6 +227,16 @@ private struct AccountsSettings: View {
                     if let server {
                         LabeledContent("Server version", value: server.version.isEmpty ? "Unknown" : server.version)
                     }
+                    if let sync = status.sync {
+                        VStack(alignment: .leading, spacing: 4) {
+                            if let fraction = sync.fraction {
+                                ProgressView(value: fraction)
+                            } else {
+                                ProgressView().progressViewStyle(.linear)
+                            }
+                            Text(sync.detail).font(.callout).foregroundStyle(.secondary).monospacedDigit()
+                        }
+                    }
                     if status.pendingUploads > 0 {
                         LabeledContent("Waiting to upload", value: "\(status.pendingUploads) changes")
                     }
@@ -400,13 +410,12 @@ private struct AccountsSettings: View {
         Task {
             defer { working = false }
             do {
+                // Returns once this Mac is connected; the first sync carries
+                // on in the background and shows under Status.
                 _ = try await model.engine?.connectServer(url: url, pairingCode: code, deviceName: Host.current().localizedName ?? "Mac")
                 model.reload()
+                note = "Paired. The first sync runs in the background, and you can keep using Eddy."
                 await loadServer()
-                let waiting = model.status?.pendingUploads ?? 0
-                note = waiting > 0
-                    ? "Paired. \(waiting) changes are still uploading."
-                    : "Paired. Everything on this Mac now syncs."
             } catch {
                 note = error.localizedDescription
                 model.reload()

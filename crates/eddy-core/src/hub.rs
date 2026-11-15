@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use eddy_model::{ContentVersion, Entity, Hlc, Op, fields, ids};
 use eddy_sync::{AccountRequest, PairRequest, ServerInfo, SyncClient, SyncError};
 
-use crate::engine::{Engine, Inner, RefreshSummary};
+use crate::engine::{Engine, Inner, RefreshSummary, SyncPhase, SyncProgress};
 use crate::platform::account_secret_key;
 use crate::search::SearchResult;
 use crate::upstream::Upstream;
@@ -33,8 +33,13 @@ const ARTIFACT_BATCH_BYTES: usize = 8 * 1024 * 1024;
 /// interactive features (search, video jobs) try it again.
 const OFFLINE_GRACE: Duration = Duration::from_secs(60);
 const PUSH_BATCH: u32 = 500;
-const PULL_BATCH: u32 = 1000;
+/// The most a server hands out in one page; it also cuts a page short by
+/// size.
+const PULL_BATCH: u32 = 5000;
 const PREFETCH_CAP: usize = 200;
+const PREFETCH_CONCURRENCY: usize = 4;
+/// Fewer downloads than this finish before progress would be read.
+const PREFETCH_SHOWN_FROM: usize = 20;
 
 impl From<SyncError> for EngineError {
     fn from(e: SyncError) -> Self {
@@ -223,33 +228,56 @@ impl HubUpstream {
     /// Downloads document blobs for content that should be readable offline:
     /// unread, starred, saved or in progress.
     async fn prefetch(&self, inner: &Inner, versions: Vec<String>) {
-        for hash in versions.into_iter().take(PREFETCH_CAP) {
-            let Ok(Some(version)) = inner.store.content_version(&hash) else {
-                continue;
-            };
-            let Ok(Some(row)) = inner.store.item(&version.item_id) else {
-                continue;
-            };
-            let wanted = !row.item.read
-                || row.item.starred
-                || row.item.kind != eddy_model::ItemKind::Feed
-                || (row.item.progress > 0.0 && !row.item.finished);
-            if !wanted || row.item.current_version.as_deref() != Some(hash.as_str()) {
-                continue;
-            }
-            if let Some(key) = &version.doc_blob {
-                if inner.store.has_blob(key).unwrap_or(true) {
-                    continue;
+        use futures::StreamExt;
+        // Newest first: after a long catch-up the cap is spent on what the
+        // reader is likeliest to open.
+        let wanted: Vec<(String, String)> = versions
+            .into_iter()
+            .rev()
+            .filter_map(|hash| {
+                let version = inner.store.content_version(&hash).ok()??;
+                let row = inner.store.item(&version.item_id).ok()??;
+                let wanted = !row.item.read
+                    || row.item.starred
+                    || row.item.kind != eddy_model::ItemKind::Feed
+                    || (row.item.progress > 0.0 && !row.item.finished);
+                if !wanted || row.item.current_version.as_deref() != Some(hash.as_str()) {
+                    return None;
                 }
-                if let Ok(Some((bytes, mime))) = self.client.get_blob(key).await
-                    && inner
-                        .store
-                        .put_blob_keyed(key, &bytes, &mime, false)
-                        .is_ok()
-                {
-                    inner.index_current(&version.item_id);
-                }
+                let key = version.doc_blob?;
+                (!inner.store.has_blob(&key).unwrap_or(true)).then_some((key, version.item_id))
+            })
+            .take(PREFETCH_CAP)
+            .collect();
+        let total = wanted.len();
+        let report = |done: usize| {
+            if total >= PREFETCH_SHOWN_FROM {
+                inner.set_sync_progress(Some(SyncProgress {
+                    phase: SyncPhase::FetchingContent,
+                    done: done as u64,
+                    total: Some(total as u64),
+                }));
             }
+        };
+        report(0);
+        let mut downloads = futures::stream::iter(wanted)
+            .map(|(key, item_id)| async move {
+                let blob = self.client.get_blob(&key).await;
+                (key, item_id, blob)
+            })
+            .buffer_unordered(PREFETCH_CONCURRENCY);
+        let mut done = 0;
+        while let Some((key, item_id, blob)) = downloads.next().await {
+            if let Ok(Some((bytes, mime))) = blob
+                && inner
+                    .store
+                    .put_blob_keyed(&key, &bytes, &mime, false)
+                    .is_ok()
+            {
+                inner.index_current(&item_id);
+            }
+            done += 1;
+            report(done);
         }
         inner.commit_index();
     }
@@ -263,11 +291,25 @@ impl Upstream for HubUpstream {
 
     async fn push(&self, inner: &Inner) -> Result<()> {
         let _one = inner.push_lock.lock().await;
+        // Only an upload of several batches (a first sync, a long time
+        // offline) is worth showing.
+        let total = u64::from(inner.store.upload_counts()?.0);
+        let shown = total > u64::from(PUSH_BATCH);
+        let _progress = shown.then(|| ProgressGuard(inner));
+        let mut done = 0u64;
         loop {
+            if shown {
+                inner.set_sync_progress(Some(SyncProgress {
+                    phase: SyncPhase::Uploading,
+                    done: done.min(total),
+                    total: Some(total),
+                }));
+            }
             let pending = inner.store.unuploaded_ops(PUSH_BATCH)?;
             if pending.is_empty() {
                 break;
             }
+            done += pending.len() as u64;
             self.upload_blobs(inner, &pending).await?;
             let seqs: Vec<i64> = pending.iter().map(|o| o.seq).collect();
             let response = self
@@ -308,20 +350,41 @@ impl Upstream for HubUpstream {
         let mut versions = Vec::new();
         let mut deleted = Vec::new();
         let mut state_changes = 0;
+        let _progress = ProgressGuard(inner);
+        let start = cursor;
+        let mut pages = 0;
+        // The next page downloads while this one is applied, so a long
+        // catch-up is not the sum of the network's time and the database's.
+        let fetch = |since: i64| {
+            let client = self.client.clone();
+            AbortOnDrop(tokio::spawn(
+                async move { client.pull(since, PULL_BATCH).await },
+            ))
+        };
+        let mut next = fetch(cursor);
         loop {
-            let page = self.client.pull(cursor, PULL_BATCH).await?;
+            let page = (&mut next.0)
+                .await
+                .map_err(|e| EngineError::Invalid(e.to_string()))??;
+            if page.more {
+                next = fetch(page.cursor);
+            }
             if page.skipped > 0 {
                 inner.store.meta_set(SKIPPED_META, "1")?;
             }
             for op in &page.ops {
                 inner.clock.observe(&op.hlc);
+            }
+            // The page and the cursor past it are stored together: a sync
+            // that is cut off resumes exactly after the last whole page.
+            let outcome = inner
+                .store
+                .apply_remote_page(&page.ops, Some((CURSOR_META, &page.cursor.to_string())))?;
+            for (op, result) in page.ops.iter().zip(outcome) {
                 // An article this device already has (it was here before
                 // connecting, or came straight from FreshRSS while the server
                 // was offline) is not new.
-                let known = op.entity == Entity::Item
-                    && op.field == fields::CREATE
-                    && inner.store.item(&op.entity_id)?.is_some();
-                let applied = inner.store.apply_remote(op)?;
+                let (applied, known) = (result.applied, result.known);
                 match (op.entity, op.field.as_str()) {
                     // Items the server ingested already read (backfilled
                     // history included) are not new to this device.
@@ -341,9 +404,19 @@ impl Upstream for HubUpstream {
                 }
             }
             cursor = page.cursor;
-            inner.store.meta_set(CURSOR_META, &cursor.to_string())?;
+            pages += 1;
             if !page.more {
                 break;
+            }
+            // More than one page: show how far it is, and let what has
+            // arrived appear instead of waiting for the end.
+            inner.set_sync_progress(Some(SyncProgress {
+                phase: SyncPhase::Downloading,
+                done: (cursor - start).max(0) as u64,
+                total: page.head.map(|head| (head - start).max(0) as u64),
+            }));
+            if pages > 1 {
+                inner.notify_changed_during_sync();
             }
         }
         inner.forget_deleted(&deleted);
@@ -461,7 +534,59 @@ impl Engine {
     /// Nothing local changes until the server has accepted the device and
     /// the account. Once connected, a failed first sync does not undo the
     /// connection: it is retried like any other.
+    ///
+    /// Returns when the first sync is done. An app pairs with
+    /// `pair_server` and lets `start_sync` do the rest in the background.
     pub async fn connect_server(
+        &self,
+        url: &str,
+        pairing_code: &str,
+        device_name: &str,
+    ) -> Result<ServerStatus> {
+        let mut status = self.pair_server(url, pairing_code, device_name).await?;
+        self.first_sync().await;
+        status.cursor = self
+            .inner
+            .store
+            .meta_get(CURSOR_META)?
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        Ok(status)
+    }
+
+    /// Syncs with the server in the background, reporting through the
+    /// progress and change listeners. Changes not uploaded when it fails
+    /// are retried as usual.
+    pub fn start_sync(&self) {
+        let engine = self.clone();
+        tokio::spawn(async move {
+            engine.first_sync().await;
+            engine.inner.notify_changed();
+        });
+    }
+
+    async fn first_sync(&self) {
+        let inner = &self.inner;
+        // Let the server ingest FreshRSS first so uploaded read/star changes
+        // land on items it already has.
+        if let Some(client) = inner.hub_client()
+            && let Err(e) = client.refresh().await
+        {
+            inner
+                .platform
+                .log(LogLevel::Warn, &format!("server refresh failed: {e}"));
+        }
+        if let Err(e) = self.refresh().await {
+            inner
+                .platform
+                .log(LogLevel::Warn, &format!("first sync failed: {e}"));
+            inner.schedule_push();
+        }
+    }
+
+    /// The pairing half of `connect_server`: registers this device, settles
+    /// the FreshRSS account and switches to server mode, without syncing.
+    pub async fn pair_server(
         &self,
         url: &str,
         pairing_code: &str,
@@ -504,14 +629,6 @@ impl Engine {
             }
             _ => {}
         }
-        // Let the server ingest FreshRSS first so uploaded read/star changes
-        // land on items it already has.
-        if let Err(e) = client.refresh().await {
-            inner
-                .platform
-                .log(LogLevel::Warn, &format!("server refresh failed: {e}"));
-        }
-
         if !inner.platform.secret_set(TOKEN_KEY, &paired.token) {
             return Err(EngineError::Invalid(
                 "无法把服务端令牌保存到钥匙串。".into(),
@@ -529,13 +646,6 @@ impl Engine {
         inner.store.clear_upstream_pending(&pending)?;
         *inner.upstream.write() = Some(Arc::new(HubUpstream { client }));
         *inner.hub_down_since.lock() = None;
-
-        if let Err(e) = self.refresh().await {
-            inner
-                .platform
-                .log(LogLevel::Warn, &format!("first sync failed: {e}"));
-            inner.schedule_push();
-        }
         let cursor = inner
             .store
             .meta_get(CURSOR_META)?
@@ -785,6 +895,15 @@ pub fn plausible_hlc(hlc: &Hlc) -> bool {
 }
 
 struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+/// Clears the published sync progress however the sync ends.
+struct ProgressGuard<'a>(&'a Inner);
+
+impl Drop for ProgressGuard<'_> {
+    fn drop(&mut self) {
+        self.0.set_sync_progress(None);
+    }
+}
 
 impl<T> Drop for AbortOnDrop<T> {
     fn drop(&mut self) {

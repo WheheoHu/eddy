@@ -18,6 +18,21 @@ pub struct AppliedOps {
     pub rejected: Vec<(String, String)>,
 }
 
+/// A page of the change feed for a device.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OpsPage {
+    pub ops: Vec<Op>,
+    /// Where the next page starts.
+    pub cursor: i64,
+    /// There is more after this page.
+    pub more: bool,
+    /// The newest change the server has.
+    pub head: i64,
+}
+
+/// Values in one pulled page add up to about this much.
+const PULL_PAGE_BYTES: usize = 8 * 1024 * 1024;
+
 /// What a server holds, for its admin page.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ServerOverview {
@@ -125,13 +140,22 @@ impl Engine {
         self.inner.store.max_op_seq().is_ok()
     }
 
-    /// Ops after `since`: (ops, cursor, more).
-    pub fn server_ops_since(&self, since: i64, limit: u32) -> Result<(Vec<Op>, i64, bool)> {
+    /// A page of ops after `since`, at most `limit` of them and about
+    /// `PULL_PAGE_BYTES` of values.
+    pub fn server_ops_since(&self, since: i64, limit: u32) -> Result<OpsPage> {
         let limit = limit.clamp(1, 5000);
-        let page = self.inner.store.ops_since(since, limit)?;
-        let more = page.len() as u32 == limit;
+        let page = self
+            .inner
+            .store
+            .ops_since_capped(since, limit, PULL_PAGE_BYTES)?;
+        let head = self.inner.store.max_op_seq()?;
         let cursor = page.last().map(|(o, _)| o.seq).unwrap_or(since.max(0));
-        Ok((page.into_iter().map(|(o, _)| o.op).collect(), cursor, more))
+        Ok(OpsPage {
+            more: !page.is_empty() && cursor < head,
+            ops: page.into_iter().map(|(o, _)| o.op).collect(),
+            cursor,
+            head,
+        })
     }
 
     pub fn server_cursor(&self) -> Result<i64> {

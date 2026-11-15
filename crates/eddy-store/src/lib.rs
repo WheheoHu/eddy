@@ -14,7 +14,7 @@ use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
 
 pub use items::{ItemFilter, ItemQuery, ItemRow};
-pub use ops::{OpOrigin, StoredOp};
+pub use ops::{OpOrigin, RemoteApplied, StoredOp};
 pub use schema::SCHEMA_VERSION;
 pub use server::Device;
 pub use video_jobs::VideoJobRecord;

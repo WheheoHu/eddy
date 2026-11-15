@@ -60,6 +60,27 @@ pub struct EngineStatus {
     /// Server mode: FreshRSS credentials are on this device, so new articles
     /// still arrive while the server is offline.
     pub offline_refresh: bool,
+    /// A sync with the server that is large enough to be worth showing.
+    pub sync: Option<SyncProgress>,
+}
+
+/// How far a long sync with the server has got.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SyncProgress {
+    pub phase: SyncPhase,
+    pub done: u64,
+    /// Unknown against a server that does not say how much it has.
+    pub total: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncPhase {
+    /// Sending this device's changes.
+    Uploading,
+    /// Receiving and applying the server's changes.
+    Downloading,
+    /// Downloading articles to read offline.
+    FetchingContent,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -130,6 +151,12 @@ pub(crate) struct Inner {
     pub push_lock: tokio::sync::Mutex<()>,
     /// Called when a background sync changed local data.
     pub change_listener: RwLock<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// Progress of the sync in flight, and when listeners last heard of it.
+    pub sync_progress: parking_lot::Mutex<(Option<SyncProgress>, Option<std::time::Instant>)>,
+    /// Called when `sync_progress` moved.
+    pub progress_listener: RwLock<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// When a sync in flight last told the change listener about new data.
+    pub sync_notified: parking_lot::Mutex<Option<std::time::Instant>>,
     pub backfilling: std::sync::atomic::AtomicBool,
     pub media: eddy_media::Resolver,
     /// Caps concurrent media lookups across the grid and prefetching.
@@ -200,6 +227,9 @@ impl Engine {
             push_scheduled: std::sync::atomic::AtomicBool::new(false),
             push_lock: tokio::sync::Mutex::new(()),
             change_listener: RwLock::new(None),
+            sync_progress: parking_lot::Mutex::new((None, None)),
+            progress_listener: RwLock::new(None),
+            sync_notified: parking_lot::Mutex::new(None),
             backfilling: std::sync::atomic::AtomicBool::new(false),
             media: eddy_media::Resolver::new(),
             media_gate: tokio::sync::Semaphore::new(4),
@@ -263,6 +293,12 @@ impl Engine {
         *self.inner.change_listener.write() = listener;
     }
 
+    /// Called as a long sync with the server moves; read the new state from
+    /// `status().sync`.
+    pub fn set_progress_listener(&self, listener: Option<Arc<dyn Fn() + Send + Sync>>) {
+        *self.inner.progress_listener.write() = listener;
+    }
+
     pub fn status(&self) -> Result<EngineStatus> {
         let inner = &self.inner;
         let account = inner.direct.read().as_ref().map(|d| d.account.clone());
@@ -288,6 +324,7 @@ impl Engine {
                 .meta_get("last_refresh")?
                 .and_then(|v| v.parse().ok()),
             last_error: inner.store.meta_get("last_error")?,
+            sync: inner.sync_progress.lock().0,
         })
     }
 
@@ -677,6 +714,45 @@ impl Inner {
                 delay = (delay * 2).clamp(Duration::from_secs(5), Duration::from_secs(300));
             }
         });
+    }
+
+    /// Publishes how far the sync in flight is (`None`: finished). Listeners
+    /// hear of a new phase and of the end at once, and of steps within a
+    /// phase a few times a second.
+    pub(crate) fn set_sync_progress(&self, progress: Option<SyncProgress>) {
+        {
+            let mut state = self.sync_progress.lock();
+            if state.0 == progress {
+                return;
+            }
+            let same_phase =
+                matches!((&state.0, &progress), (Some(a), Some(b)) if a.phase == b.phase);
+            state.0 = progress;
+            if same_phase
+                && state
+                    .1
+                    .is_some_and(|at| at.elapsed() < Duration::from_millis(250))
+            {
+                return;
+            }
+            state.1 = Some(std::time::Instant::now());
+        }
+        if let Some(listener) = self.progress_listener.read().clone() {
+            listener();
+        }
+    }
+
+    /// During a long sync: lets lists pick up what has arrived so far, at
+    /// most every couple of seconds.
+    pub(crate) fn notify_changed_during_sync(&self) {
+        {
+            let mut last = self.sync_notified.lock();
+            if last.is_some_and(|at| at.elapsed() < Duration::from_secs(2)) {
+                return;
+            }
+            *last = Some(std::time::Instant::now());
+        }
+        self.notify_changed();
     }
 
     pub(crate) fn notify_changed(&self) {
