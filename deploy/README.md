@@ -14,7 +14,7 @@ curl http://127.0.0.1:8787/v1/health
 docker compose exec eddy-server eddy-server --version
 ```
 
-The port is mapped to `127.0.0.1:8787` only. `docker compose ps` shows the container as `healthy` once the database answers.
+The port is mapped to `127.0.0.1:8787` only, so nothing outside this machine can connect (see [Other devices on the local network](#other-devices-on-the-local-network)). `docker compose ps` shows the container as `healthy` once the database answers.
 
 To check a build end to end before trusting it with data, run `scripts/test-server-smoke.sh` from the repository root: it starts a throwaway server, pairs two `eddy-cli` devices with it, stops it, makes changes offline, starts it again and checks that both devices converge.
 
@@ -88,6 +88,22 @@ Disconnect in Eddy's settings and pair again with the new code. The device notic
 - If `EDDY_MASTER_KEY` is lost, the FreshRSS password can no longer be decrypted; re-enter the account on a client. Other data is unaffected.
 - To run video-to-book jobs in the background on the server (so a client can close its lid and go offline while waiting), set `EDDY_VIDEO_STAGE2_*` in `.env`, and optionally `EDDY_VIDEO_STAGE1_*` and `EDDY_VIDEO_ASR_*`. The keys stay in the server's environment; clients only read the boolean `video_capable`.
 
+## Other devices on the local network
+
+A device on another machine gets "cannot reach the server" while the port is published on the loopback address, and the server logs nothing, because the connection never arrives. To let devices on a network you trust connect, set the address to publish on in `.env` and recreate the container:
+
+```sh
+# This machine's address on that network, or 0.0.0.0 for every interface
+EDDY_PUBLISH_ADDRESS=192.168.1.20
+```
+
+```sh
+docker compose up -d
+docker compose ps    # PORTS shows the new address
+```
+
+Devices then pair with `http://<that address>:8787`. The server speaks plain HTTP: pairing codes, device tokens and everything synced cross the network unencrypted, and the admin page is reachable the same way. Keep this to a network you control, and set it back to `127.0.0.1` when you are done.
+
 ## Moving to a server
 
-The same image runs on the machine that hosts FreshRSS (`linux/amd64` and `linux/arm64`). How to reach it remotely (public HTTPS behind a reverse proxy, or a private network) will be decided at the iOS stage; until then, keep it listening on the loopback address only.
+The same image runs on the machine that hosts FreshRSS (`linux/amd64` and `linux/arm64`). How to reach it remotely (public HTTPS behind a reverse proxy, or a private network) will be decided at the iOS stage; until then, keep it on the loopback address or a local network you trust.

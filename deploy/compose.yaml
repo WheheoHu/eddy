@@ -15,9 +15,11 @@ services:
     volumes:
       - eddy-data:/data
     ports:
-      # Loopback only. Exposing it further is a deliberate step: put it behind
-      # the same HTTPS reverse proxy as FreshRSS when devices need it.
-      - "127.0.0.1:8787:8080"
+      # Loopback only unless EDDY_PUBLISH_ADDRESS in .env says otherwise.
+      # Exposing it further is a deliberate step: the server speaks plain
+      # HTTP, so beyond a network you trust put it behind the same HTTPS
+      # reverse proxy as FreshRSS.
+      - "${EDDY_PUBLISH_ADDRESS:-127.0.0.1}:8787:8080"
 
 volumes:
   eddy-data:
