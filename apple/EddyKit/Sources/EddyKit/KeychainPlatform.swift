@@ -4,74 +4,169 @@ import Security
 
 /// Platform services backed by the macOS/iOS keychain and unified logging.
 ///
-/// Each secret is read from the keychain once per run and kept in memory:
-/// the engine asks for the same secrets on every sync and every check
-/// whether AI is set up, and a development build (signed ad hoc, so a
-/// different app to the keychain each time) would put up the permission
-/// dialog for each of those reads. A denied read counts as "none" for the
-/// rest of the run too. Writes and deletes keep the cache current.
+/// All secrets live in one keychain item, a JSON object of name → value,
+/// which is read once when the platform is created and kept in memory.
+/// A development build is signed ad hoc, so it is a different app to the
+/// keychain each time and every item it reads puts up its own permission
+/// dialog; with one item per secret those dialogs came up at launch, on
+/// opening an article and on opening Settings. One item means one dialog,
+/// at launch.
+///
+/// If that read is denied, every secret counts as "none" for the run, and
+/// writes are refused until a later read succeeds, so a partial set never
+/// replaces what is stored.
 public final class KeychainPlatform: PlatformServices, @unchecked Sendable {
+    /// Account name of the item that holds every secret.
+    private static let bundleAccount = "secrets"
+
     private let service: String
     private let logger: Logger
-    /// Guards `cached` and serializes the keychain reads, so two callers
-    /// asking for the same key at once produce one dialog, not two.
+    /// Guards `secrets` and `loaded`, and serializes keychain access.
     private let lock = NSLock()
-    private var cached: [String: String?] = [:]
+    private var secrets: [String: String] = [:]
+    /// False while the stored item could not be read (denied or failed).
+    private var loaded = false
 
     public init(service: String = "dev.eddy.Eddy") {
         self.service = service
         self.logger = Logger(subsystem: service, category: "core")
+        lock.lock()
+        defer { lock.unlock() }
+        _ = ensureLoaded()
     }
 
-    private func query(_ key: String) -> [String: Any] {
+    private func query(_ account: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: key,
+            kSecAttrAccount as String: account,
             kSecAttrSynchronizable as String: false,
         ]
+    }
+
+    /// Reads one item's data, with the status that says why there is none.
+    private func readItem(_ account: String) -> (status: OSStatus, data: Data?) {
+        var q = query(account)
+        q[kSecReturnData as String] = true
+        q[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: AnyObject?
+        let status = SecItemCopyMatching(q as CFDictionary, &result)
+        return (status, result as? Data)
+    }
+
+    /// Loads the stored secrets if that has not succeeded yet. Call with
+    /// the lock held. This is the read that can put up the dialog.
+    private func ensureLoaded() -> Bool {
+        if loaded { return true }
+        let (status, data) = readItem(Self.bundleAccount)
+        switch status {
+        case errSecSuccess:
+            if let data, let stored = try? JSONDecoder().decode([String: String].self, from: data) {
+                secrets = stored
+            } else {
+                logger.error("Stored secrets are unreadable; starting empty")
+                secrets = [:]
+            }
+        case errSecItemNotFound:
+            secrets = [:]
+        default:
+            logger.warning("Keychain read failed (\(status, privacy: .public)); secrets unavailable")
+            return false
+        }
+        loaded = true
+        migrateLegacyItems()
+        return true
+    }
+
+    /// Writes `secrets` back as one item. Deleting and adding, rather than
+    /// updating, makes the item belong to this build: updating an item an
+    /// earlier build created can ask for permission again.
+    private func persist() -> Bool {
+        guard let data = try? JSONEncoder().encode(secrets) else { return false }
+        let deleted = SecItemDelete(query(Self.bundleAccount) as CFDictionary)
+        guard deleted == errSecSuccess || deleted == errSecItemNotFound else {
+            logger.error("Keychain delete failed (\(deleted, privacy: .public))")
+            return false
+        }
+        if secrets.isEmpty { return true }
+        var add = query(Self.bundleAccount)
+        add[kSecValueData as String] = data
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        let added = SecItemAdd(add as CFDictionary, nil)
+        if added != errSecSuccess {
+            logger.error("Keychain write failed (\(added, privacy: .public))")
+        }
+        return added == errSecSuccess
+    }
+
+    /// Moves secrets from the earlier one-item-per-secret layout into the
+    /// single item. Listing the old items reads attributes only and asks
+    /// for nothing; reading each one's value asks once per item, this one
+    /// time. An item whose read is denied stays for the next launch.
+    private func migrateLegacyItems() {
+        let list: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrSynchronizable as String: false,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+        ]
+        var result: AnyObject?
+        guard SecItemCopyMatching(list as CFDictionary, &result) == errSecSuccess,
+              let items = result as? [[String: Any]] else { return }
+        let accounts = items
+            .compactMap { $0[kSecAttrAccount as String] as? String }
+            .filter { $0 != Self.bundleAccount }
+        guard !accounts.isEmpty else { return }
+
+        var moved: [String] = []
+        var added: [String] = []
+        for account in accounts {
+            let (status, data) = readItem(account)
+            guard status == errSecSuccess, let data,
+                  let value = String(data: data, encoding: .utf8) else { continue }
+            if secrets[account] == nil {
+                secrets[account] = value
+                added.append(account)
+            }
+            moved.append(account)
+        }
+        guard !moved.isEmpty else { return }
+        guard added.isEmpty || persist() else {
+            for account in added { secrets[account] = nil }
+            return
+        }
+        for account in moved {
+            SecItemDelete(query(account) as CFDictionary)
+        }
+        logger.info("Moved \(moved.count, privacy: .public) keychain items into one")
     }
 
     public func secretGet(key: String) -> String? {
         lock.lock()
         defer { lock.unlock() }
-        if let known = cached[key] { return known }
-        let value = readKeychain(key)
-        cached[key] = .some(value)
-        return value
-    }
-
-    private func readKeychain(_ key: String) -> String? {
-        var q = query(key)
-        q[kSecReturnData as String] = true
-        q[kSecMatchLimit as String] = kSecMatchLimitOne
-        var result: AnyObject?
-        guard SecItemCopyMatching(q as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        return secrets[key]
     }
 
     public func secretSet(key: String, value: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        let data = Data(value.utf8)
-        var status = SecItemUpdate(query(key) as CFDictionary, [kSecValueData as String: data] as CFDictionary)
-        if status == errSecItemNotFound {
-            var add = query(key)
-            add[kSecValueData as String] = data
-            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-            status = SecItemAdd(add as CFDictionary, nil)
+        guard ensureLoaded() else { return false }
+        let previous = secrets[key]
+        if previous == value { return true }
+        secrets[key] = value
+        guard persist() else {
+            secrets[key] = previous
+            return false
         }
-        guard status == errSecSuccess else { return false }
-        cached[key] = .some(value)
         return true
     }
 
     public func secretDelete(key: String) {
         lock.lock()
         defer { lock.unlock() }
-        SecItemDelete(query(key) as CFDictionary)
-        cached[key] = .some(nil)
+        guard ensureLoaded(), let previous = secrets.removeValue(forKey: key) else { return }
+        if !persist() { secrets[key] = previous }
     }
 
     public func log(level: String, message: String) {
