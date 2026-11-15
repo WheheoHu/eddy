@@ -18,6 +18,18 @@ The port is mapped to `127.0.0.1:8787` only. `docker compose ps` shows the conta
 
 To check a build end to end before trusting it with data, run `scripts/test-server-smoke.sh` from the repository root: it starts a throwaway server, pairs two `eddy-cli` devices with it, stops it, makes changes offline, starts it again and checks that both devices converge.
 
+## Prebuilt images
+
+Instead of building, the image can be pulled from GitHub's registry:
+
+| Tag | What it is |
+|---|---|
+| `ghcr.io/wheheohu/eddy/eddy-server:X.Y.Z`, `:latest` | A core release (`linux/amd64` and `linux/arm64`) |
+| `:main`, `:dev` | The newest commit of that branch that passed CI (`linux/amd64`) |
+| `:sha-<commit>` | One specific commit of `dev` or `main` (`linux/amd64`) |
+
+To use one, replace the `build:` section of `compose.yaml` with `image: ghcr.io/wheheohu/eddy/eddy-server:<tag>`. While the package is private, sign in first with `docker login ghcr.io` and a token that can read packages.
+
 ## Admin page
 
 Set `EDDY_ADMIN_PASSWORD` in `.env` and restart (`docker compose up -d`) to turn on the admin page at <http://127.0.0.1:8787/admin>. Signed in with that password you can:
