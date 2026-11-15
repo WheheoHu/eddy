@@ -12,8 +12,8 @@ use tokio::sync::Semaphore;
 use crate::VideoError;
 use crate::asr::transcribe_with_api;
 use crate::client::{
-    UserPart, build_http_client, call_gemini_generate_content, call_stage_model,
-    extract_json_object,
+    UserPart, build_streaming_http_client, call_gemini_generate_content,
+    call_gemini_generate_content_with_retries, call_stage_model, extract_json_object,
 };
 use crate::epub_builder::build_epub_bytes;
 use crate::media::{
@@ -31,8 +31,8 @@ use crate::toolchain::detect_toolchain;
 
 pub type ProgressCallback = Arc<dyn Fn(PipelineProgress) + Send + Sync>;
 
-const MAX_INLINE_CHUNK_MS: u64 = 28 * 60 * 1000;
-const TARGET_INLINE_CHUNK_MS: u64 = 26 * 60 * 1000;
+const MAX_INLINE_CHUNK_MS: u64 = 20 * 60 * 1000;
+const TARGET_INLINE_CHUNK_MS: u64 = 16 * 60 * 1000;
 
 const GEMINI_STAGE1_PROMPT: &str = r#"You are an expert technical editor performing Stage 1 (Visual Slide Localization & Chapter Planning) on a presentation video.
 A specialized deep-writing LLM will write each chapter in Stage 2 using your plan and the exact HD video frames captured at your timestamps.
@@ -352,7 +352,7 @@ pub async fn run_video_pipeline(
         Some(resolved_book_title.clone()),
     );
 
-    let http = build_http_client(360)?;
+    let http = build_streaming_http_client(240, 1200)?;
     let sem = Arc::new(Semaphore::new(cfg.chapter_concurrency.clamp(1, 6)));
     let mut futs = FuturesUnordered::new();
 
@@ -499,7 +499,7 @@ async fn run_gemini_stage1_and_capture<F>(
 where
     F: Fn(PipelinePhase, u32, u32, &str, Option<String>),
 {
-    let http = build_http_client(600)?;
+    let http = build_streaming_http_client(300, 2400)?;
     let is_youtube = probe
         .source_url
         .as_deref()
@@ -508,6 +508,13 @@ where
     let mut raw_plan: Option<Value> = None;
 
     if is_youtube && let Some(url) = probe.source_url.as_deref() {
+        report(
+            PipelinePhase::PlanningVisuals,
+            0,
+            0,
+            &format!("Analyzing YouTube video stream with {}…", stage1_ep.model.trim()),
+            Some(probe.title.clone()),
+        );
         let dur_label = format_timestamp_ms(probe.duration_ms);
         let prompt = GEMINI_STAGE1_PROMPT
             .replace("{target_language}", target_language)
@@ -515,22 +522,24 @@ where
             .replace("{clip_span_note}", &format!("00:00 to {dur_label}"))
             .replace("{chapter_count_hint}", "5 to 10");
 
-        if let Ok(out) = call_gemini_generate_content(
-            &http,
-            stage1_ep,
-            "",
-            &[
-                UserPart::FileUri {
-                    mime: "video/mp4".into(),
-                    uri: url.to_string(),
-                },
-                UserPart::Text(prompt),
-            ],
-            0.15,
-            16384,
-            true,
-        )
-        .await
+        if let Ok(probe_http) = build_streaming_http_client(90, 240)
+            && let Ok(out) = call_gemini_generate_content_with_retries(
+                &probe_http,
+                stage1_ep,
+                "",
+                &[
+                    UserPart::FileUri {
+                        mime: "video/mp4".into(),
+                        uri: url.to_string(),
+                    },
+                    UserPart::Text(prompt),
+                ],
+                0.15,
+                16384,
+                true,
+                0,
+            )
+            .await
             && let Ok(parsed) = extract_json_object(&out.text)
         {
             raw_plan = Some(parsed);
@@ -611,58 +620,101 @@ where
         build_compact_proxy_video(ffmpeg, local_video, p_path, s_ms, dur_opt).await?;
     }
 
-    let sem = Arc::new(Semaphore::new(2));
-    let mut futs = FuturesUnordered::new();
+    report(
+        PipelinePhase::PlanningVisuals,
+        0,
+        0,
+        &format!(
+            "Analyzing video stream with {} ({} part(s))…",
+            stage1_ep.model.trim(),
+            windows.len()
+        ),
+        Some(probe.title.clone()),
+    );
+
+    let mut parts = Vec::with_capacity(windows.len());
     for (idx, s_ms, e_ms, p_path) in windows {
-        let sem = sem.clone();
-        let http = http.clone();
-        let ep = stage1_ep.clone();
-        let lang = target_language.to_string();
-        let title = probe.title.clone();
-        futs.push(async move {
-            let _permit = sem.acquire_owned().await.unwrap();
-            let clip_dur = e_ms - s_ms;
-            let clip_label = format_timestamp_ms(clip_dur);
-            let ctx = if num_chunks == 1 {
-                format!("Presentation Title: {title}")
-            } else {
-                format!(
-                    "Presentation Title: {title} (Part {} of {num_chunks}; clip length {clip_label}, starting at 00:00 of this clip)",
+        let part_cache = proxies_dir.join(format!("plan_part_{:02}_of_{num_chunks:02}.json", idx + 1));
+        if part_cache.is_file()
+            && let Ok(cached_bytes) = std::fs::read(&part_cache)
+            && let Ok(cached_val) = serde_json::from_slice::<Value>(&cached_bytes)
+            && cached_val.is_object()
+        {
+            parts.push((idx, s_ms, e_ms, cached_val));
+            if num_chunks > 1 {
+                report(
+                    PipelinePhase::PlanningVisuals,
+                    0,
+                    0,
+                    &format!("Loaded cached video plan ({} of {num_chunks} parts)…", parts.len()),
+                    Some(probe.title.clone()),
+                );
+            }
+            continue;
+        }
+
+        if num_chunks > 1 {
+            report(
+                PipelinePhase::PlanningVisuals,
+                0,
+                0,
+                &format!(
+                    "Analyzing video stream with {} (part {} of {num_chunks})…",
+                    stage1_ep.model.trim(),
                     idx + 1
-                )
-            };
-            let chap_hint = if num_chunks == 1 { "5 to 9" } else { "3 to 5" };
-            let prompt = GEMINI_STAGE1_PROMPT
-                .replace("{target_language}", &lang)
-                .replace("{clip_context}", &ctx)
-                .replace("{clip_span_note}", &format!("00:00 to {clip_label}"))
-                .replace("{chapter_count_hint}", chap_hint);
+                ),
+                Some(probe.title.clone()),
+            );
+        }
 
-            let bytes = std::fs::read(&p_path)?;
-            let out = call_gemini_generate_content(
-                &http,
-                &ep,
-                "",
-                &[
-                    UserPart::InlineMedia {
-                        mime: "video/mp4".into(),
-                        bytes,
-                    },
-                    UserPart::Text(prompt),
-                ],
-                0.15,
-                16384,
-                true,
+        let clip_dur = e_ms - s_ms;
+        let clip_label = format_timestamp_ms(clip_dur);
+        let ctx = if num_chunks == 1 {
+            format!("Presentation Title: {}", probe.title)
+        } else {
+            format!(
+                "Presentation Title: {} (Part {} of {num_chunks}; clip length {clip_label}, starting at 00:00 of this clip)",
+                probe.title,
+                idx + 1
             )
-            .await?;
-            let parsed = extract_json_object(&out.text)?;
-            Ok::<(usize, u64, u64, Value), VideoError>((idx, s_ms, e_ms, parsed))
-        });
-    }
+        };
+        let chap_hint = if num_chunks == 1 { "5 to 9" } else { "3 to 5" };
+        let prompt = GEMINI_STAGE1_PROMPT
+            .replace("{target_language}", target_language)
+            .replace("{clip_context}", &ctx)
+            .replace("{clip_span_note}", &format!("00:00 to {clip_label}"))
+            .replace("{chapter_count_hint}", chap_hint);
 
-    let mut parts = Vec::new();
-    while let Some(r) = futs.next().await {
-        parts.push(r?);
+        let bytes = std::fs::read(&p_path)?;
+        let out = call_gemini_generate_content(
+            http,
+            stage1_ep,
+            "",
+            &[
+                UserPart::InlineMedia {
+                    mime: "video/mp4".into(),
+                    bytes,
+                },
+                UserPart::Text(prompt),
+            ],
+            0.15,
+            16384,
+            true,
+        )
+        .await?;
+        let parsed = extract_json_object(&out.text)?;
+        let _ = std::fs::write(&part_cache, serde_json::to_vec_pretty(&parsed).unwrap_or_default());
+        parts.push((idx, s_ms, e_ms, parsed));
+
+        if num_chunks > 1 {
+            report(
+                PipelinePhase::PlanningVisuals,
+                0,
+                0,
+                &format!("Analyzed video stream ({} of {num_chunks} parts)…", parts.len()),
+                Some(probe.title.clone()),
+            );
+        }
     }
     parts.sort_by_key(|x| x.0);
 
@@ -925,7 +977,7 @@ where
     );
     parts.push(UserPart::Text(prompt));
 
-    let http = build_http_client(360)?;
+    let http = build_streaming_http_client(240, 1200)?;
     let out = call_stage_model(
         &http,
         stage1_ep,

@@ -149,28 +149,27 @@ impl StageEndpoint {
         if let Ok(parsed) = Url::parse(raw) {
             let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
             let path = parsed.path().trim_end_matches('/').to_ascii_lowercase();
-            if host.ends_with("googleapis.com")
-                || path.ends_with("/v1beta")
-                || path.ends_with("/v1alpha")
-                || path.contains("/v1beta/")
-                || path.contains("/gemini")
-                || path.contains(":generatecontent")
-            {
-                return ResolvedProtocol::Gemini;
-            }
-            if path.ends_with("/v1")
+            if path.ends_with("/openai")
+                || path.contains("/v1beta/openai")
+                || path.ends_with("/v1")
                 || path.contains("/compatible-mode")
                 || path.ends_with("/chat/completions")
                 || path.ends_with("/audio/transcriptions")
             {
                 return ResolvedProtocol::OpenAi;
             }
+            if host.ends_with("googleapis.com")
+                || path.ends_with("/v1beta")
+                || path.ends_with("/v1alpha")
+                || path.contains("/v1beta/")
+                || path.contains("/gemini")
+                || path.contains(":generatecontent")
+                || path.contains(":streamgeneratecontent")
+            {
+                return ResolvedProtocol::Gemini;
+            }
         }
-        if self.model.to_ascii_lowercase().contains("gemini") {
-            ResolvedProtocol::Gemini
-        } else {
-            ResolvedProtocol::OpenAi
-        }
+        ResolvedProtocol::OpenAi
     }
 
     pub fn normalized_openai_base_url(&self) -> Result<String, VideoError> {
@@ -235,6 +234,17 @@ impl StageEndpoint {
             return Err(VideoError::Config("Model ID is empty.".into()));
         }
         Ok(format!("{base}/models/{clean_model}:generateContent"))
+    }
+
+    pub fn gemini_stream_generate_content_url(&self) -> Result<String, VideoError> {
+        let base = self.normalized_gemini_base_url()?;
+        let clean_model = self.model.trim().trim_start_matches("models/");
+        if clean_model.is_empty() {
+            return Err(VideoError::Config("Model ID is empty.".into()));
+        }
+        Ok(format!(
+            "{base}/models/{clean_model}:streamGenerateContent?alt=sse"
+        ))
     }
 
     pub fn is_official_google_host(&self) -> bool {
