@@ -1,44 +1,116 @@
 # Eddy
 
-Eddy 是一个本地优先的个人新闻、收藏和信息流阅读器。订阅来自 FreshRSS，网页文章和教程可以随时保存进来，阅读进度像图书应用一样被记住。
+Eddy is a local-first personal reader for news feeds, saved web pages, books and PDFs. Subscriptions come from FreshRSS (or any Google Reader-compatible service), anything on the web can be saved for later, and reading progress is remembered the way a book app remembers it.
 
-- Rust 内核，三端共用：macOS（SwiftUI + TextKit 2）先行，之后是 iOS 和 Android。
-- 不依赖服务端也能完整使用；可选的 `eddy-server` 提供跨设备同步和全量搜索。
-- 全文提取、截断检测、抓取策略、AI 翻译/摘要/标签都在客户端执行。
+- **One Rust core, native interfaces.** All business logic lives in a Rust workspace and reaches the UI through UniFFI. macOS (SwiftUI + TextKit 2) comes first; iOS and Android follow.
+- **Works without a server.** Every client is complete on its own. The optional `eddy-server` adds cross-device sync and search over the full history.
+- **Processing stays on your device.** Full-text extraction, truncation detection, fetch strategies and AI translation, summaries and tagging all run on the client. API keys stay in the system keychain.
 
-架构决定见 [`docs/adr/`](docs/adr/)。
+Eddy is in early development (0.1.0). The macOS app is the only interface so far, and its UI is English only.
 
-## 目录
+## Features
 
-| 路径 | 内容 |
+- **Feeds** — a three-pane reader for FreshRSS subscriptions, with read state, stars and reading position kept per article.
+- **Collection** — saved web pages, web series built from a table of contents, imported EPUB books and PDFs, side by side with your feeds.
+- **Reflowed reading** — articles, EPUB chapters and PDF text are converted into one block-based document model and laid out with TextKit 2: formulas, code, tables, images, bilingual text, and Chinese typography.
+- **Gallery** — a separate view for image- and video-heavy feeds and saved media links.
+- **AI on the client** — paragraph translation, summaries and tags from a controlled vocabulary, against any OpenAI-compatible or Gemini-native endpoint you configure.
+- **Video to book** — turns a talk or presentation (an online link or a local file) into a multi-chapter illustrated EPUB in your Collection.
+- **Save from Chrome** — a browser extension hands the page you are looking at, including pages you are signed in to, over to Eddy, even while Eddy is closed.
+- **Search** — full-text search with Chinese word segmentation; local data on the client, the whole history on the server.
+
+## Repository layout
+
+| Path | Contents |
 | --- | --- |
-| `crates/` | Rust 工作区：模型、文档结构、存储、FreshRSS 对接、提取、抓取、AI、搜索、同步、引擎、FFI、服务端 |
-| `apple/` | macOS 应用（XcodeGen 工程）和 `EddyKit` Swift 包 |
-| `extensions/chrome/` | 把当前页面交给 Eddy 的 Chrome 扩展 |
-| `deploy/` | 服务端的 Dockerfile 和 compose 配置 |
-| `scripts/` | 构建和安装脚本 |
+| `crates/` | The Rust workspace (see below) |
+| `apple/` | The macOS app (an XcodeGen project) and the `EddyKit` Swift package |
+| `extensions/chrome/` | The "Save to Eddy" Chrome extension |
+| `deploy/` | Dockerfile and compose file for `eddy-server` |
+| `scripts/` | Build and install scripts |
+| `tools/` | `eddy-cli`, a headless developer tool, and the UniFFI binding generator |
+| `docs/adr/` | Architecture decision records (in Chinese) |
 
-## 开发
+### Crates
 
-需要 Rust（rustup）、Xcode 26.3 或更新版本、XcodeGen（`brew install xcodegen`）。
+| Crate | Role |
+| --- | --- |
+| `eddy-model` | Domain types shared by every crate: identifiers, the document model, locators, items, the operation log |
+| `eddy-doc` | Converts HTML into the reflowable document model; translation segments, locators and re-anchoring |
+| `eddy-store` | SQLite store: items, content versions, the operation log with last-writer-wins merging, content-addressed blobs |
+| `eddy-source-greader` | Google Reader API client (FreshRSS, Miniflux and compatible services) |
+| `eddy-extract` | Full-text extraction (site rules, then Readability), truncation and series detection |
+| `eddy-fetch` | Generic page-fetching pipeline and the rule pack format; contains no site rules |
+| `eddy-media` | Resolves an item's link into images and videos that can be shown directly |
+| `eddy-epub` | EPUB container parsing for imports |
+| `eddy-pdf` | Reads PDF text and images with a statically linked pdfium |
+| `eddy-ai` | Translation, summaries and tagging over OpenAI-compatible and Gemini-native endpoints |
+| `eddy-video` | The video-to-book pipeline, shared by the client and the server |
+| `eddy-search` | Full-text search with jieba segmentation |
+| `eddy-sync` | The sync protocol between clients and `eddy-server` |
+| `eddy-core` | The engine: owns the store, talks to the upstream, exposes the operations the apps call |
+| `eddy-ffi` | The UniFFI surface for Swift and Kotlin |
+| `eddy-server` | The optional sync hub |
+| `eddy-capture-host` | Chrome native messaging host behind the browser extension |
+
+## Building
+
+Requirements:
+
+- Rust 1.85 or newer (via rustup)
+- Xcode 26.3 or newer, on macOS 15 or newer
+- XcodeGen: `brew install xcodegen`
+- Optional, for video to book: `brew install ffmpeg yt-dlp`
 
 ```sh
-cargo test --workspace          # Rust 测试
-scripts/build-mac-app.sh        # 构建 Rust 内核、生成绑定并构建 Eddy.app
+scripts/fetch-pdfium.sh         # once: downloads the static pdfium library into build/
+cargo test --workspace          # Rust tests
+scripts/build-mac-app.sh        # builds the Rust core, generates bindings, builds Eddy.app
 open apple/DerivedData/Build/Products/Debug/Eddy.app
 ```
 
-Chrome 扩展：在 `chrome://extensions` 打开开发者模式，加载 `extensions/chrome/` 目录，然后在 Eddy 的设置里点"连接 Chrome 扩展"。
+`scripts/build-mac-app.sh` runs `scripts/build-apple.sh` first, which produces `EddyFFI.xcframework` and the Swift bindings. The Xcode project, the XCFramework and the generated bindings are build outputs and are not checked in; rerun the script after changing the exported interface of `eddy-ffi`.
 
-服务端（可选）：
+To try the app without touching your real library, point it at a scratch data directory:
+
+```sh
+open --env EDDY_DATA_DIR=$PWD/build/app-test apple/DerivedData/Build/Products/Debug/Eddy.app
+```
+
+### Chrome extension
+
+Open `chrome://extensions`, turn on Developer mode and load the `extensions/chrome/` folder unpacked. Then click **Connect Chrome** in Eddy's settings.
+
+### Headless CLI
+
+`tools/eddy-cli` drives the engine without the UI, for checking real network behaviour. It keeps its data and secrets in its own directory under `build/`, separate from the app.
+
+```sh
+cargo run -p eddy-cli -- save https://example.com/article
+cargo run -p eddy-cli -- items
+cargo run -p eddy-cli -- search "query"
+```
+
+### Server (optional)
 
 ```sh
 cd deploy
-cp .env.example .env            # 填入 EDDY_MASTER_KEY
-docker compose up -d --build    # 只监听 127.0.0.1:8787
+cp .env.example .env            # set EDDY_MASTER_KEY
+docker compose up -d --build    # listens on 127.0.0.1:8787 only
 docker compose exec eddy-server eddy-server pairing-code
 ```
 
-## 许可证
+See [`deploy/README.md`](deploy/README.md) for pairing, backups and the video job settings.
 
-Apache-2.0 或 MIT，任选其一。
+## Design notes
+
+The decisions behind the architecture are recorded in [`docs/adr/`](docs/adr/). The short version:
+
+- Local changes are written to an operation log with a hybrid logical clock first, then applied to state. Standalone and server modes share that path, so connecting a server later uploads and merges the existing log.
+- Item IDs are deterministic: feed articles derive a UUIDv5 from the source account and the upstream ID; saved pages and series use UUIDv7.
+- Text offsets are UTF-16 code units everywhere, matching Swift and Kotlin strings.
+- Site-specific fetch rules are never part of this repository. It ships only the generic strategy engine and the rule pack format; rule packs live on your own machine or your own server. See [`crates/eddy-fetch/README.md`](crates/eddy-fetch/README.md).
+
+## License
+
+Licensed under either of [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option.
