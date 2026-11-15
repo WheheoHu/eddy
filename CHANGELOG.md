@@ -15,6 +15,7 @@ Sync protocol 2. Servers and devices on protocol 1 must be updated together.
 - Engine: works with the server offline. Changes queue and upload on their own, search and video job lists answer locally at once, and refresh fetches new articles from FreshRSS directly when the device has the account.
 - Engine: status reports whether the server is reachable and how many changes are waiting or were refused.
 - Engine: pairing with a server the device has not synced with before uploads its whole history.
+- Server: `EDDY_PUBLISH_ADDRESS` in `deploy/.env` chooses the host address the port is published on, for devices on the local network. The default stays `127.0.0.1`.
 - `eddy-cli`: `status`, `disconnect`, `freshrss`, `server-account`, `tag`, `tags`, `star`, `--version`.
 
 ### Changed
