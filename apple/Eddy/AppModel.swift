@@ -198,9 +198,11 @@ final class AppModel {
             self?.scheduleVideoJobsRefresh()
         })
         // Changes that arrive from the server while the app is open.
-        engine.setSyncListener(listener: SyncBridge { [weak self] in
+        engine.setSyncListener(listener: SyncBridge(change: { [weak self] in
             self?.reloadSoon()
-        })
+        }, progress: { [weak self] in
+            self?.syncProgressed()
+        }))
         spoolWatcher = SpoolWatcher(path: engine.spoolDir()) { [weak self] in
             Task { @MainActor in await self?.importCaptures() }
         }
@@ -307,6 +309,18 @@ final class AppModel {
         // The search may have found the server gone (or back).
         status = try? engine.status()
         return found
+    }
+
+    /// A long sync with the server started, moved or ended. Only the status
+    /// is read again: lists reload on their own schedule while it runs, and
+    /// once more when it ends.
+    private func syncProgressed() {
+        guard let engine else { return }
+        let wasSyncing = status?.sync != nil
+        status = try? engine.status()
+        if wasSyncing, status?.sync == nil {
+            reloadSoon()
+        }
     }
 
     /// Server mode with the server unreachable: search covers only what is
@@ -973,17 +987,53 @@ final class VideoJobBridge: VideoJobListener, @unchecked Sendable {
     }
 }
 
-/// Forwards "a background sync changed something" to the main actor.
+/// Forwards "a background sync changed something" and "a long sync moved"
+/// to the main actor.
 final class SyncBridge: SyncListener, @unchecked Sendable {
-    private let handler: @MainActor () -> Void
+    private let change: @MainActor () -> Void
+    private let progress: @MainActor () -> Void
 
-    init(_ handler: @escaping @MainActor () -> Void) {
-        self.handler = handler
+    init(change: @escaping @MainActor () -> Void, progress: @escaping @MainActor () -> Void) {
+        self.change = change
+        self.progress = progress
     }
 
     func onChange() {
-        let handler = handler
-        Task { @MainActor in handler() }
+        let change = change
+        Task { @MainActor in change() }
+    }
+
+    func onProgress() {
+        let progress = progress
+        Task { @MainActor in progress() }
+    }
+}
+
+extension SyncProgressView {
+    /// 0...1, or nil when the server does not say how much there is.
+    var fraction: Double? {
+        guard let total, total > 0 else { return nil }
+        return min(1, Double(done) / Double(total))
+    }
+
+    /// The full sentence, for Settings.
+    var detail: String {
+        let count = total.map { "\(done.formatted()) of \($0.formatted())" } ?? done.formatted()
+        switch phase {
+        case .uploading: return "Uploading… \(count) changes"
+        case .downloading: return "Downloading… \(count) changes"
+        case .fetchingContent: return "Fetching articles for offline reading… \(count)"
+        }
+    }
+
+    /// One short line, for the sidebar.
+    var summary: String {
+        let percent = fraction.map { " \(Int(($0 * 100).rounded(.down)))%" } ?? ""
+        switch phase {
+        case .uploading: return "Uploading…\(percent)"
+        case .downloading: return "Syncing…\(percent)"
+        case .fetchingContent: return "Fetching articles…\(percent)"
+        }
     }
 }
 

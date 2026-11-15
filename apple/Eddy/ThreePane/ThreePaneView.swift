@@ -615,16 +615,30 @@ struct StatusFooter: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: icon)
-            Text(text).lineLimit(1)
-            Spacer()
-            if model.busy || model.historyAdded > 0 { ProgressView().controlSize(.mini) }
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                Text(text).lineLimit(1)
+                Spacer()
+                if sync == nil, model.busy || model.historyAdded > 0 { ProgressView().controlSize(.mini) }
+            }
+            // A long sync (the first one after pairing, or after a long time
+            // offline) shows how far it is.
+            if let sync {
+                if let fraction = sync.fraction {
+                    ProgressView(value: fraction).controlSize(.small)
+                } else {
+                    ProgressView().progressViewStyle(.linear).controlSize(.small)
+                }
+            }
         }
         .font(.caption)
         .foregroundStyle(.secondary)
         .padding(10)
+        .help(sync?.detail ?? "")
     }
+
+    private var sync: SyncProgressView? { model.status?.sync }
 
     private var icon: String {
         switch model.status?.mode {
@@ -636,6 +650,8 @@ struct StatusFooter: View {
 
     private var text: String {
         switch model.status?.mode {
+        case .server where sync != nil: sync?.summary ?? ""
+        case .server where model.serverOffline: "Sync server offline"
         case .server: "Syncing with server"
         case .standalone where model.historyAdded > 0: "Loading history · \(model.historyAdded.formatted()) older articles"
         case .standalone: model.status?.account.map { "FreshRSS · \($0.username)" } ?? "FreshRSS"
