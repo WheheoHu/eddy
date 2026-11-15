@@ -63,7 +63,7 @@ pub use platform::{LogLevel, MemoryPlatform, Platform};
 pub use progress::{ResumePoint, SeriesInfo};
 pub use rules::RulePackSummary;
 pub use search::SearchResult;
-pub use server::AppliedOps;
+pub use server::{AppliedOps, ServerOverview};
 pub use upstream::HistoryCallback;
 pub use video::{
     StartVideoJobOptions, VideoJobCallback, VideoJobInfo, VideoJobTarget, record_to_remote,

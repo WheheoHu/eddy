@@ -23,6 +23,15 @@ WORK="$PWD/build/smoke"
 KEEP=0
 [[ "${1:-}" == "--keep" ]] && KEEP=1
 
+ADMIN_PASSWORD="$(openssl rand -hex 16)"
+JAR="$WORK/admin-cookies"
+# The admin API as the page calls it: session cookie plus the admin header.
+admin() {
+  local method="$1" path="$2" body="${3:-}"
+  curl -fsS -X "$method" -b "$JAR" -c "$JAR" -H 'x-eddy-admin: 1' \
+    ${body:+-H 'content-type: application/json' -d "$body"} "$URL/admin/api/$path"
+}
+
 step() { printf '\n== %s\n' "$*"; }
 fail() { printf 'FAILED: %s\n' "$*" >&2; exit 1; }
 
@@ -62,6 +71,7 @@ b() { "$CLI" --data "$WORK/b" "$@"; }
 step "start"
 docker run -d --name "$NAME" --init -p "127.0.0.1:$PORT:8080" \
   -e "EDDY_MASTER_KEY=$(openssl rand -base64 32)" \
+  -e "EDDY_ADMIN_PASSWORD=$ADMIN_PASSWORD" \
   -v "$NAME-data:/data" eddy-server:smoke >/dev/null
 wait_healthy
 version="$(docker exec "$NAME" eddy-server --version)"
@@ -73,10 +83,19 @@ step "a client that sends no protocol version is told to update"
 code="$(curl -s -o /dev/null -w '%{http_code}' "$URL/v1/info")"
 [[ "$code" == 426 ]] || fail "expected 426, got $code"
 
-step "pair two devices"
-a connect "$URL" "$(docker exec "$NAME" eddy-server pairing-code 2>/dev/null)"
+step "admin page: closed until signed in, then makes a pairing code"
+[[ "$(curl -s -o /dev/null -w '%{http_code}' "$URL/admin")" == 200 ]] || fail "the admin page is not served"
+[[ "$(curl -s -o /dev/null -w '%{http_code}' "$URL/admin/api/state")" == 401 ]] || fail "admin state should need a session"
+admin POST login "{\"password\":\"$ADMIN_PASSWORD\"}"
+admin_code="$(admin POST pairing-codes '{"minutes":5}' | sed -n 's/.*"code":"\([^"]*\)".*/\1/p')"
+[[ -n "$admin_code" ]] || fail "the admin page did not return a pairing code"
+
+step "pair two devices (one with the admin page's code, one with the command line's)"
+a connect "$URL" "$admin_code"
 b connect "$URL" "$(docker exec "$NAME" eddy-server pairing-code 2>/dev/null)"
 [[ "$(docker exec "$NAME" eddy-server devices | wc -l | tr -d ' ')" == 2 ]] || fail "expected two devices"
+
+admin GET state | grep -q '"name":"eddy-cli"' || fail "the admin page does not list the paired devices"
 
 step "a change on A reaches B"
 a tag smoke-online >/dev/null

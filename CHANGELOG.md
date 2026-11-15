@@ -8,6 +8,8 @@ Sync protocol 2. Servers and devices on protocol 1 must be updated together.
 
 ### Server
 
+- Admin page at `/admin`, on when `EDDY_ADMIN_PASSWORD` is set: pairing codes, devices, FreshRSS status and account, video jobs, service status.
+- Revoking a device closes its open live connection.
 - A read/star change that loses to a newer one is no longer pushed to FreshRSS, where it used to come back as the newest state.
 - A change the server cannot use (unknown kind, wrong value, a clock far ahead) is refused on its own; the rest of the upload goes through.
 - Clients with an incompatible protocol are told to update (HTTP 426).

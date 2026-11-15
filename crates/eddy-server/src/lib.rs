@@ -2,6 +2,7 @@
 //! account, keeps the op log every device syncs with, stores content blobs,
 //! distributes private configuration and searches the full history.
 
+pub mod admin;
 pub mod secrets;
 
 use std::path::PathBuf;
@@ -32,6 +33,9 @@ use tokio::sync::broadcast;
 pub struct ServerConfig {
     pub data_dir: PathBuf,
     pub master_key: [u8; 32],
+    /// Turns on the admin page at `/admin`; without it the page does not
+    /// exist.
+    pub admin_password: Option<String>,
 }
 
 pub struct AppState {
@@ -44,6 +48,15 @@ pub struct AppState {
     /// Wakes live connections when the server shuts down, so they close
     /// instead of holding the shutdown open.
     pub closing: tokio::sync::Notify,
+    /// IDs of devices as they are revoked, so their live connections close.
+    pub revoked: broadcast::Sender<String>,
+    pub data_dir: PathBuf,
+    pub started_at: i64,
+    /// A FreshRSS refresh is running.
+    pub refreshing: std::sync::atomic::AtomicBool,
+    /// Seconds between scheduled refreshes; 0 until the poller starts.
+    pub refresh_interval: std::sync::atomic::AtomicU64,
+    pub admin: Option<admin::Admin>,
 }
 
 impl AppState {
@@ -74,6 +87,7 @@ impl AppState {
         };
         let (changes, _) = broadcast::channel(64);
         let (video_events, _) = broadcast::channel(64);
+        let (revoked, _) = broadcast::channel(16);
         Ok(Arc::new(AppState {
             engine,
             store,
@@ -81,6 +95,16 @@ impl AppState {
             changes,
             video_events,
             closing: tokio::sync::Notify::new(),
+            revoked,
+            data_dir: cfg.data_dir.clone(),
+            started_at: eddy_model::now_ms(),
+            refreshing: std::sync::atomic::AtomicBool::new(false),
+            refresh_interval: std::sync::atomic::AtomicU64::new(0),
+            admin: cfg
+                .admin_password
+                .as_deref()
+                .filter(|p| !p.is_empty())
+                .map(admin::Admin::new),
         }))
     }
 
@@ -117,12 +141,16 @@ impl AppState {
             return Ok(());
         }
         let before = self.engine.server_cursor().unwrap_or(0);
+        self.refreshing
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let result = self
             .engine
             .refresh()
             .await
             .map(|_| ())
             .map_err(|e| e.to_string());
+        self.refreshing
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         if self.engine.server_cursor().unwrap_or(0) > before {
             self.announce();
         }
@@ -153,14 +181,14 @@ pub fn create_pairing_code(store: &Store, ttl: Duration) -> Result<String, Strin
     Ok(code)
 }
 
-pub struct ApiError(StatusCode, String);
+pub struct ApiError(pub(crate) StatusCode, pub(crate) String);
 
 impl ApiError {
-    fn internal(e: impl std::fmt::Display) -> Self {
+    pub(crate) fn internal(e: impl std::fmt::Display) -> Self {
         ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
     }
 
-    fn bad(e: impl std::fmt::Display) -> Self {
+    pub(crate) fn bad(e: impl std::fmt::Display) -> Self {
         ApiError(StatusCode::BAD_REQUEST, e.to_string())
     }
 }
@@ -224,6 +252,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/video-jobs/{id}/cancel", post(cancel_video_job))
         .route("/v1/video-jobs/{id}", delete(dismiss_video_job))
         .route("/v1/ws", get(ws))
+        .merge(admin::routes())
         .layer(DefaultBodyLimit::max(80 * 1024 * 1024))
         .layer(axum::middleware::from_fn(require_protocol))
         .with_state(state)
@@ -247,7 +276,10 @@ async fn require_protocol(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    if request.uri().path() == "/v1/health" {
+    // Health checks and the admin page come from curl and browsers, not
+    // from sync clients.
+    let path = request.uri().path();
+    if path == "/v1/health" || path == "/admin" || path.starts_with("/admin/") {
         return next.run(request).await;
     }
     let protocol = request
@@ -268,6 +300,9 @@ async fn require_protocol(
 
 /// Refreshes FreshRSS every `interval` in the background.
 pub fn spawn_poller(state: Arc<AppState>, interval: Duration) {
+    state
+        .refresh_interval
+        .store(interval.as_secs(), std::sync::atomic::Ordering::SeqCst);
     tokio::spawn(async move {
         // The first tick fires at once: a restarted server catches up
         // instead of waiting a full interval.
@@ -508,19 +543,19 @@ async fn search(
     ))
 }
 
-async fn ws(State(s): State<Arc<AppState>>, _d: Device, upgrade: WebSocketUpgrade) -> Response {
-    upgrade.on_upgrade(move |socket| live(socket, s))
+async fn ws(
+    State(s): State<Arc<AppState>>,
+    Device(device): Device,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    upgrade.on_upgrade(move |socket| live(socket, s, device))
 }
 
 async fn list_video_jobs(
     State(s): State<Arc<AppState>>,
     _d: Device,
 ) -> Result<Json<Vec<RemoteVideoJob>>, ApiError> {
-    let jobs = s
-        .engine
-        .local_video_job_records(50)
-        .map_err(ApiError::internal)?;
-    Ok(Json(jobs.into_iter().map(record_to_remote).collect()))
+    Ok(Json(s.video_jobs()?))
 }
 
 async fn create_video_job(
@@ -528,48 +563,7 @@ async fn create_video_job(
     _d: Device,
     Json(req): Json<CreateVideoJobRequest>,
 ) -> Result<Json<RemoteVideoJob>, ApiError> {
-    let src = req.source.trim();
-    if !(src.starts_with("https://") || src.starts_with("http://")) {
-        return Err(ApiError::bad(
-            "Server video jobs only accept http:// or https:// URLs.",
-        ));
-    }
-    let pipeline = match req.pipeline.as_deref() {
-        Some("gemini_two_stage") => Some(VideoPipelineMode::GeminiTwoStage),
-        Some("local_frames_two_stage") => Some(VideoPipelineMode::LocalFramesTwoStage),
-        Some("auto") => Some(VideoPipelineMode::Auto),
-        _ => None,
-    };
-    let policy = match req.transcript_policy.as_deref() {
-        Some("prefer_manual_subtitles") => Some(TranscriptPolicy::PreferManualSubtitles),
-        Some("always_asr") => Some(TranscriptPolicy::AlwaysAsr),
-        Some("prefer_any_subtitles") => Some(TranscriptPolicy::PreferAnySubtitles),
-        _ => None,
-    };
-
-    let state_cb = s.clone();
-    let notify: Arc<dyn Fn() + Send + Sync> = Arc::new(move || state_cb.announce_video_job_event());
-    let created = s
-        .engine
-        .enqueue_local_video_job(
-            StartVideoJobOptions {
-                source: src.to_string(),
-                target: VideoJobTarget::Local,
-                pipeline,
-                transcript_policy: policy,
-                target_language: req.target_language,
-                cookies_from_browser: None,
-            },
-            Some(notify),
-        )
-        .map_err(ApiError::bad)?;
-    s.announce_video_job_event();
-    let rec = s
-        .engine
-        .local_video_job_record(&created.id)
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::internal("created video job missing"))?;
-    Ok(Json(record_to_remote(rec)))
+    Ok(Json(s.create_video_job(req)?))
 }
 
 async fn retry_video_job(
@@ -577,18 +571,7 @@ async fn retry_video_job(
     _d: Device,
     Path(id): Path<String>,
 ) -> Result<Json<RemoteVideoJob>, ApiError> {
-    let state_cb = s.clone();
-    let notify: Arc<dyn Fn() + Send + Sync> = Arc::new(move || state_cb.announce_video_job_event());
-    s.engine
-        .retry_local_video_job(&id, Some(notify))
-        .map_err(ApiError::bad)?;
-    s.announce_video_job_event();
-    let rec = s
-        .engine
-        .local_video_job_record(&id)
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "Job not found".into()))?;
-    Ok(Json(record_to_remote(rec)))
+    Ok(Json(s.retry_video_job(&id)?))
 }
 
 async fn cancel_video_job(
@@ -596,16 +579,7 @@ async fn cancel_video_job(
     _d: Device,
     Path(id): Path<String>,
 ) -> Result<Json<RemoteVideoJob>, ApiError> {
-    s.engine
-        .cancel_local_video_job(&id)
-        .map_err(ApiError::bad)?;
-    s.announce_video_job_event();
-    let rec = s
-        .engine
-        .local_video_job_record(&id)
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "Job not found".into()))?;
-    Ok(Json(record_to_remote(rec)))
+    Ok(Json(s.cancel_video_job(&id)?))
 }
 
 async fn dismiss_video_job(
@@ -613,14 +587,108 @@ async fn dismiss_video_job(
     _d: Device,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    s.engine
-        .dismiss_local_video_job(&id)
-        .map_err(ApiError::internal)?;
-    s.announce_video_job_event();
+    s.dismiss_video_job(&id)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn live(mut socket: WebSocket, s: Arc<AppState>) {
+/// Video jobs, as devices and the admin page both drive them.
+impl AppState {
+    pub(crate) fn video_jobs(&self) -> Result<Vec<RemoteVideoJob>, ApiError> {
+        let jobs = self
+            .engine
+            .local_video_job_records(50)
+            .map_err(ApiError::internal)?;
+        Ok(jobs.into_iter().map(record_to_remote).collect())
+    }
+
+    fn video_job(&self, id: &str) -> Result<RemoteVideoJob, ApiError> {
+        self.engine
+            .local_video_job_record(id)
+            .map_err(ApiError::internal)?
+            .map(record_to_remote)
+            .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "Job not found".into()))
+    }
+
+    fn video_notifier(self: &Arc<Self>) -> Arc<dyn Fn() + Send + Sync> {
+        let state = self.clone();
+        Arc::new(move || state.announce_video_job_event())
+    }
+
+    pub(crate) fn create_video_job(
+        self: &Arc<Self>,
+        req: CreateVideoJobRequest,
+    ) -> Result<RemoteVideoJob, ApiError> {
+        let src = req.source.trim();
+        if !(src.starts_with("https://") || src.starts_with("http://")) {
+            return Err(ApiError::bad(
+                "Server video jobs only accept http:// or https:// URLs.",
+            ));
+        }
+        let pipeline = match req.pipeline.as_deref() {
+            Some("gemini_two_stage") => Some(VideoPipelineMode::GeminiTwoStage),
+            Some("local_frames_two_stage") => Some(VideoPipelineMode::LocalFramesTwoStage),
+            Some("auto") => Some(VideoPipelineMode::Auto),
+            _ => None,
+        };
+        let policy = match req.transcript_policy.as_deref() {
+            Some("prefer_manual_subtitles") => Some(TranscriptPolicy::PreferManualSubtitles),
+            Some("always_asr") => Some(TranscriptPolicy::AlwaysAsr),
+            Some("prefer_any_subtitles") => Some(TranscriptPolicy::PreferAnySubtitles),
+            _ => None,
+        };
+        let created = self
+            .engine
+            .enqueue_local_video_job(
+                StartVideoJobOptions {
+                    source: src.to_string(),
+                    target: VideoJobTarget::Local,
+                    pipeline,
+                    transcript_policy: policy,
+                    target_language: req.target_language,
+                    cookies_from_browser: None,
+                },
+                Some(self.video_notifier()),
+            )
+            .map_err(ApiError::bad)?;
+        self.announce_video_job_event();
+        self.video_job(&created.id)
+    }
+
+    pub(crate) fn retry_video_job(self: &Arc<Self>, id: &str) -> Result<RemoteVideoJob, ApiError> {
+        self.engine
+            .retry_local_video_job(id, Some(self.video_notifier()))
+            .map_err(ApiError::bad)?;
+        self.announce_video_job_event();
+        self.video_job(id)
+    }
+
+    pub(crate) fn cancel_video_job(&self, id: &str) -> Result<RemoteVideoJob, ApiError> {
+        self.engine
+            .cancel_local_video_job(id)
+            .map_err(ApiError::bad)?;
+        self.announce_video_job_event();
+        self.video_job(id)
+    }
+
+    pub(crate) fn dismiss_video_job(&self, id: &str) -> Result<(), ApiError> {
+        self.engine
+            .dismiss_local_video_job(id)
+            .map_err(ApiError::internal)?;
+        self.announce_video_job_event();
+        Ok(())
+    }
+
+    /// Revokes a device: its token stops working and its live connection
+    /// closes.
+    pub fn revoke_device(&self, id: &str) -> Result<(), String> {
+        self.store.remove_device(id).map_err(|e| e.to_string())?;
+        let _ = self.revoked.send(id.to_string());
+        Ok(())
+    }
+}
+
+async fn live(mut socket: WebSocket, s: Arc<AppState>, device: String) {
+    let mut gone = s.revoked.subscribe();
     let mut rx = s.changes.subscribe();
     let mut vrx = s.video_events.subscribe();
     if let Ok(cursor) = s.engine.server_cursor()
@@ -654,6 +722,12 @@ async fn live(mut socket: WebSocket, s: Arc<AppState>) {
                 Err(_) => break,
             },
             _ = s.closing.notified() => break,
+            // The token was only checked when the connection opened.
+            revoked = gone.recv() => match revoked {
+                Ok(id) if id == device => break,
+                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            },
             incoming = socket.recv() => match incoming {
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
                 _ => {}

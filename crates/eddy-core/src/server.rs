@@ -18,7 +18,41 @@ pub struct AppliedOps {
     pub rejected: Vec<(String, String)>,
 }
 
+/// What a server holds, for its admin page.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ServerOverview {
+    pub feeds: u32,
+    pub articles: u32,
+    /// Bytes of stored content (articles, saved pages, books).
+    pub content_bytes: u64,
+    /// Older FreshRSS articles are still being loaded.
+    pub loading_history: bool,
+    pub last_refresh: Option<i64>,
+    pub last_error: Option<String>,
+}
+
 impl Engine {
+    pub fn server_overview(&self) -> Result<ServerOverview> {
+        let inner = &self.inner;
+        let feeds = inner
+            .store
+            .sources()?
+            .iter()
+            .filter(|s| s.kind == eddy_model::SourceKind::Feed)
+            .count() as u32;
+        Ok(ServerOverview {
+            feeds,
+            articles: inner.store.count_items(&eddy_store::ItemQuery::default())?,
+            content_bytes: inner.store.blob_usage()?,
+            loading_history: inner.backfilling.load(std::sync::atomic::Ordering::SeqCst),
+            last_refresh: inner
+                .store
+                .meta_get("last_refresh")?
+                .and_then(|v| v.parse().ok()),
+            last_error: inner.store.meta_get("last_error")?,
+        })
+    }
+
     /// The FreshRSS account the server manages, if configured.
     pub fn server_account(&self) -> Option<eddy_model::Account> {
         self.inner.direct.read().as_ref().map(|d| d.account.clone())
