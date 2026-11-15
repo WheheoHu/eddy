@@ -1,0 +1,92 @@
+name: CI
+
+# Every commit pushed to any branch is checked for formatting, linted and
+# tested. Tags are the release workflow's business.
+on:
+  push:
+    branches: ["**"]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Warnings fail the build here; locally they are just warnings.
+  RUSTFLAGS: -D warnings
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  core:
+    # The whole workspace only builds on macOS: eddy-pdf links the static
+    # pdfium that scripts/fetch-pdfium.sh downloads for it.
+    name: Lint and test (macOS, whole workspace)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Fetch pdfium
+        run: scripts/fetch-pdfium.sh macos
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked
+      - name: Test
+        run: cargo test --workspace --locked
+
+  server:
+    # The server ships as a Linux image, so what it is made of is also
+    # tested there, and the image has to build.
+    name: Test and build image (Linux, server)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test --locked -p eddy-server -p eddy-core -p eddy-store -p eddy-sync -p eddy-model
+      - name: Build image
+        run: docker build -f deploy/Dockerfile --build-arg "EDDY_GIT_HASH=${GITHUB_SHA::7}" -t eddy-server:ci .
+      - name: Image starts and reports its version
+        run: |
+          docker run -d --name eddy -p 127.0.0.1:8787:8080 \
+            -e "EDDY_MASTER_KEY=$(openssl rand -base64 32)" eddy-server:ci
+          for _ in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8787/v1/health && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8787/v1/health
+          docker exec eddy eddy-server --version | grep "${GITHUB_SHA::7}"
+
+  mac-app:
+    name: Build Mac app
+    runs-on: macos-15
+    env:
+      # Xcode builds the Swift side; Rust warnings are the core job's business.
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Build
+        run: scripts/build-mac-app.sh debug
+      - name: Build log
+        if: failure()
+        run: tail -n 200 build/xcodebuild.log || true
