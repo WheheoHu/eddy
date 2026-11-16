@@ -276,6 +276,31 @@ function reportProgress(atEnd: boolean): void {
 
 // ---------- open item ----------
 
+/// Shown while no article is open: what this app does and where content
+/// comes from, so a fresh profile does not look broken.
+export function showReaderPlaceholder(): void {
+  if (state.currentItemId) return;
+  const readerEl = document.getElementById("reader")!;
+  const el = document.createElement("div");
+  el.className = "empty-reader";
+  const configured = state.status && state.status.mode !== "unconfigured";
+  el.innerHTML = `
+    <div class="big">🌀</div>
+    <div><b>Nothing open</b></div>
+    <p>${configured
+      ? "Pick an article on the left, or paste a URL in the toolbar and press Save."
+      : "This library is empty. Pick one to start:"}</p>
+    ${configured ? "" : `
+    <p style="text-align:left; max-width:340px; margin:14px auto 0; line-height:1.8">
+      🌐&nbsp; Paste a page URL in the toolbar above → <b>Save</b><br>
+      📚&nbsp; <b>Import…</b> an EPUB or PDF file<br>
+      📡&nbsp; <b>Settings → FreshRSS</b> to subscribe to your feeds
+    </p>`}
+  `;
+  readerEl.textContent = "";
+  readerEl.append(el);
+}
+
 export async function openItem(id: string): Promise<void> {
   state.currentItemId = id;
   state.doc = null;

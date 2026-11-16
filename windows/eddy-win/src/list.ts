@@ -1,6 +1,6 @@
 import { api, type ItemRow } from "./api";
 import { state, emitList, onList, fmtDate, toast } from "./state";
-import { openItem } from "./reader";
+import { openItem, showReaderPlaceholder } from "./reader";
 import { markAllReadCurrent } from "./sidebar";
 
 export async function loadItems(): Promise<void> {
@@ -49,8 +49,10 @@ export function renderList(): void {
     empty.className = "list-empty";
     empty.textContent = emptyText();
     root.appendChild(empty);
+    showReaderPlaceholder();
     return;
   }
+  showReaderPlaceholder();
 
   for (const row of state.rows) {
     root.appendChild(itemRowEl(row));
