@@ -220,6 +220,10 @@ struct GalleryView: View {
     /// How many rows are above the top of the view. Not state: it changes
     /// as the grid scrolls and nothing is drawn from it.
     @State private var position = ScrollMark()
+    /// The grid is moving: under the fingers (`scrollPhase`) or gliding on
+    /// after them.
+    @State private var scrollPhase = ScrollPhase.idle
+    @State private var gliding = false
 
     private final class ScrollMark {
         var rowsAbove = 0
@@ -313,6 +317,10 @@ struct GalleryView: View {
                         }
                     }
                     .padding(Self.gridPadding)
+                    .background(LongMomentumScrolling { gliding in
+                        self.gliding = gliding
+                        model.galleryScrolling = gliding || scrollPhase != .idle
+                    })
                 }
                 // One reading of where the grid is for all of it, and only
                 // when a row passes the top: a tile each watching its own
@@ -324,7 +332,8 @@ struct GalleryView: View {
                     if now > before { markScrolledPast(rows: before..<now) }
                 }
                 .onScrollPhaseChange { _, phase in
-                    model.galleryScrolling = phase != .idle
+                    scrollPhase = phase
+                    model.galleryScrolling = gliding || phase != .idle
                 }
                 .onChange(of: rowHeight) { resize(proxy) }
             }
