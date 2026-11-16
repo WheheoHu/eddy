@@ -607,6 +607,15 @@ final class ReaderTextView: NSTextView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if wantsFocus { claimFocus(self) }
+        // An article is given its text before the view is in a window, and
+        // text laid out then gets no views for its attachments: a table on
+        // the first screen stayed blank until it was scrolled away and
+        // back. Laying the visible part out again, once in the window,
+        // brings them in.
+        guard window != nil else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.textLayoutManager?.textViewportLayoutController.layoutViewport()
+        }
     }
 
     override func becomeFirstResponder() -> Bool {
