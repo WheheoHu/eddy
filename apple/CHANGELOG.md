@@ -22,4 +22,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - An unreachable server is a quiet status, not an error banner. Refresh says when new articles came from FreshRSS directly; search says when it only covered this Mac.
 - A data directory chosen with `EDDY_DATA_DIR` keeps its secrets in its own keychain item, apart from the real installation's.
 
+### Fixed
+
+- Scrolling an article no longer stops when the pointer reaches a table. A table wider than the text still scrolls sideways.
+
 [Unreleased]: https://github.com/WheheoHu/eddy/commits/dev
