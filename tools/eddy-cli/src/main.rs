@@ -21,8 +21,9 @@ use std::sync::Arc;
 use eddy_core::{Engine, EngineOptions, GalleryScope, ItemFilter, ItemQuery, Platform};
 use eddy_model::{BlockKind, Document};
 
-/// Development-only keychain: secrets in `cli-secrets.json` (mode 0600)
-/// inside the CLI's own data directory.
+/// Development-only keychain: secrets in `cli-secrets.json` inside the CLI's
+/// own data directory. The file is mode 0600 on Unix; on Windows it inherits
+/// the data directory's ACL, which is fine for a development tool.
 struct FileSecrets(PathBuf);
 
 impl FileSecrets {

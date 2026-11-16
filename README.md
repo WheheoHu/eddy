@@ -79,7 +79,7 @@ open --env EDDY_DATA_DIR=$PWD/build/app-test apple/DerivedData/Build/Products/De
 
 ### Windows (Rust core and CLI)
 
-The macOS app is Apple-only, but the Rust core and the headless CLI build on Windows (MSVC toolchain, from a Visual Studio developer shell):
+The macOS app is Apple-only, but the Rust core and the headless CLI build on Windows (MSVC toolchain, from a Visual Studio developer shell). `fetch-pdfium.sh` is a bash script, so run it from Git Bash or another shell with `curl`, `unzip` and `shasum`; the cargo commands work from either shell:
 
 ```sh
 scripts/fetch-pdfium.sh windows   # downloads the Windows pdfium build into build/
@@ -87,7 +87,7 @@ cargo build -p eddy-cli
 cargo run -p eddy-cli -- save https://example.com/article
 ```
 
-On Windows pdfium links dynamically: `build/pdfium/windows/release/lib/x64/pdfium.dll` must sit next to the built exe (or be on `PATH`) at runtime.
+On Windows pdfium is a shared library: copy `build/pdfium/windows/release/lib/x64/pdfium.dll` next to the built exe (`target/debug/`). `eddy-pdf` loads it from there by full path; the import library in the archive is not needed.
 
 ### Chrome extension
 

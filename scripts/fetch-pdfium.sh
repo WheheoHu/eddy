@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Downloads the static pdfium library that eddy-pdf links against.
+# Downloads the pdfium library that eddy-pdf uses.
 #
 # Prebuilt by https://github.com/paulocoutinhox/pdfium-lib (pdfium is
 # BSD-3-Clause). The archive is pinned by release tag and sha256 and unpacked
-# under build/pdfium/<platform>/; .cargo/config.toml points
-# PDFIUM_STATIC_LIB_PATH_* at the unpacked lib directory, so every cargo
-# command finds it without extra flags.
+# under build/pdfium/<platform>/. On macOS eddy-pdf links the static
+# libpdfium.a: .cargo/config.toml points PDFIUM_STATIC_LIB_PATH_* at the
+# unpacked lib directory, so every cargo command finds it without extra
+# flags. On Windows eddy-pdf loads pdfium.dll from next to the executable at
+# runtime: copy build/pdfium/windows/release/lib/x64/pdfium.dll there (the
+# import library in the archive is not needed).
 #
 # Usage: scripts/fetch-pdfium.sh [macos|windows]
 set -euo pipefail
@@ -20,13 +23,10 @@ case "$PLATFORM" in
   *) echo "unknown platform: $PLATFORM" >&2; exit 1 ;;
 esac
 
-# macOS ships a static libpdfium.a; the Windows build from pdfium-lib only
-# ships pdfium.dll plus an import library (under lib/x64), so eddy-pdf links
-# dynamically there (see .cargo/config.toml for the matching paths).
 DEST="$ROOT/build/pdfium/$PLATFORM"
 case "$PLATFORM" in
   macos) LIB="$DEST/release/lib/libpdfium.a" ;;
-  windows) LIB="$DEST/release/lib/x64/pdfium.lib" ;;
+  windows) LIB="$DEST/release/lib/x64/pdfium.dll" ;;
 esac
 STAMP="$DEST/.release"
 

@@ -204,19 +204,48 @@ fn pdfium() -> Option<&'static Pdfium> {
     static PDFIUM: OnceLock<Option<Pdfium>> = OnceLock::new();
     PDFIUM
         .get_or_init(|| {
-            let bindings = {
-                #[cfg(target_vendor = "apple")]
-                {
-                    // Linked against the static pdfium from fetch-pdfium.sh.
-                    Pdfium::bind_to_statically_linked_library().ok()
+            #[cfg(target_vendor = "apple")]
+            {
+                // Linked against the static pdfium from fetch-pdfium.sh.
+                Some(Pdfium::new(
+                    Pdfium::bind_to_statically_linked_library().ok()?,
+                ))
+            }
+            #[cfg(not(target_vendor = "apple"))]
+            {
+                // Shared pdfium. Binding by full path avoids the default DLL
+                // search order, which includes the working directory. The
+                // copy next to the executable is what an installed app
+                // ships; workspace builds and tests fall back to the
+                // unpacked output of scripts/fetch-pdfium.sh.
+                let name = Pdfium::pdfium_platform_library_name();
+                let exe_dir = std::env::current_exe()
+                    .ok()
+                    .and_then(|exe| exe.parent().map(|p| p.to_path_buf()));
+                #[cfg(windows)]
+                let from_fetch = Some(
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("../../build/pdfium/windows/release/lib/x64")
+                        .join(&name),
+                );
+                #[cfg(not(windows))]
+                let from_fetch: Option<std::path::PathBuf> = None;
+                let candidates = exe_dir
+                    .into_iter()
+                    .map(|dir| dir.join(&name))
+                    .chain(from_fetch);
+                let mut errors = Vec::new();
+                for candidate in candidates {
+                    match Pdfium::bind_to_library(&candidate) {
+                        Ok(bindings) => return Some(Pdfium::new(bindings)),
+                        Err(e) => errors.push(format!("{}: {e}", candidate.display())),
+                    }
                 }
-                #[cfg(not(target_vendor = "apple"))]
-                {
-                    // Windows/Linux ship pdfium as a shared library.
-                    Pdfium::bind_to_system_library().ok()
-                }
-            };
-            bindings.map(Pdfium::new)
+                // A missing DLL is the likely setup mistake; say so once
+                // instead of failing every import silently.
+                eprintln!("eddy-pdf: pdfium failed to load: {}", errors.join("; "));
+                None
+            }
         })
         .as_ref()
 }

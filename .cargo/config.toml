@@ -1,8 +1,8 @@
-# Where eddy-pdf finds the static pdfium library (see scripts/fetch-pdfium.sh).
-# Paths are relative to the workspace root; the target suffix lets each
-# platform point at its own build.
+# Where eddy-pdf finds the static pdfium library on Apple platforms (see
+# scripts/fetch-pdfium.sh). Paths are relative to the workspace root; the
+# target suffix lets each platform point at its own build. Elsewhere pdfium
+# is a shared library loaded from next to the executable at runtime, so no
+# linker configuration is needed there.
 [env]
 PDFIUM_STATIC_LIB_PATH_aarch64_apple_darwin = { value = "build/pdfium/macos/release/lib", relative = true }
 PDFIUM_STATIC_LIB_PATH_x86_64_apple_darwin = { value = "build/pdfium/macos/release/lib", relative = true }
-# Windows: dynamic pdfium (pdfium.dll + import lib from pdfium-lib release 8046d).
-PDFIUM_DYNAMIC_LIB_PATH_x86_64_pc_windows_msvc = { value = "build/pdfium/windows/release/lib/x64", relative = true }
