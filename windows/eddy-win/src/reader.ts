@@ -283,14 +283,14 @@ export function showReaderPlaceholder(): void {
   const readerEl = document.getElementById("reader")!;
   const el = document.createElement("div");
   el.className = "empty-reader";
-  const configured = state.status && state.status.mode !== "unconfigured";
+  const hasContent = state.rows.length > 0;
   el.innerHTML = `
     <div class="big">🌀</div>
     <div><b>Nothing open</b></div>
-    <p>${configured
+    <p>${hasContent
       ? "Pick an article on the left, or paste a URL in the toolbar and press Save."
       : "This library is empty. Pick one to start:"}</p>
-    ${configured ? "" : `
+    ${hasContent ? "" : `
     <p style="text-align:left; max-width:340px; margin:14px auto 0; line-height:1.8">
       🌐&nbsp; Paste a page URL in the toolbar above → <b>Save</b><br>
       📚&nbsp; <b>Import…</b> an EPUB or PDF file<br>
