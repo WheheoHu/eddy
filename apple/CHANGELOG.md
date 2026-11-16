@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Lists reload when changes arrive from the server in the background.
 - Settings → Accounts → Sign Out and Erase Data: removes accounts, library, downloaded articles, API keys and website sign-ins from this Mac and restarts Eddy as new. Changes not uploaded yet are sent first, and Eddy asks before losing any that cannot be. Appearance and layout settings are kept.
 - A long sync shows its progress in Settings → Accounts and at the bottom of the sidebar, which also says when the sync server is offline.
+- Gallery: View → Zoom In (⌘+) and Zoom Out (⌘−) change the size of the thumbnails.
 
 ### Changed
 
@@ -25,5 +26,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Scrolling an article no longer stops when the pointer reaches a table. A table wider than the text still scrolls sideways.
+- The Gallery scrolls without hitching: its list no longer reloads while the grid is moving, and thumbnails are decoded at the size they are shown.
 
 [Unreleased]: https://github.com/WheheoHu/eddy/commits/dev

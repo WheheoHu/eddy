@@ -178,7 +178,12 @@ final class AppModel {
     private var videoJobsRefreshTask: Task<Void, Never>?
 
     private var leadImages: [String: String?] = [:]
-    private var imageCache = NSCache<NSString, NSImage>()
+    /// Decoded pictures, up to about 768 MB of pixels.
+    private var imageCache: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.totalCostLimit = 768 << 20
+        return cache
+    }()
     private var spoolWatcher: SpoolWatcher?
     private var refreshTimer: Timer?
     private var loadingHistory = false
@@ -240,8 +245,8 @@ final class AppModel {
         guard pendingReload == nil else { return }
         pendingReload = Task {
             try? await Task.sleep(for: .milliseconds(350))
-            // Not while the fingers are moving the reader.
-            while EdgeGestureTracker.anyActive {
+            // Not while the fingers are moving the reader or the Gallery.
+            while EdgeGestureTracker.anyActive || galleryScrolling {
                 try? await Task.sleep(for: .milliseconds(100))
             }
             pendingReload = nil
@@ -349,12 +354,19 @@ final class AppModel {
         return src
     }
 
-    func image(_ url: String) async -> NSImage? {
-        if let cached = imageCache.object(forKey: url as NSString) { return cached }
+    /// The most pixels along an image's longer side that the reader shows.
+    static let readerPixels = 2400
+
+    /// `maxPixelSize` bounds the longer side of the decoded picture; a grid
+    /// of thumbnails asks for no more than its tiles show.
+    func image(_ url: String, maxPixelSize: Int = AppModel.readerPixels) async -> NSImage? {
+        let key = (maxPixelSize == Self.readerPixels ? url : "\(maxPixelSize):\(url)") as NSString
+        if let cached = imageCache.object(forKey: key) { return cached }
         guard let engine, let data = try? await engine.image(url: url) else { return nil }
         let bytes = Data(data.bytes)
-        guard let image = await Task.detached(priority: .userInitiated, operation: { Self.decoded(bytes) }).value else { return nil }
-        imageCache.setObject(image, forKey: url as NSString)
+        guard let image = await Task.detached(priority: .userInitiated, operation: { Self.decoded(bytes, maxPixelSize: maxPixelSize) }).value else { return nil }
+        let pixels = image.representations.first.map { $0.pixelsWide * $0.pixelsHigh } ?? 0
+        imageCache.setObject(image, forKey: key, cost: pixels * 4)
         return image
     }
 
@@ -370,13 +382,13 @@ final class AppModel {
         return image
     }
 
-    /// Decodes off the main thread, at no more pixels than the reader shows:
+    /// Decodes off the main thread, at no more pixels than asked for:
     /// `NSImage(data:)` would decode a full-size photo on the main thread the
     /// first time it is drawn, in the middle of scrolling or a transition.
     /// The size in points stays the image's own, as `NSImage(data:)` gives.
     /// An animated GIF gives its first frame (`animatedImage` has them all);
     /// formats ImageIO can't read (SVG) go the old way.
-    private nonisolated static func decoded(_ data: Data) -> NSImage? {
+    private nonisolated static func decoded(_ data: Data, maxPixelSize: Int) -> NSImage? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               CGImageSourceGetCount(source) >= 1,
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
@@ -387,7 +399,7 @@ final class AppModel {
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceThumbnailMaxPixelSize: 2400,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
         ]
         guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return NSImage(data: data) }
         let orientation = properties[kCGImagePropertyOrientation] as? UInt32 ?? 1
@@ -766,9 +778,18 @@ final class AppModel {
         reload()
     }
 
-    func galleryItems(_ scope: GalleryScopeView, unreadOnly: Bool, offset: Int, limit: Int = 200) -> [GalleryEntryView] {
-        (try? engine?.galleryItems(scope: scope, unreadOnly: unreadOnly, limit: UInt32(limit), offset: UInt32(offset))) ?? []
+    /// Off the main thread: the engine reads each item's media, and its
+    /// article when that has no thumbnail yet.
+    func galleryItems(_ scope: GalleryScopeView, unreadOnly: Bool, offset: Int, limit: Int = 200) async -> [GalleryEntryView] {
+        guard let engine else { return [] }
+        return await Task.detached(priority: .userInitiated) {
+            (try? engine.galleryItems(scope: scope, unreadOnly: unreadOnly, limit: UInt32(limit), offset: UInt32(offset))) ?? []
+        }.value
     }
+
+    /// The Gallery's grid is moving. Lists reload once it comes to rest:
+    /// reloading under it holds the scroll up.
+    @ObservationIgnored var galleryScrolling = false
 
     /// Unread items in a part of the Gallery.
     func galleryUnread(_ scope: GalleryScopeView) -> Int {
