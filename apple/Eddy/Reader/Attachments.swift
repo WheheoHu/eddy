@@ -327,7 +327,6 @@ final class TableAttachment: NSTextAttachment {
     /// The grid at its own size, whatever the line's width.
     private func makeGrid() -> NSView {
         let grid = NSHostingView(rootView: TableGrid(rows: rows, fontSize: style.fontSize * 0.85))
-        grid.sizingOptions = []
         grid.frame = CGRect(origin: .zero, size: grid.fittingSize)
         return grid
     }
