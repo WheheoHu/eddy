@@ -1,11 +1,13 @@
 import EddyKit
 import SwiftUI
 
-/// What a swipe to the right leads back to from the reader, and what the
-/// capsule says of it.
+/// What a swipe to the right leads back to from the reader: something
+/// that comes in over it, following the fingers.
 struct ReaderBack {
-    var label: String
-    var release: String
+    /// How far the fingers move before letting go goes back.
+    var commit: CGFloat
+    /// The fingers have moved this far; nil when they let go short of that.
+    var follow: (CGFloat?) -> Void
     var go: () -> Void
 }
 
@@ -754,7 +756,7 @@ struct ReaderPane: View {
         EdgeGestures(
             pullTarget: neighbors.map { neighbors in { neighbors.target($0) } },
             swipeTarget: { fingers in
-                let back: EdgeTarget = onBack.map { .reveal($0.label, release: $0.release) } ?? .none
+                let back: EdgeTarget = onBack.map { .slide(commit: $0.commit) } ?? .none
                 if rendererID == RendererRegistry.web.id {
                     guard fingers == .right else { return .none }
                     return hasText
@@ -768,6 +770,7 @@ struct ReaderPane: View {
                 }
                 return neighbors?.target(fingers == .left ? .next : .previous) ?? .none
             },
+            slide: onBack?.follow,
             commit: { kind in
                 switch kind {
                 case let .pull(direction):

@@ -51,6 +51,9 @@ struct ThreePaneView: View {
     /// The contents over the text, in the narrowest tier, where there is no
     /// room for them beside it.
     @State private var contentsDrawer = false
+    /// A swipe between the columns in progress. Only the columns that move
+    /// read it; this view's body doesn't.
+    @State private var drag = PaneDrag()
 
     enum Smart: String, CaseIterable {
         case all = "All Articles", unread = "Unread", starred = "Starred", continueReading = "Continue Reading"
@@ -83,13 +86,16 @@ struct ThreePaneView: View {
             // itself, not through a view wrapped around it (a condition, a
             // stack), so the sidebar stays here in every tier: collapsed in
             // the narrower ones, where the container shows another.
+            // The minimum is on the content too: the column's alone isn't
+            // kept when the sidebar comes back after a much narrower window.
             sidebar(onstage: tier == .wide)
+                .frame(minWidth: 210)
                 .navigationSplitViewColumnWidth(min: 210, ideal: PaneTier.sidebarWidth)
                 .toolbar(removing: tier == .wide ? nil : .sidebarToggle)
         } detail: {
             PaneContainer(
                 arrangement: arrangement, title: listTitle, canRead: canRead,
-                gesturesEnabled: !model.paletteVisible && model.mediaRequest == nil, go: go
+                gesturesEnabled: !model.paletteVisible && model.mediaRequest == nil, drag: drag, go: go
             ) {
                 sidebar(onstage: true)
             } list: {
@@ -167,6 +173,7 @@ struct ThreePaneView: View {
             place = .list
         }
         tier = new
+        drag.end()
         contentsDrawer = false
         columns = new == .wide && showSidebar ? .all : .detailOnly
     }
@@ -191,8 +198,14 @@ struct ThreePaneView: View {
         if new == .reader, !canRead { return }
         if tier == .wide {
             place = new
+            drag.end()
         } else {
-            withAnimation(.easeInOut(duration: 0.22)) { place = new }
+            // From wherever a swipe has brought the columns, the rest of
+            // the way.
+            withAnimation(.easeOut(duration: 0.22)) {
+                place = new
+                drag.end()
+            }
         }
         switch new {
         case .sidebar: focus = .sidebar
@@ -228,12 +241,16 @@ struct ThreePaneView: View {
     }
 
     /// What the reader's swipe to the right leads back to, where the
-    /// columns are behind it.
+    /// columns are behind it: they come in over it with the fingers.
     private var readerBack: ReaderBack? {
-        guard tier <= .narrow, arrangement.readerShown,
-              case let .reveal(label, release) = arrangement.target(.list)
-        else { return nil }
-        return ReaderBack(label: label, release: release) { go(.list) }
+        guard tier <= .narrow, arrangement.readerShown else { return nil }
+        return ReaderBack(
+            commit: PaneDrag.commit,
+            follow: { [drag] distance in
+                if let distance { drag.move(to: .list, distance) } else { drag.cancel() }
+            },
+            go: { go(.list) }
+        )
     }
 
     /// The middle column's name, for where the sidebar isn't beside it.

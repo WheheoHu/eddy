@@ -14,14 +14,15 @@ enum EdgeTarget: Equatable {
     case end(String)
     /// Letting go opens something; `release` is shown once it would.
     case item(String, release: String)
-    /// Letting go brings something in over the view, which stays where it
-    /// is: only the capsule shows the gesture.
-    case reveal(String, release: String)
+    /// Something else follows the fingers (three-pane's columns, coming in
+    /// over the view): the view stays where it is and no capsule shows.
+    /// Letting go acts once the fingers have moved `commit` points.
+    case slide(commit: CGFloat)
 
     /// Letting go past the threshold does something.
     var acts: Bool {
         switch self {
-        case .item, .reveal: true
+        case .item, .slide: true
         case .none, .end: false
         }
     }
@@ -48,6 +49,9 @@ struct EdgeGesture: Equatable {
 struct EdgeGestures {
     var pullTarget: ((Direction) -> EdgeTarget)?
     var swipeTarget: ((SwipeDirection) -> EdgeTarget)?
+    /// A `.slide` swipe as it moves: how far the fingers have come, in
+    /// points; nil when they let go short of acting, or turn back.
+    var slide: ((CGFloat?) -> Void)?
     var commit: (EdgeGesture.Kind) -> Void = { _ in }
 }
 
@@ -140,7 +144,9 @@ final class EdgeGestureTracker {
             ownsGesture = false
             return false
         }
-        update(Double(distance / Self.threshold), haptic: phased)
+        var threshold = Self.threshold
+        if case let .slide(commit) = gesture?.target { threshold = commit }
+        update(Double(distance / threshold), haptic: phased)
         if !phased { restartIdleTimer() }
         return true
     }
@@ -347,17 +353,27 @@ final class GestureContainer: NSView {
     /// and the display link draws the latest once per frame.
     private var wanted: EdgeGesture?
     private var drawn: EdgeGesture?
+    /// A `.slide` swipe is on.
+    private var sliding = false
     private var link: CADisplayLink?
     /// The capsule is measured only when its wording changes.
     private var indicatorSize: (label: String, size: CGSize)?
 
     private func follow(_ gesture: EdgeGesture?, committed: Bool) {
+        // A slide moves something else: this view only passes it on.
+        if let gesture, case let .slide(commit) = gesture.target {
+            sliding = true
+            tracker.gestures.slide?(CGFloat(gesture.progress) * commit)
+            return
+        }
+        if gesture == nil, sliding {
+            sliding = false
+            if !committed { tracker.gestures.slide?(nil) }
+            return
+        }
         guard let gesture else {
-            // What comes in over the view covers it; nothing to wait for.
-            var stays = false
-            if case .reveal = (wanted ?? drawn)?.target { stays = true }
             stopFollowing()
-            if committed, !stays {
+            if committed {
                 // The view leaves with the reader's transition; should it stay,
                 // it comes back.
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in self?.springBack() }
@@ -393,8 +409,7 @@ final class GestureContainer: NSView {
 
     private func draw(_ gesture: EdgeGesture) {
         drawn = gesture
-        var travel = Self.travel(gesture.progress)
-        if case .reveal = gesture.target { travel = 0 }
+        let travel = Self.travel(gesture.progress)
         offset = switch gesture.kind {
         case .pull(.next): CGPoint(x: 0, y: -travel)
         case .pull(.previous): CGPoint(x: 0, y: travel)
@@ -475,7 +490,7 @@ struct EdgeIndicator: View {
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
                         Rectangle().fill(.regularMaterial)
-                        if gesture.target.acts {
+                        if case .item = gesture.target {
                             Rectangle()
                                 .fill(Color.accentColor.opacity(gesture.armed ? 0.25 : 0.15))
                                 .frame(width: geo.size.width * min(gesture.progress, 1))
@@ -502,7 +517,8 @@ struct EdgeIndicator: View {
         switch gesture.target {
         case .none: ""
         case let .end(message): message
-        case let .item(label, release), let .reveal(label, release): gesture.armed ? release : label
+        case let .item(label, release): gesture.armed ? release : label
+        case .slide: ""
         }
     }
 }

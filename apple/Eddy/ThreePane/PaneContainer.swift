@@ -5,7 +5,7 @@ import SwiftUI
 /// Every column stays the same view from one tier to the next and while it
 /// is out of sight (moved off the leading edge, not removed), so the text
 /// keeps its place and the list its scroll position however the window is
-/// resized.
+/// resized. A swipe moves the columns with the fingers: `drag` says how far.
 struct PaneContainer<Sidebar: View, Middle: View, Reader: View>: View {
     let arrangement: PaneArrangement
     /// The list's name, shown over it where the sidebar isn't beside it.
@@ -14,6 +14,8 @@ struct PaneContainer<Sidebar: View, Middle: View, Reader: View>: View {
     let canRead: Bool
     /// Swipes and row clicks are off: something lies over the window.
     let gesturesEnabled: Bool
+    /// The swipe between columns in progress, if any.
+    let drag: PaneDrag
     /// Moves to a column: the way back over the list, the scrim, a swipe,
     /// a click on a row.
     let go: (PanePlace) -> Void
@@ -31,20 +33,23 @@ struct PaneContainer<Sidebar: View, Middle: View, Reader: View>: View {
         let tier = arrangement.tier
         let dragged = CGFloat(min(max(listWidth, Self.listWidths.lowerBound), Self.listWidths.upperBound))
         let column = arrangement.columnWidth(dragged)
+        // The columns as they will be where the swipe in progress leads.
+        let heading = drag.destination.map { PaneArrangement(tier: tier, place: $0) }
         ZStack(alignment: .topLeading) {
             reader
                 .padding(.leading, tier >= .medium ? column : 0)
                 .allowsHitTesting(arrangement.readerShown)
                 .accessibilityHidden(!arrangement.readerShown)
             // What dims the reader while the columns are in over it.
-            Color.black
-                .opacity(tier == .narrow && !arrangement.readerShown ? 0.18 : 0)
+            Scrim(dimmed: arrangement.dimmed, becoming: heading?.dimmed, travel: PaneTier.sidebarWidth + column, drag: drag)
                 .contentShape(Rectangle())
                 .onTapGesture { if canRead { go(.reader) } }
-                .allowsHitTesting(tier == .narrow && !arrangement.readerShown)
+                .allowsHitTesting(arrangement.dimmed)
                 .accessibilityHidden(true)
-            // The list leaves only for the reader; the sidebar comes in over it.
-            Stowable(stowed: tier <= .narrow && arrangement.place == .reader, distance: tier == .narrow ? PaneTier.sidebarWidth + column : nil) {
+            Stowable(
+                stowed: arrangement.listStowed, becoming: heading?.listStowed,
+                distance: tier == .narrow ? PaneTier.sidebarWidth + column : nil, drag: drag
+            ) {
                 VStack(spacing: 0) {
                     if tier == .medium || tier == .narrowest {
                         header
@@ -62,7 +67,10 @@ struct PaneContainer<Sidebar: View, Middle: View, Reader: View>: View {
             .allowsHitTesting(arrangement.listShown)
             .accessibilityHidden(!arrangement.listShown)
             if tier != .wide {
-                Stowable(stowed: !arrangement.sidebarShown, distance: tier == .narrowest ? nil : (tier == .narrow ? PaneTier.sidebarWidth + column : column)) {
+                Stowable(
+                    stowed: !arrangement.sidebarShown, becoming: heading.map { !$0.sidebarShown },
+                    distance: tier == .narrowest ? nil : (tier == .narrow ? PaneTier.sidebarWidth + column : column), drag: drag
+                ) {
                     sidebar
                         .frame(width: tier == .narrowest ? nil : (tier == .narrow ? PaneTier.sidebarWidth : column))
                         .frame(maxHeight: .infinity)
@@ -79,12 +87,11 @@ struct PaneContainer<Sidebar: View, Middle: View, Reader: View>: View {
                 readerLive: arrangement.readerShown,
                 sidebarExtent: arrangement.sidebarExtent(dragged),
                 listLeadsOn: arrangement.listLeadsOn,
-                target: { fingers, overColumns in
-                    arrangement.swipe(fingers, overColumns: overColumns, canRead: canRead).map(arrangement.target) ?? .none
+                destination: { fingers, overColumns in
+                    arrangement.swipe(fingers, overColumns: overColumns, canRead: canRead)
                 },
-                commit: { fingers, overColumns in
-                    if let place = arrangement.swipe(fingers, overColumns: overColumns, canRead: canRead) { go(place) }
-                },
+                drag: drag,
+                go: go,
                 rowClicked: { column in
                     switch column {
                     case .sidebar: go(.list)
@@ -152,23 +159,54 @@ struct ColumnEdge: View {
 /// Keeps a column in the view tree while it is out of sight: moved off the
 /// leading edge by its own width (or `distance`), where it takes no clicks.
 /// Showing it again is then only a move, and what it held is as it was.
+/// During a swipe that shows or stows it, it moves as far as the fingers
+/// have; only then does it read the drag, so the columns that stay put
+/// aren't evaluated with every event.
 private struct Stowable<Content: View>: View {
     let stowed: Bool
+    /// Stowed or not where the swipe in progress leads; nil with none on.
+    let becoming: Bool?
     /// How far to move it; nil for its own width.
     let distance: CGFloat?
+    let drag: PaneDrag
     @ViewBuilder let content: Content
     /// Wide enough to be out of the window until it has been measured.
     @State private var width: CGFloat = 4000
 
     var body: some View {
-        content
+        let travel = (distance ?? width) + 1
+        var away: CGFloat = stowed ? travel : 0
+        if let becoming, becoming != stowed {
+            let moved = min(drag.distance, travel)
+            away = stowed ? travel - moved : moved
+        }
+        return content
             // Measured only where its own width is the distance, so a window
             // being resized doesn't come through here otherwise.
             .onGeometryChange(for: CGFloat.self) { distance == nil ? $0.size.width : 0 } action: { new in
                 if new > 0 { width = new }
             }
-            .offset(x: stowed ? -((distance ?? width) + 1) : 0)
+            .offset(x: -away)
             .allowsHitTesting(!stowed)
             .accessibilityHidden(stowed)
+    }
+}
+
+/// What dims the reader while the columns are in over it, deepening as a
+/// swipe brings them in.
+private struct Scrim: View {
+    let dimmed: Bool
+    let becoming: Bool?
+    /// How far the columns move to come all the way in.
+    let travel: CGFloat
+    let drag: PaneDrag
+
+    var body: some View {
+        var amount: CGFloat = dimmed ? 1 : 0
+        if let becoming, becoming != dimmed {
+            let moved = min(drag.distance / travel, 1)
+            amount = dimmed ? 1 - moved : moved
+        }
+        return Color.black.opacity(0.18 * amount)
     }
 }

@@ -3,7 +3,9 @@ import SwiftUI
 
 /// Sideways swipes and row clicks over three-pane's columns, where they
 /// move between the columns: laid over the container, it takes no clicks
-/// itself and watches the window's events instead. The lists are SwiftUI's
+/// itself and watches the window's events instead. A swipe moves the
+/// columns with the fingers (`PaneDrag`) and goes to the column it leads
+/// to when they let go far enough. The lists are SwiftUI's
 /// and can't be subclassed; the reader's own views follow their swipes
 /// themselves (`GestureContainer`), so those are left alone.
 struct PaneSwipes: NSViewRepresentable {
@@ -18,9 +20,11 @@ struct PaneSwipes: NSViewRepresentable {
     var sidebarExtent: CGFloat?
     /// A click on a row of the list goes on.
     var listLeadsOn: Bool
-    /// What a swipe would do, with the pointer over the columns or not.
-    var target: (SwipeDirection, _ overColumns: Bool) -> EdgeTarget
-    var commit: (SwipeDirection, _ overColumns: Bool) -> Void
+    /// Where a swipe leads, with the pointer over the columns or not; nil
+    /// where it leads nowhere.
+    var destination: (SwipeDirection, _ overColumns: Bool) -> PanePlace?
+    var drag: PaneDrag
+    var go: (PanePlace) -> Void
     /// A row of the sidebar or the list was clicked, selected already or not.
     var rowClicked: (PanePlace) -> Void
 
@@ -34,9 +38,9 @@ struct PaneSwipes: NSViewRepresentable {
         var settings: PaneSwipes?
 
         private let tracker = EdgeGestureTracker()
-        private let indicator = NSHostingView(rootView: EdgeIndicator(gesture: nil))
-        private var indicatorSize: (label: String, size: CGSize)?
         private var monitors: [Any] = []
+        /// Where the swipe in progress leads.
+        private var heading: PanePlace?
 
         /// Whose the gesture in progress is, decided where it starts.
         private enum Territory {
@@ -56,20 +60,26 @@ struct PaneSwipes: NSViewRepresentable {
 
         override init(frame: NSRect) {
             super.init(frame: frame)
-            indicator.isHidden = true
-            addSubview(indicator)
             tracker.gestures = EdgeGestures(
                 swipeTarget: { [weak self] fingers in
-                    guard let self, let settings = self.settings else { return .none }
-                    return settings.target(fingers, self.overColumns)
+                    guard let self, let place = self.settings?.destination(fingers, self.overColumns) else { return .none }
+                    self.heading = place
+                    return .slide(commit: PaneDrag.commit)
                 },
-                commit: { [weak self] kind in
-                    guard let self, case let .swipe(fingers) = kind else { return }
-                    self.settings?.commit(fingers, self.overColumns)
+                commit: { [weak self] _ in
+                    guard let self, let heading = self.heading else { return }
+                    self.settings?.go(heading)
                 }
             )
-            tracker.onChange = { [weak self] gesture, _ in
-                MainActor.assumeIsolated { self?.show(gesture) }
+            tracker.onChange = { [weak self] gesture, committed in
+                MainActor.assumeIsolated {
+                    guard let self, let drag = self.settings?.drag else { return }
+                    if let gesture, let heading = self.heading, case let .slide(commit) = gesture.target {
+                        drag.move(to: heading, CGFloat(gesture.progress) * commit)
+                    } else if gesture == nil, !committed {
+                        drag.cancel()
+                    }
+                }
             }
         }
 
@@ -147,23 +157,6 @@ struct PaneSwipes: NSViewRepresentable {
         private static func view(at location: CGPoint, in window: NSWindow) -> NSView? {
             guard let content = window.contentView else { return nil }
             return content.hitTest(content.superview?.convert(location, from: nil) ?? location)
-        }
-
-        /// The capsule, at the edge the columns come from or leave by.
-        private func show(_ gesture: EdgeGesture?) {
-            guard let gesture, case let .swipe(fingers) = gesture.kind else {
-                indicator.isHidden = true
-                return
-            }
-            indicator.rootView = EdgeIndicator(gesture: gesture)
-            let label = EdgeIndicator.label(gesture)
-            if indicatorSize?.label != label { indicatorSize = (label, indicator.fittingSize) }
-            let size = indicatorSize?.size ?? indicator.fittingSize
-            let extent = min(settings?.columnsExtent ?? bounds.width, bounds.width)
-            let span = overColumns ? 0...max(extent, size.width + 24) : extent...max(bounds.width, extent + size.width + 24)
-            let x = fingers == .right ? span.lowerBound + 12 : span.upperBound - size.width - 12
-            indicator.frame = CGRect(x: x, y: bounds.midY - size.height / 2, width: size.width, height: size.height)
-            indicator.isHidden = false
         }
 
         // MARK: Row clicks

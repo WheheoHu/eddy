@@ -88,6 +88,13 @@ struct PaneArrangement: Equatable {
         }
     }
 
+    /// The list is off the leading edge. It leaves only for the reader:
+    /// the sidebar comes in over it.
+    var listStowed: Bool { tier <= .narrow && place == .reader }
+
+    /// The reader shows dimmed behind the columns that are in over it.
+    var dimmed: Bool { tier == .narrow && !readerShown }
+
     /// The list's width where it is one of two or three columns, from the
     /// width it was dragged to.
     func columnWidth(_ dragged: CGFloat) -> CGFloat {
@@ -150,18 +157,39 @@ struct PaneArrangement: Equatable {
             }
         }
     }
+}
 
-    /// What the capsule says of a swipe that leads to `place`.
-    func target(_ place: PanePlace) -> EdgeTarget {
-        switch place {
-        case .sidebar:
-            .reveal(String(localized: "Sidebar"), release: String(localized: "Release for the sidebar"))
-        case .list where tier == .narrow:
-            .reveal(String(localized: "Sidebar and List"), release: String(localized: "Release for the sidebar and list"))
-        case .list:
-            .reveal(String(localized: "List"), release: String(localized: "Release for the list"))
-        case .reader:
-            .reveal(String(localized: "Reader"), release: String(localized: "Release for the reader"))
-        }
+/// A swipe between the columns while the fingers are down: the column it
+/// leads to and how far the fingers have come. The columns that move read
+/// it and follow; nothing else does, so a swipe doesn't run three-pane's
+/// body with every event.
+@MainActor
+@Observable
+final class PaneDrag {
+    /// How far the fingers move before letting go goes to the column;
+    /// short of it the columns go back where they were.
+    static let commit: CGFloat = 90
+
+    /// Nil when no swipe is on.
+    private(set) var destination: PanePlace?
+    /// In points, along the swipe.
+    private(set) var distance: CGFloat = 0
+
+    func move(to destination: PanePlace, _ distance: CGFloat) {
+        if self.destination != destination { self.destination = destination }
+        self.distance = max(distance, 0)
+    }
+
+    /// The fingers are up: the columns are where the place puts them
+    /// again. Called in an animation, they glide the rest of the way.
+    func end() {
+        guard destination != nil else { return }
+        destination = nil
+        distance = 0
+    }
+
+    /// The fingers let go short of going anywhere.
+    func cancel() {
+        withAnimation(.easeOut(duration: 0.2)) { end() }
     }
 }
