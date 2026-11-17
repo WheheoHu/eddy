@@ -225,22 +225,25 @@ final class ScrollingMathProvider: NSTextAttachmentViewProvider {
     private final class FlippedView: NSView {
         override var isFlipped: Bool { true }
     }
+}
 
-    /// Scrolls sideways only; vertical scrolling goes on to the article, so
-    /// reading past a formula does not stall under the pointer. A trackpad
-    /// gesture keeps the direction it started with.
-    private final class SidewaysScrollView: NSScrollView {
-        private var vertical = false
+/// Scrolls sideways only, for a formula or a table wider than its line.
+/// Vertical scrolling goes on to the article, so reading past one does not
+/// stall under the pointer; so does everything when the content fits, which
+/// leaves a sideways swipe over a narrow table to the article's gestures. A
+/// trackpad gesture keeps the direction it started with.
+final class SidewaysScrollView: NSScrollView {
+    private var passesOn = false
 
-        override func scrollWheel(with event: NSEvent) {
-            if event.phase == .began || (event.phase.isEmpty && event.momentumPhase.isEmpty) {
-                vertical = abs(event.scrollingDeltaY) > abs(event.scrollingDeltaX)
-            }
-            if vertical {
-                nextResponder?.scrollWheel(with: event)
-            } else {
-                super.scrollWheel(with: event)
-            }
+    override func scrollWheel(with event: NSEvent) {
+        if event.phase == .began || (event.phase.isEmpty && event.momentumPhase.isEmpty) {
+            let overflows = (documentView?.frame.width ?? 0) > contentSize.width + 0.5
+            passesOn = !overflows || abs(event.scrollingDeltaY) > abs(event.scrollingDeltaX)
+        }
+        if passesOn {
+            nextResponder?.scrollWheel(with: event)
+        } else {
+            super.scrollWheel(with: event)
         }
     }
 }
@@ -307,12 +310,11 @@ final class ImageAttachment: NSTextAttachment {
     }
 }
 
-/// Tables as a hosted SwiftUI grid inside the text.
+/// Tables as a hosted SwiftUI grid inside the text, in a box the width of
+/// the line. A table wider than that scrolls sideways in the box.
 final class TableAttachment: NSTextAttachment {
     let rows: [TableRowView]
     let style: ReaderStyle
-    private var cachedWidth: CGFloat = 0
-    private var cachedHeight: CGFloat = 0
 
     init(rows: [TableRowView], style: ReaderStyle) {
         self.rows = rows
@@ -322,8 +324,32 @@ final class TableAttachment: NSTextAttachment {
 
     required init?(coder: NSCoder) { fatalError() }
 
+    /// The grid at its own size, whatever the line's width.
+    private func makeGrid() -> NSView {
+        let grid = NSHostingView(rootView: TableGrid(rows: rows, fontSize: style.fontSize * 0.85))
+        grid.frame = CGRect(origin: .zero, size: grid.fittingSize)
+        return grid
+    }
+
     func makeView() -> NSView {
-        NSHostingView(rootView: TableGrid(rows: rows, fontSize: style.fontSize * 0.85))
+        // An AppKit scroll view, not SwiftUI's: that one keeps every scroll
+        // under the pointer, and the article stops when it reaches a table.
+        let scroll = SidewaysScrollView()
+        scroll.drawsBackground = false
+        scroll.hasHorizontalScroller = false
+        scroll.hasVerticalScroller = false
+        scroll.verticalScrollElasticity = .none
+        scroll.documentView = makeGrid()
+        let box = NSBox()
+        box.boxType = .custom
+        box.titlePosition = .noTitle
+        box.cornerRadius = 8
+        box.borderWidth = 1
+        box.borderColor = NSColor.secondaryLabelColor.withAlphaComponent(0.25)
+        box.fillColor = .clear
+        box.contentViewMargins = .zero
+        box.contentView = scroll
+        return box
     }
 
     override func viewProvider(for parentView: NSView?, location: any NSTextLocation, textContainer: NSTextContainer?) -> NSTextAttachmentViewProvider? {
@@ -332,15 +358,8 @@ final class TableAttachment: NSTextAttachment {
         return provider
     }
 
-    func height(for width: CGFloat) -> CGFloat {
-        if abs(width - cachedWidth) > 1 {
-            let view = makeView()
-            view.frame.size.width = width
-            cachedHeight = min(view.fittingSize.height, 2000)
-            cachedWidth = width
-        }
-        return cachedHeight
-    }
+    /// The grid's own height: its text doesn't wrap, so no width changes it.
+    private lazy var height: CGFloat = min(makeGrid().frame.height, 2000)
 
     override func attachmentBounds(
         for attributes: [NSAttributedString.Key: Any],
@@ -349,8 +368,7 @@ final class TableAttachment: NSTextAttachment {
         proposedLineFragment: CGRect,
         position: CGPoint
     ) -> CGRect {
-        let width = max(100, proposedLineFragment.width - 4)
-        return CGRect(x: 0, y: 0, width: width, height: height(for: width))
+        CGRect(x: 0, y: 0, width: max(100, proposedLineFragment.width - 4), height: height)
     }
 }
 
@@ -365,24 +383,22 @@ private struct TableGrid: View {
     let fontSize: CGFloat
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
-                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                    GridRow {
-                        ForEach(Array(row.cells.enumerated()), id: \.offset) { _, cell in
-                            Text(cell.runs.map { $0.math ? "$\($0.text)$" : $0.text }.joined())
-                                .font(.system(size: fontSize, weight: cell.header ? .semibold : .regular))
-                                .gridCellColumns(Int(cell.colspan))
-                                .frame(minWidth: 50, alignment: .leading)
-                                .textSelection(.enabled)
-                        }
+        Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                GridRow {
+                    ForEach(Array(row.cells.enumerated()), id: \.offset) { _, cell in
+                        Text(cell.runs.map { $0.math ? "$\($0.text)$" : $0.text }.joined())
+                            .font(.system(size: fontSize, weight: cell.header ? .semibold : .regular))
+                            .gridCellColumns(Int(cell.colspan))
+                            .frame(minWidth: 50, alignment: .leading)
+                            .textSelection(.enabled)
                     }
-                    Divider()
                 }
+                Divider()
             }
-            .padding(10)
         }
-        .background(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.25)))
+        .padding(10)
+        .fixedSize()
     }
 }
 

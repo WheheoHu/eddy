@@ -466,13 +466,24 @@ struct ArticleTextView: NSViewRepresentable {
 }
 
 /// Hands scrolling to the edge gesture tracker first: a pull past an end or
-/// a sideways swipe doesn't scroll.
+/// a sideways swipe doesn't scroll. What is left glides on after the fingers
+/// lift.
 final class ReaderScrollView: NSScrollView {
     weak var tracker: EdgeGestureTracker?
+    let momentum = LongMomentum()
 
     override func scrollWheel(with event: NSEvent) {
-        if tracker?.handle(event, in: self) == true { return }
+        if tracker?.handle(event, in: self) == true {
+            momentum.stop()
+            return
+        }
+        if momentum.handle(event, in: self) { return }
         super.scrollWheel(with: event)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { momentum.stop() }
     }
 }
 
@@ -607,6 +618,15 @@ final class ReaderTextView: NSTextView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if wantsFocus { claimFocus(self) }
+        // An article is given its text before the view is in a window, and
+        // text laid out then gets no views for its attachments: a table on
+        // the first screen stayed blank until it was scrolled away and
+        // back. Laying the visible part out again, once in the window,
+        // brings them in.
+        guard window != nil else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.textLayoutManager?.textViewportLayoutController.layoutViewport()
+        }
     }
 
     override func becomeFirstResponder() -> Bool {

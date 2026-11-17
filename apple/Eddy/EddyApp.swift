@@ -36,6 +36,7 @@ struct EddyApp: App {
     @NSApplicationDelegateAdaptor private var delegate: AppDelegate
     @State private var model = AppModel()
     @AppStorage("app.mode") private var mode: AppMode = .threePane
+    @AppStorage(GalleryDensity.key) private var galleryRowHeight = GalleryDensity.standard
 
     init() {
         ReaderFonts.migrate()
@@ -68,6 +69,14 @@ struct EddyApp: App {
                 ForEach(Array(AppMode.allCases.enumerated()), id: \.element) { index, m in
                     Button(m.rawValue) { mode = m }.keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
                 }
+                Divider()
+                // The size of the Gallery's thumbnails.
+                Button("Zoom In") { GalleryDensity.larger(than: galleryRowHeight).map { galleryRowHeight = $0 } }
+                    .keyboardShortcut("+", modifiers: .command)
+                    .disabled(mode != .gallery || GalleryDensity.larger(than: galleryRowHeight) == nil)
+                Button("Zoom Out") { GalleryDensity.smaller(than: galleryRowHeight).map { galleryRowHeight = $0 } }
+                    .keyboardShortcut("-", modifiers: .command)
+                    .disabled(mode != .gallery || GalleryDensity.smaller(than: galleryRowHeight) == nil)
                 Divider()
             }
             CommandMenu("Go") {
