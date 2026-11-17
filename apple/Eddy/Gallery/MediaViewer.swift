@@ -108,8 +108,9 @@ struct MediaViewer: View {
             Button(action: toggleStar) { Image(systemName: starred ? "star.fill" : "star") }
                 .help(starred ? "Unstar (S)" : "Star (S)")
             if let url = entry.item.url.flatMap(URL.init(string:)) {
-                Button { NSWorkspace.shared.open(url) } label: { Image(systemName: "arrow.up.forward.square") }
+                Button { NSWorkspace.shared.open(url) } label: { BrowserIcon() }
                     .help("Open in Browser")
+                    .accessibilityLabel("Open in Browser")
             }
             Button(action: close) { Image(systemName: "xmark") }.help("Close (Esc)")
         }

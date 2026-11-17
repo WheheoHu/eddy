@@ -46,7 +46,9 @@ struct EddyApp: App {
         WindowGroup("Eddy") {
             RootView(mode: mode)
                 .environment(model)
-                .frame(minWidth: 960, minHeight: 620)
+                // Three-pane drops columns as the window narrows; the other
+                // modes need their width.
+                .frame(minWidth: mode == .threePane ? PaneTier.minWindowWidth : 960, minHeight: 620)
         }
         .handlesExternalEvents(matching: ["*"])
         .defaultSize(width: 1360, height: 860)

@@ -15,6 +15,7 @@ Eddy 是本地优先的个人阅读器：Rust 内核（`crates/`）通过 UniFFI
 - 调试 Mac 应用时不要往用户的真实数据目录里写测试内容：用 `open --env EDDY_DATA_DIR=$PWD/build/app-test apple/DerivedData/Build/Products/Debug/Eddy.app` 指向 `build/` 下的测试目录。设了 `EDDY_DATA_DIR` 的应用用自己的钥匙串条目（`EddyPaths.keychainService`），不会读写真实安装的密钥。
 - 阅读视图用 TextKit 2（`NSTextView`），不要改回 SwiftUI 的 `LazyVStack` 拼文章：UX demo 阶段两次卡死都是它在滚动时的布局反馈循环。
 - 窗口里只有三栏模式用 `NavigationSplitView`：另一个分栏视图替换它之后，系统的侧边栏开关会消失，栏宽也会互相串（同一窗口的分栏视图共用一份自动保存的栏宽）。Library 的栏用 `LeadingColumn` 自己排，开关是 `ColumnToggle`。
+- 三栏模式的分栏视图只有侧边栏和详情两栏：列表和阅读区在详情里由 `PaneContainer` 按窗口宽度的档位（`PaneTier`：三栏、列表加文章、仅文章、一次一栏）排，收起的栏移出屏幕而不卸载，阅读位置和列表滚动位置跨档保留。`ThreePaneView` 只存档位不存宽度（它的 body 会查列表，不能随窗口拖动逐帧重算）；分栏里的侧边栏必须直接带 `navigationSplitViewColumnWidth`，外面套条件或容器后栏宽会失效。
 - 界面文字先只做英文（SwiftUI 的字符串字面量就是本地化 key），中文等以后加 `.xcstrings`。
 
 ## 版本

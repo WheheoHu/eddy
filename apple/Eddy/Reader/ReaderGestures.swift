@@ -14,6 +14,17 @@ enum EdgeTarget: Equatable {
     case end(String)
     /// Letting go opens something; `release` is shown once it would.
     case item(String, release: String)
+    /// Letting go brings something in over the view, which stays where it
+    /// is: only the capsule shows the gesture.
+    case reveal(String, release: String)
+
+    /// Letting go past the threshold does something.
+    var acts: Bool {
+        switch self {
+        case .item, .reveal: true
+        case .none, .end: false
+        }
+    }
 }
 
 /// A pull past the top or bottom of the text, or a sideways swipe, in
@@ -29,10 +40,7 @@ struct EdgeGesture: Equatable {
     var progress: Double
     var target: EdgeTarget
 
-    var armed: Bool {
-        if progress >= 1, case .item = target { return true }
-        return false
-    }
+    var armed: Bool { progress >= 1 && target.acts }
 }
 
 /// What a reader view does with gestures past its edges. A nil target
@@ -345,8 +353,11 @@ final class GestureContainer: NSView {
 
     private func follow(_ gesture: EdgeGesture?, committed: Bool) {
         guard let gesture else {
+            // What comes in over the view covers it; nothing to wait for.
+            var stays = false
+            if case .reveal = (wanted ?? drawn)?.target { stays = true }
             stopFollowing()
-            if committed {
+            if committed, !stays {
                 // The view leaves with the reader's transition; should it stay,
                 // it comes back.
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in self?.springBack() }
@@ -382,7 +393,8 @@ final class GestureContainer: NSView {
 
     private func draw(_ gesture: EdgeGesture) {
         drawn = gesture
-        let travel = Self.travel(gesture.progress)
+        var travel = Self.travel(gesture.progress)
+        if case .reveal = gesture.target { travel = 0 }
         offset = switch gesture.kind {
         case .pull(.next): CGPoint(x: 0, y: -travel)
         case .pull(.previous): CGPoint(x: 0, y: travel)
@@ -463,7 +475,7 @@ struct EdgeIndicator: View {
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
                         Rectangle().fill(.regularMaterial)
-                        if case .item = gesture.target {
+                        if gesture.target.acts {
                             Rectangle()
                                 .fill(Color.accentColor.opacity(gesture.armed ? 0.25 : 0.15))
                                 .frame(width: geo.size.width * min(gesture.progress, 1))
@@ -490,7 +502,7 @@ struct EdgeIndicator: View {
         switch gesture.target {
         case .none: ""
         case let .end(message): message
-        case let .item(label, release): gesture.armed ? release : label
+        case let .item(label, release), let .reveal(label, release): gesture.armed ? release : label
         }
     }
 }

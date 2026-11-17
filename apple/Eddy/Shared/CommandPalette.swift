@@ -92,12 +92,14 @@ struct CommandPalette: View {
                 }
                 list(items)
             }
-            .frame(width: 580)
+            .frame(maxWidth: 580)
             .background(WindowReader(memory: focusMemory))
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator))
             .shadow(color: .black.opacity(0.25), radius: 24, y: 10)
             .padding(.top, 70)
+            // Clear of the edges of a narrow window.
+            .padding(.horizontal, 20)
         }
         .onAppear {
             fieldFocused = true

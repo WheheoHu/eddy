@@ -1,6 +1,14 @@
 import EddyKit
 import SwiftUI
 
+/// What a swipe to the right leads back to from the reader, and what the
+/// capsule says of it.
+struct ReaderBack {
+    var label: String
+    var release: String
+    var go: () -> Void
+}
+
 /// One item, read: renderer choice, reading mode, translation, summary,
 /// typography, progress and resume. Used by both app modes.
 struct ReaderPane: View {
@@ -26,6 +34,11 @@ struct ReaderPane: View {
     var focused = false
     /// The reader's view took focus, by a click or by `focused`.
     var onFocus: (() -> Void)?
+    /// What lies behind the reader, for a swipe to the right where the
+    /// reader has nothing of its own that way; nil where nothing does.
+    var onBack: ReaderBack?
+    /// Something covers the reader: its controls leave the toolbar.
+    var toolbarHidden = false
 
     @State private var document: DocumentView?
     @State private var pdfURL: URL?
@@ -84,6 +97,7 @@ struct ReaderPane: View {
     @AppStorage("reader.appearance") private var appearance: ReaderAppearance = .app
     @AppStorage("viewer.muted") private var muted = true
     @Environment(\.colorScheme) private var appScheme
+    @Environment(\.openURL) private var openURL
 
     private var style: ReaderStyle {
         ReaderStyle(fontSize: fontSize, fonts: ReaderFonts(latin: latinFont, cjk: cjkFont, spacing: cjkLatinSpacing), justify: justify, lineHeight: lineHeight, maxWidth: width)
@@ -431,6 +445,11 @@ struct ReaderPane: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
+        if !toolbarHidden { readerToolbar }
+    }
+
+    @ToolbarContentBuilder
+    private var readerToolbar: some ToolbarContent {
         ToolbarItemGroup {
             if let showContents {
                 Button { withAnimation(.easeInOut(duration: 0.2)) { showContents.wrappedValue.toggle() } } label: {
@@ -459,8 +478,7 @@ struct ReaderPane: View {
                 }
                 .disabled(model.busy)
                 .help("Save this page to read later")
-                ShareLink(item: page.address)
-                Link(destination: page.address) { Label("Open in Browser", systemImage: "arrow.up.forward.square") }
+                openInBrowser(page.address)
             } else if let item {
                 let context = RenderContext(item: item, document: document, inGallery: inGallery)
                 let renderers = RendererRegistry.available(for: context)
@@ -523,11 +541,20 @@ struct ReaderPane: View {
                     .help("Export as PDF or EPUB")
                 }
                 if let url = item.url.flatMap(URL.init(string:)) {
-                    ShareLink(item: url)
-                    Link(destination: url) { Label("Open in Browser", systemImage: "arrow.up.forward.square") }
+                    openInBrowser(url)
                 }
             }
         }
+    }
+
+    /// Opens the address in the default browser, under that browser's mark.
+    /// A button, not a `Link`: a link's label takes the accent color, and
+    /// the mark is drawn like the symbols beside it.
+    private func openInBrowser(_ url: URL) -> some View {
+        Button { openURL(url) } label: {
+            Label { Text("Open in Browser") } icon: { BrowserIcon() }
+        }
+        .help("Open in Browser")
     }
 
     private var typography: some View {
@@ -719,16 +746,22 @@ struct ReaderPane: View {
     /// Gestures past the reader's edges: pulls to the chapters or articles
     /// around this one; fingers moving left to the web page and right back
     /// from it. An item without a page (a book's chapter) turns chapters with
-    /// a swipe instead, left for the next one. PDFs don't swipe.
+    /// a swipe instead, left for the next one. PDFs don't swipe. Where
+    /// something lies behind the reader (`onBack`), fingers moving right go
+    /// there once the reader has nothing of its own that way: from the web
+    /// page the first swipe is still back to the text.
     private var gestures: EdgeGestures {
         EdgeGestures(
             pullTarget: neighbors.map { neighbors in { neighbors.target($0) } },
             swipeTarget: { fingers in
+                let back: EdgeTarget = onBack.map { .reveal($0.label, release: $0.release) } ?? .none
                 if rendererID == RendererRegistry.web.id {
-                    return fingers == .right && hasText
-                        ? .item(String(localized: "Reader"), release: String(localized: "Release for the reader")) : .none
+                    guard fingers == .right else { return .none }
+                    return hasText
+                        ? .item(String(localized: "Reader"), release: String(localized: "Release for the reader")) : back
                 }
                 guard rendererID == RendererRegistry.article.id else { return .none }
+                if fingers == .right, onBack != nil { return back }
                 if hasPage {
                     return fingers == .left
                         ? .item(String(localized: "Web Page"), release: String(localized: "Release for the web page")) : .none
@@ -741,7 +774,9 @@ struct ReaderPane: View {
                     neighbors?.go(direction, .vertical)
                 case let .swipe(fingers):
                     if rendererID == RendererRegistry.web.id {
-                        slide(to: RendererRegistry.article.id)
+                        if hasText { slide(to: RendererRegistry.article.id) } else { onBack?.go() }
+                    } else if fingers == .right, let onBack {
+                        onBack.go()
                     } else if hasPage {
                         slide(to: RendererRegistry.web.id)
                     } else {
