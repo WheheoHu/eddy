@@ -10,7 +10,7 @@ Sync protocol 2. Servers and devices on protocol 1 must be updated together.
 
 ### Added
 
-- Windows: the Rust core and `eddy-cli` build and run on Windows (MSVC). `scripts/fetch-pdfium.sh windows` fetches the shared pdfium build, which `eddy-pdf` loads from next to the executable; the macOS app keeps its static link. CI gained a Windows job for the core and the CLI.
+- Windows: the Rust core and `eddy-cli` build and run on Windows (MSVC). `scripts/fetch-pdfium.sh windows` fetches the shared pdfium build, which `eddy-pdf` loads from next to the executable; the macOS app keeps its static link.
 - Server: admin page at `/admin`, on when `EDDY_ADMIN_PASSWORD` is set: pairing codes, devices, FreshRSS status and account, video jobs, service status.
 - Server: `eddy-server --version`; `/v1/info` reports the version; `/v1/health` checks the database.
 - Engine: works with the server offline. Changes queue and upload on their own, search and video job lists answer locally at once, and refresh fetches new articles from FreshRSS directly when the device has the account.

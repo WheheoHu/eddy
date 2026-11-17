@@ -213,22 +213,39 @@ fn pdfium() -> Option<&'static Pdfium> {
             }
             #[cfg(not(target_vendor = "apple"))]
             {
-                // Shared pdfium. Binding by full path avoids the default DLL
-                // search order, which includes the working directory. The
-                // copy next to the executable is what an installed app
-                // ships; workspace builds and tests fall back to the
-                // unpacked output of scripts/fetch-pdfium.sh.
+                // Shared pdfium, bound by full path so the default DLL
+                // search order (which includes the working directory) is
+                // never used. Installed apps ship the DLL next to the exe.
                 let name = Pdfium::pdfium_platform_library_name();
                 let exe_dir = std::env::current_exe()
                     .ok()
                     .and_then(|exe| exe.parent().map(|p| p.to_path_buf()));
-                #[cfg(windows)]
-                let from_fetch = Some(
-                    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                        .join("../../build/pdfium/windows/release/lib/x64")
-                        .join(&name),
-                );
-                #[cfg(not(windows))]
+                // Dev builds and tests (whose binaries sit in
+                // target/<profile>/deps) also try the unpacked
+                // fetch-pdfium.sh output. Release binaries never do: the
+                // build machine's layout must not end up in anything that
+                // gets distributed.
+                #[cfg(all(debug_assertions, windows))]
+                let from_fetch = {
+                    #[cfg(target_arch = "aarch64")]
+                    let arch = "arm64";
+                    #[cfg(not(target_arch = "aarch64"))]
+                    let arch = "x64";
+                    // crates/eddy-pdf → crates → workspace root.
+                    Some(
+                        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                            .join("..")
+                            .join("..")
+                            .join("build")
+                            .join("pdfium")
+                            .join("windows")
+                            .join("release")
+                            .join("lib")
+                            .join(arch)
+                            .join(&name),
+                    )
+                };
+                #[cfg(not(all(debug_assertions, windows)))]
                 let from_fetch: Option<std::path::PathBuf> = None;
                 let candidates = exe_dir
                     .into_iter()

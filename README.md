@@ -87,7 +87,7 @@ cargo build -p eddy-cli
 cargo run -p eddy-cli -- save https://example.com/article
 ```
 
-On Windows pdfium is a shared library: copy `build/pdfium/windows/release/lib/x64/pdfium.dll` next to the built exe (`target/debug/`). `eddy-pdf` loads it from there by full path; the import library in the archive is not needed.
+On Windows pdfium is a shared library: copy `build/pdfium/windows/release/lib/x64/pdfium.dll` next to the built exe (`target/debug/`). `eddy-pdf` loads it from there by full path; the import library in the archive is not needed. Debug builds and tests also fall back to the unpacked copy under `build/`, so `cargo test -p eddy-pdf` works without the copy; release binaries only ever load the DLL next to the exe.
 
 ### Chrome extension
 

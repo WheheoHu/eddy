@@ -73,6 +73,11 @@ jobs:
         run: cargo test --locked -p eddy-core -p eddy-store -p eddy-pdf
       - name: Build CLI
         run: cargo build --locked -p eddy-cli
+      # The core job owns linting the whole workspace on macOS, but the code
+      # compiled only on Windows would otherwise never be linted.
+      - name: Clippy (Windows-only crates)
+        shell: bash
+        run: cargo clippy --locked -p eddy-cli -p eddy-pdf --all-targets -- -D warnings
 
   server:
     # The server ships as a Linux image, so what it is made of is also
