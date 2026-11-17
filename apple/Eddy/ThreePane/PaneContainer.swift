@@ -37,6 +37,8 @@ struct PaneContainer<Sidebar: View, Middle: View, Reader: View>: View {
         let heading = drag.destination.map { PaneArrangement(tier: tier, place: $0) }
         ZStack(alignment: .topLeading) {
             reader
+                // The placeholder for nothing selected sits in the middle.
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(.leading, tier >= .medium ? column : 0)
                 .allowsHitTesting(arrangement.readerShown)
                 .accessibilityHidden(!arrangement.readerShown)
@@ -46,9 +48,9 @@ struct PaneContainer<Sidebar: View, Middle: View, Reader: View>: View {
                 .onTapGesture { if canRead { go(.reader) } }
                 .allowsHitTesting(arrangement.dimmed)
                 .accessibilityHidden(true)
-            Stowable(
-                stowed: arrangement.listStowed, becoming: heading?.listStowed,
-                distance: tier == .narrow ? PaneTier.sidebarWidth + column : nil, drag: drag
+            Sliding(
+                slot: arrangement.listSlot, heading: heading?.listSlot,
+                travel: tier == .narrowest ? nil : (tier == .narrow ? PaneTier.sidebarWidth + column : column), drag: drag
             ) {
                 VStack(spacing: 0) {
                     if tier == .medium || tier == .narrowest {
@@ -59,24 +61,32 @@ struct PaneContainer<Sidebar: View, Middle: View, Reader: View>: View {
                 }
                 .frame(width: tier == .narrowest ? nil : column)
                 .frame(maxHeight: .infinity)
-                .background(.background)
+                // A color, not the background style: that one stays where
+                // it is when the column moves, and covers the reader.
+                .background(Color(nsColor: .textBackgroundColor))
                 .overlay(alignment: .trailing) { if tier != .narrowest { ColumnEdge() } }
-                .offset(x: tier == .narrow ? PaneTier.sidebarWidth : 0)
             }
-            // Under the sidebar where that stands in for it.
+            // The list's space: beside the sidebar in the narrow tier, the
+            // leading column otherwise. Pushed out of it by the sidebar,
+            // the list is clipped away, not over the reader.
+            .padding(.leading, tier == .narrow ? PaneTier.sidebarWidth : 0)
+            .frame(width: tier == .narrowest ? nil : (tier == .narrow ? PaneTier.sidebarWidth + column : column), alignment: .leading)
+            .clipped()
             .allowsHitTesting(arrangement.listShown)
             .accessibilityHidden(!arrangement.listShown)
             if tier != .wide {
-                Stowable(
-                    stowed: !arrangement.sidebarShown, becoming: heading.map { !$0.sidebarShown },
-                    distance: tier == .narrowest ? nil : (tier == .narrow ? PaneTier.sidebarWidth + column : column), drag: drag
+                Sliding(
+                    slot: arrangement.sidebarSlot, heading: heading?.sidebarSlot,
+                    travel: tier == .narrowest ? nil : (tier == .narrow ? PaneTier.sidebarWidth + column : column), drag: drag
                 ) {
                     sidebar
                         .frame(width: tier == .narrowest ? nil : (tier == .narrow ? PaneTier.sidebarWidth : column))
                         .frame(maxHeight: .infinity)
-                        .background(.background.secondary)
+                        .background(Color(nsColor: .windowBackgroundColor))
                         .overlay(alignment: .trailing) { if tier != .narrowest { ColumnEdge() } }
                 }
+                .allowsHitTesting(arrangement.sidebarShown)
+                .accessibilityHidden(!arrangement.sidebarShown)
             }
             if tier >= .medium {
                 resizeHandle.offset(x: column - 4)
@@ -156,39 +166,38 @@ struct ColumnEdge: View {
     }
 }
 
-/// Keeps a column in the view tree while it is out of sight: moved off the
-/// leading edge by its own width (or `distance`), where it takes no clicks.
-/// Showing it again is then only a move, and what it held is as it was.
-/// During a swipe that shows or stows it, it moves as far as the fingers
+/// Keeps a column in the view tree while it is out of sight: moved out of
+/// its space by its own width (or `travel`), off the leading edge or to the
+/// trailing side. Showing it again is then only a move, and what it held is
+/// as it was. During a swipe that moves it, it goes as far as the fingers
 /// have; only then does it read the drag, so the columns that stay put
 /// aren't evaluated with every event.
-private struct Stowable<Content: View>: View {
-    let stowed: Bool
-    /// Stowed or not where the swipe in progress leads; nil with none on.
-    let becoming: Bool?
-    /// How far to move it; nil for its own width.
-    let distance: CGFloat?
+private struct Sliding<Content: View>: View {
+    /// Where it rests: 0 in place, -1 off the leading edge, 1 off the
+    /// trailing side.
+    let slot: Int
+    /// Where it rests where the swipe in progress leads; nil with none on.
+    let heading: Int?
+    /// How far a slot is; nil for its own width.
+    let travel: CGFloat?
     let drag: PaneDrag
     @ViewBuilder let content: Content
     /// Wide enough to be out of the window until it has been measured.
     @State private var width: CGFloat = 4000
 
     var body: some View {
-        let travel = (distance ?? width) + 1
-        var away: CGFloat = stowed ? travel : 0
-        if let becoming, becoming != stowed {
-            let moved = min(drag.distance, travel)
-            away = stowed ? travel - moved : moved
+        let step = (travel ?? width) + 1
+        var x = CGFloat(slot) * step
+        if let heading, heading != slot {
+            x += CGFloat(heading > slot ? 1 : -1) * min(drag.distance, step * CGFloat(abs(heading - slot)))
         }
         return content
             // Measured only where its own width is the distance, so a window
             // being resized doesn't come through here otherwise.
-            .onGeometryChange(for: CGFloat.self) { distance == nil ? $0.size.width : 0 } action: { new in
+            .onGeometryChange(for: CGFloat.self) { travel == nil ? $0.size.width : 0 } action: { new in
                 if new > 0 { width = new }
             }
-            .offset(x: -away)
-            .allowsHitTesting(!stowed)
-            .accessibilityHidden(stowed)
+            .offset(x: x)
     }
 }
 

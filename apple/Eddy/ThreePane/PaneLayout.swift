@@ -88,9 +88,23 @@ struct PaneArrangement: Equatable {
         }
     }
 
-    /// The list is off the leading edge. It leaves only for the reader:
-    /// the sidebar comes in over it.
-    var listStowed: Bool { tier <= .narrow && place == .reader }
+    /// Where the list rests: 0 in its place, -1 off the leading edge (the
+    /// reader has the window), 1 pushed off the trailing side of its space
+    /// by the sidebar coming in. The sidebar pushes the list rather than
+    /// covering it: two lists one over the other under the pointer send
+    /// AppKit's hover tracking into a loop that ends the app.
+    var listSlot: Int {
+        switch tier {
+        case .wide: 0
+        case .medium: place == .sidebar ? 1 : 0
+        case .narrow: place == .reader ? -1 : 0
+        case .narrowest: place.rawValue < PanePlace.list.rawValue ? 1 : (place == .reader ? -1 : 0)
+        }
+    }
+
+    /// Where the container's sidebar rests: 0 in its place, -1 off the
+    /// leading edge.
+    var sidebarSlot: Int { sidebarShown ? 0 : -1 }
 
     /// The reader shows dimmed behind the columns that are in over it.
     var dimmed: Bool { tier == .narrow && !readerShown }

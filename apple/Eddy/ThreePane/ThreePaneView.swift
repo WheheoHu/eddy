@@ -67,6 +67,42 @@ struct ThreePaneView: View {
         }
     }
 
+    /// How large the sidebar's rows are set: as the system sets a sidebar
+    /// column's, or larger where the sidebar has more room than that.
+    ///
+    /// The two larger sizes differ only in numbers, never in the views they
+    /// make: the container's sidebar goes from one to the other as the
+    /// window is resized, and a list whose rows change type under it
+    /// crashes in SwiftUI's cell reuse.
+    enum SidebarScale: ViewModifier {
+        case standard, roomy, large
+
+        private var rowFont: Font { self == .large ? .title2 : .title3 }
+        private var rowPadding: CGFloat { self == .large ? 5 : 3 }
+        private var headingFont: Font { self == .large ? .title.weight(.bold) : .title3.weight(.semibold) }
+        private var headingPadding: CGFloat { self == .large ? 10 : 6 }
+
+        func body(content: Content) -> some View {
+            if self == .standard {
+                content
+            } else {
+                content.font(rowFont).padding(.vertical, rowPadding)
+            }
+        }
+
+        /// A section's title: the list's own small one, or one that leads
+        /// the section the way the larger rows need.
+        @ViewBuilder
+        func heading(_ title: LocalizedStringKey) -> some View {
+            if self == .standard {
+                Text(title)
+            } else {
+                Text(title).font(headingFont).foregroundStyle(.primary)
+                    .padding(.top, headingPadding).padding(.bottom, headingPadding / 3)
+            }
+        }
+    }
+
     enum Selection: Hashable {
         case smart(Smart), saved, kind(CollectionKindView), folder(String), feed(String), tag(String)
 
@@ -88,7 +124,7 @@ struct ThreePaneView: View {
             // the narrower ones, where the container shows another.
             // The minimum is on the content too: the column's alone isn't
             // kept when the sidebar comes back after a much narrower window.
-            sidebar(onstage: tier == .wide)
+            sidebar(onstage: tier == .wide, scale: .standard)
                 .frame(minWidth: 210)
                 .navigationSplitViewColumnWidth(min: 210, ideal: PaneTier.sidebarWidth)
                 .toolbar(removing: tier == .wide ? nil : .sidebarToggle)
@@ -97,7 +133,7 @@ struct ThreePaneView: View {
                 arrangement: arrangement, title: listTitle, canRead: canRead,
                 gesturesEnabled: !model.paletteVisible && model.mediaRequest == nil, drag: drag, go: go
             ) {
-                sidebar(onstage: true)
+                sidebar(onstage: true, scale: tier == .narrowest ? .large : .roomy)
             } list: {
                 middle
             } reader: {
@@ -273,31 +309,41 @@ struct ThreePaneView: View {
     /// `onstage`: the one on screen, which keyboard focus goes to. There
     /// are two in the narrower tiers: the split view's, collapsed, and the
     /// container's.
-    private func sidebar(onstage: Bool) -> some View {
+    ///
+    /// `scale`: the container's sidebar has a column or the whole window to
+    /// itself, where the split view's small type would leave it looking
+    /// empty; it is set larger there, with bolder section titles.
+    private func sidebar(onstage: Bool, scale: SidebarScale) -> some View {
         List(selection: Binding(get: { selection }, set: choose)) {
-            Section("Library") {
+            Section {
                 ForEach(Smart.allCases, id: \.self) { smart in
                     Label(smart.rawValue, systemImage: smart.icon)
+                        .modifier(scale)
                         .badge(badge(smart))
                         .tag(Selection.smart(smart))
                 }
-                Label("Saved", systemImage: "bookmark").badge(model.collection.count).tag(Selection.saved)
+                Label("Saved", systemImage: "bookmark").modifier(scale).badge(model.collection.count).tag(Selection.saved)
+            } header: {
+                scale.heading("Library")
             }
             let kinds = CollectionKindView.all.filter { kind in model.collection.contains { $0.kind == kind } }
             if !kinds.isEmpty {
-                Section("Collection") {
+                Section {
                     ForEach(kinds) { kind in
                         Label(kind.title, systemImage: kind.icon)
+                            .modifier(scale)
                             .badge(model.collection.filter { $0.kind == kind }.count)
                             .tag(Selection.kind(kind))
                     }
+                } header: {
+                    scale.heading("Collection")
                 }
             }
             if !model.feeds.isEmpty {
-                Section("Subscriptions") {
+                Section {
                     ForEach(model.folders, id: \.self) { folder in
                         DisclosureGroup(isExpanded: expanded(folder)) {
-                            feedRows(model.feeds(inFolder: folder))
+                            feedRows(model.feeds(inFolder: folder), scale)
                         } label: {
                             Label {
                                 HStack(spacing: 4) {
@@ -307,6 +353,7 @@ struct ThreePaneView: View {
                             } icon: {
                                 Image(systemName: "folder")
                             }
+                                .modifier(scale)
                                 .badge(model.unread(inFolder: folder))
                                 .tag(Selection.folder(folder))
                                 .contextMenu {
@@ -315,14 +362,18 @@ struct ThreePaneView: View {
                                 }
                         }
                     }
-                    feedRows(model.feeds(inFolder: nil))
+                    feedRows(model.feeds(inFolder: nil), scale)
+                } header: {
+                    scale.heading("Subscriptions")
                 }
             }
             if !model.tags.isEmpty {
-                Section("Tags") {
+                Section {
                     ForEach(model.tags) { t in
-                        Label(t.name, systemImage: "number").badge(Int(t.count)).tag(Selection.tag(t.id))
+                        Label(t.name, systemImage: "number").modifier(scale).badge(Int(t.count)).tag(Selection.tag(t.id))
                     }
+                } header: {
+                    scale.heading("Tags")
                 }
             }
         }
@@ -330,7 +381,13 @@ struct ThreePaneView: View {
         .pane($focus, onstage ? .sidebar : .offstage, onReturn: { go(.list) }, onEscape: tier == .narrow && canRead ? { go(.reader) } : nil)
         .accessibilityHidden(!onstage)
         .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in folderKey(press.key) }
-        .safeAreaInset(edge: .bottom) { StatusFooter() }
+        .safeAreaInset(edge: .bottom) {
+            // Over its own ground in the container, where the rows that
+            // scroll under it would show through.
+            StatusFooter()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(scale == .standard ? Color.clear : Color(nsColor: .windowBackgroundColor))
+        }
     }
 
     /// Left folds the selected folder, or goes up to it from a subscription
@@ -359,7 +416,7 @@ struct ThreePaneView: View {
         }
     }
 
-    private func feedRows(_ feeds: [SourceView]) -> some View {
+    private func feedRows(_ feeds: [SourceView], _ scale: SidebarScale) -> some View {
         ForEach(feeds) { feed in
             Label {
                 HStack(spacing: 4) {
@@ -369,6 +426,7 @@ struct ThreePaneView: View {
             } icon: {
                 Image(systemName: "dot.radiowaves.up.forward")
             }
+            .modifier(scale)
             .badge(Int(feed.unread)).tag(Selection.feed(feed.id))
                 .contextMenu {
                     if let folder = feed.category, model.inGallery(folder: folder) {
