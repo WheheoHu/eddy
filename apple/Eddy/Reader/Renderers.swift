@@ -191,13 +191,23 @@ final class ReaderWebView: WKWebView, WKNavigationDelegate, WKUIDelegate {
 
     /// Esc cancels a swipe, else leaves the page for the column before it.
     override func keyDown(with event: NSEvent) {
+        let plain = event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty
         if event.keyCode == 53, tracker?.active == true {
             tracker?.cancel()
         } else if event.keyCode == 53, let onEscape {
             onEscape()
+        } else if plain, event.specialKey == .leftArrow {
+            // Held, Left does what a swipe to the right does here: back to
+            // the text the page was reached from.
+            tracker?.hold(swipe: .right, key: event.keyCode)
         } else {
             super.keyDown(with: event)
         }
+    }
+
+    override func keyUp(with event: NSEvent) {
+        tracker?.release(key: event.keyCode)
+        super.keyUp(with: event)
     }
 }
 

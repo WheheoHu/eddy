@@ -66,6 +66,9 @@ struct ReaderCommand: Equatable {
         case toggleFullText
         case step(Direction)
         case export(ExportFormatView)
+        /// The contents beside the text, or over it where there is no room
+        /// beside: shown or hidden the way the reader's own button does.
+        case toggleContents
     }
 
     let itemID: String
@@ -436,6 +439,13 @@ final class AppModel {
         let pixels = image.representations.first.map { $0.pixelsWide * $0.pixelsHigh } ?? 0
         imageCache.setObject(image, forKey: key, cost: pixels * 4)
         return image
+    }
+
+    /// A picture that is decoded already, without waiting for it: what a
+    /// view can show in its very first frame, so that one taking the place
+    /// of another with the same picture doesn't blink.
+    func cachedImage(_ url: String, animated: Bool = false) -> NSImage? {
+        imageCache.object(forKey: (animated ? "animated:\(url)" : url) as NSString)
     }
 
     /// An image with all its frames, for the media viewer to animate;

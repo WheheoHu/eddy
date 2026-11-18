@@ -69,6 +69,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A page turned with Up or Down keeps a fifth of what was showing in view, to go on reading from.
 - A book’s contents, and a subscription’s articles beside the text in the Library, mark the row open the way Three-Pane’s list does: the bar at the row’s start while the keys are in the contents, at its end while they are in the text. In Three-Pane with a book’s contents showing, the chapter carries the bar while reading, not the book in the list.
 - Three-Pane: Left in the sidebar no longer sends it away where it lies over the other columns; Esc does.
+- Reading: Right, held, does what a swipe to the left does and acts when let go: an article’s web page, or the next chapter of a book. Left held in the web page goes back to the text; in the Library’s reader it turns to the previous chapter. Neither pages any more; Up and Down do.
+- The media viewer: in an item with several pictures, Left and Right and a sideways swipe slide the next picture in, and a swipe follows the fingers and can be held part-way, as between items.
+- The media viewer: Left and Right on a single picture no longer go to another item; Up and Down do.
+- The media viewer works out the items before and after ahead of time and has their pictures decoded, so the one slid to is there at once; a video shows its poster until its first frame.
+- View → Show or Hide Contents (⌘B) replaces Show Contents / Hide Contents.
 
 ### Removed
 
@@ -77,6 +82,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- ⌘B did nothing where a book’s contents lie over the text instead of beside it: Three-Pane in its narrowest window, and the Library under 940 points.
 - Three-Pane, in a window with room for the list and the article: Right from the sidebar and Left from the list only showed and hid the sidebar. The keys now go to the list with the sidebar left in place, and back to it.
 - Three-Pane, in a window too narrow to show the sidebar beside the other columns: the keys could start in the sidebar while it was out of sight.
 - The media viewer: after a few items, a swipe up or down on the trackpad slid towards the next item and then came back to the one it started from.

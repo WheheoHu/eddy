@@ -29,12 +29,23 @@ struct MediaViewer: View {
     /// How far the items are dragged up (negative) or down.
     @State private var dragOffset: CGFloat = 0
     @State private var stageHeight: CGFloat = 600
+    @State private var stageWidth: CGFloat = 800
     /// An item is sliding into place; drags and steps wait.
     @State private var sliding = false
+    /// How far an item's pictures are dragged left (negative) or right.
+    @State private var pageOffset: CGFloat = 0
+    /// A picture is sliding into place.
+    @State private var turning = false
     @FocusState private var focused: Bool
 
     /// Seconds a Left or Right press moves a video.
     private static let seekStep = 5.0
+
+    /// Room for the bar over the stage and, under an item with several
+    /// pictures, the strip of them.
+    fileprivate static func insets(pictures: Int) -> EdgeInsets {
+        EdgeInsets(top: 44, leading: 0, bottom: pictures > 1 ? 96 : 44, trailing: 0)
+    }
 
     private var index: Int { entries.firstIndex { $0.id == current } ?? 0 }
     private var entry: GalleryEntryView { entries[index] }
@@ -52,12 +63,26 @@ struct MediaViewer: View {
                 // asked for by a key has a place to slide in from.
                 if let before = neighbor(-1) { NeighborPreview(entry: entries[before], media: media).offset(y: dragOffset - stageHeight) }
                 if let after = neighbor(1) { NeighborPreview(entry: entries[after], media: media).offset(y: dragOffset + stageHeight) }
-                MediaStage(entry: entry, media: media, playback: playback, muted: $muted, insets: EdgeInsets(top: 44, leading: 0, bottom: items.count > 1 ? 96 : 44, trailing: 0))
-                    .offset(y: dragOffset)
+                // In an item with several pictures, the ones before and
+                // after wait to its sides the same way.
+                let insets = Self.insets(pictures: items.count)
+                if items.count > 1 {
+                    if playback.page > 0 {
+                        PicturePreview(item: items[playback.page - 1], insets: insets).offset(x: pageOffset - stageWidth, y: dragOffset)
+                    }
+                    if playback.page < items.count - 1 {
+                        PicturePreview(item: items[playback.page + 1], insets: insets).offset(x: pageOffset + stageWidth, y: dragOffset)
+                    }
+                }
+                MediaStage(entry: entry, media: media, playback: playback, muted: $muted, insets: insets)
+                    .offset(x: pageOffset, y: dragOffset)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipped()
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { stageHeight = max($0, 1) }
+            .onGeometryChange(for: CGSize.self) { $0.size } action: {
+                stageHeight = max($0.height, 1)
+                stageWidth = max($0.width, 1)
+            }
         }
         .overlay(alignment: .top) { topBar }
         .overlay(alignment: .bottom) { if items.count > 1 { MediaStrip(items: items, page: $playback.page).background(.black.opacity(0.4)) } }
@@ -163,7 +188,7 @@ struct MediaViewer: View {
 
     /// The items follow the fingers; past the ends they give a little.
     private func drag(_ travelled: CGFloat) {
-        guard !sliding else { return }
+        guard !sliding, !turning else { return }
         let toward = travelled < 0 ? 1 : -1
         dragOffset = neighbor(toward) != nil ? travelled : travelled * 0.25
     }
@@ -212,19 +237,58 @@ struct MediaViewer: View {
         }
     }
 
+    /// Slides the next (`by` 1) or previous picture of the item into
+    /// place, from wherever a drag left things; at the ends they spring
+    /// back.
     private func turn(_ by: Int) {
-        playback.turn(by, of: items.count)
+        guard !turning, !sliding else { return }
+        let target = playback.page + by
+        guard items.indices.contains(target) else {
+            withAnimation(.spring(duration: 0.3)) { pageOffset = 0 }
+            return
+        }
+        turning = true
+        withAnimation(.easeOut(duration: 0.22)) {
+            pageOffset = by > 0 ? -stageWidth : stageWidth
+        } completion: {
+            var still = Transaction()
+            still.disablesAnimations = true
+            withTransaction(still) {
+                playback.page = target
+                pageOffset = 0
+            }
+            turning = false
+        }
     }
 
-    /// Left and Right: through the pictures, else seeking a video, else to
-    /// the next item, so a single picture can still be left.
+    /// The pictures follow the fingers sideways; past the ends they give a
+    /// little. A single picture stays where it is.
+    private func dragPictures(_ travelled: CGFloat) {
+        guard !turning, !sliding, items.count > 1 else { return }
+        let toward = travelled < 0 ? 1 : -1
+        pageOffset = items.indices.contains(playback.page + toward) ? travelled : travelled * 0.25
+    }
+
+    /// Lets go: on to the neighbor when dragged far or flicked, else back.
+    private func releasePictures(_ travelled: CGFloat, speed: CGFloat) {
+        guard !turning, items.count > 1 else { return }
+        let far = abs(travelled) > stageWidth * 0.15
+        let flicked = abs(speed) > 600 && abs(travelled) > 30
+        if far || flicked {
+            turn(travelled < 0 ? 1 : -1)
+        } else {
+            withAnimation(.spring(duration: 0.3)) { pageOffset = 0 }
+        }
+    }
+
+    /// Left and Right: through the pictures of an item with several, else
+    /// seeking a video. A single picture has nothing to its sides; Up and
+    /// Down are what move between items.
     private func sideways(_ by: Int) -> KeyPress.Result {
         if items.count > 1 {
             turn(by)
         } else if currentItem?.kind == .video {
             playback.seek = playback.seek.by(Double(by) * Self.seekStep)
-        } else {
-            _ = step(by)
         }
         return .handled
     }
@@ -235,6 +299,12 @@ struct MediaViewer: View {
         scroll.onRelease = { release($0, speed: $1) }
         scroll.onMomentum = { momentum($0) }
         scroll.onSideways = { turn($0) }
+        scroll.onPictureDrag = { dragPictures($0) }
+        scroll.onPictureRelease = { releasePictures($0, speed: $1) }
+        scroll.onPictureMomentum = { travelled in
+            // A flick, whatever the speed at release looked like.
+            if !turning, items.count > 1, abs(travelled) > 30 { turn(travelled < 0 ? 1 : -1) }
+        }
         scroll.onScrub = scrubs ? { playback.seek = playback.seek.by($0) } : nil
     }
 
@@ -404,16 +474,21 @@ final class ViewerScroll {
     /// A mouse wheel notch.
     var onVertical: (Int) -> Void = { _ in }
     var onSideways: (Int) -> Void = { _ in }
+    /// A sideways drag on a trackpad, where it doesn't scrub: the distance
+    /// so far, then the release with its speed, then momentum if the
+    /// system sends any, as for a vertical drag.
+    var onPictureDrag: (CGFloat) -> Void = { _ in }
+    var onPictureRelease: (CGFloat, CGFloat) -> Void = { _, _ in }
+    var onPictureMomentum: (CGFloat) -> Void = { _ in }
     /// Seconds to seek by; set when sideways scrolling scrubs.
     var onScrub: ((Double) -> Void)?
 
     private var monitor: Any?
     private var travelled = CGSize.zero
     private var axis: Axis?
-    private var stepped = false
-    /// A vertical drag has begun and not been released.
-    private var dragging = false
-    /// Vertical movement of the last moments, for the speed at release.
+    /// A drag has begun, up and down or sideways, and not been released.
+    private var dragging: Axis?
+    /// Movement along the drag in the last moments, for the speed at release.
     private var recent: [(time: TimeInterval, delta: CGFloat)] = []
     private var lastWheelStep = Date.distantPast
 
@@ -442,10 +517,10 @@ final class ViewerScroll {
     private func handle(_ event: NSEvent) -> NSEvent? {
         guard let window, event.window === window else { return event }
         if !event.momentumPhase.isEmpty {
-            if event.momentumPhase.contains(.began), axis == .vertical {
+            if event.momentumPhase.contains(.began), let was = axis {
                 // The release has been reported; one momentum per gesture.
                 axis = nil
-                onMomentum(travelled.height)
+                if was == .vertical { onMomentum(travelled.height) } else { onPictureMomentum(travelled.width) }
             }
             return nil
         }
@@ -456,10 +531,9 @@ final class ViewerScroll {
         if event.phase.contains(.began) {
             // A new gesture before the last was let go of (its end was
             // lost): settle the last first, so nothing is left half-way.
-            if dragging { finishDrag() }
+            if dragging != nil { finishDrag() }
             travelled = .zero
             axis = nil
-            stepped = false
             recent = []
         }
         travelled.width += event.scrollingDeltaX
@@ -470,7 +544,7 @@ final class ViewerScroll {
         let ended = event.phase.contains(.ended) || event.phase.contains(.cancelled)
         switch axis {
         case .vertical:
-            dragging = true
+            dragging = .vertical
             if event.scrollingDeltaY != 0 {
                 recent.append((event.timestamp, event.scrollingDeltaY))
                 recent.removeAll { event.timestamp - $0.time > Self.speedWindow }
@@ -480,27 +554,35 @@ final class ViewerScroll {
         case .horizontal:
             if let onScrub {
                 onScrub(-Double(event.scrollingDeltaX) * Self.scrubRate)
-            } else if !stepped, abs(travelled.width) > Self.threshold {
-                stepped = true
-                onSideways(travelled.width < 0 ? 1 : -1)
+                if ended { axis = nil }
+            } else {
+                // The pictures follow the fingers and can be held part-way,
+                // like the items up and down.
+                dragging = .horizontal
+                if event.scrollingDeltaX != 0 {
+                    recent.append((event.timestamp, event.scrollingDeltaX))
+                    recent.removeAll { event.timestamp - $0.time > Self.speedWindow }
+                }
+                onPictureDrag(travelled.width)
+                if ended { finishDrag() }
             }
-            if ended { axis = nil }
         case nil:
             break
         }
         return nil
     }
 
-    /// Reports the release of a vertical drag with its speed: the distance
+    /// Reports the release of a drag with its speed: the distance
     /// of the last moments over the time they took.
     private func finishDrag() {
-        dragging = false
+        let was = dragging
+        dragging = nil
         var speed: CGFloat = 0
         if let first = recent.first, let last = recent.last, last.time > first.time {
             speed = recent.dropFirst().reduce(0) { $0 + $1.delta } / CGFloat(last.time - first.time)
         }
-        onRelease(travelled.height, speed)
-        // `axis` stays vertical until momentum arrives, or the next gesture.
+        if was == .horizontal { onPictureRelease(travelled.width, speed) } else { onRelease(travelled.height, speed) }
+        // `axis` stays as it was until momentum arrives, or the next gesture.
     }
 
     private func wheel(_ event: NSEvent) {
@@ -542,30 +624,61 @@ private struct WindowReader: NSViewRepresentable {
     }
 }
 
-/// The item above or below, as its picture, while the items are dragged.
+/// The item above or below, as its picture, waiting to slide in. It works
+/// out the item's media and decodes its picture ahead of time, so that the
+/// stage has them the moment the item is the one shown: the picture is
+/// then already where the stage draws it, and nothing blinks.
 private struct NeighborPreview: View {
     @Environment(AppModel.self) private var model
     let entry: GalleryEntryView
     let media: GalleryMedia
     @State private var image: NSImage?
 
-    private var src: String? {
-        let set = media.set(for: entry)
-        return set?.items.first?.preview ?? set?.thumbnail ?? entry.thumbnail
+    private var mediaSet: MediaSetView? {
+        return media.set(for: entry)
     }
 
+    private var src: String? { mediaSet?.items.first?.preview ?? mediaSet?.thumbnail ?? entry.thumbnail }
+
     var body: some View {
-        Group {
-            if let image {
-                Image(nsImage: image).resizable().scaledToFit()
-            } else {
-                Color.clear
+        StillPicture(image: image ?? src.flatMap { model.cachedImage($0) })
+            // Where the stage will draw it.
+            .padding(MediaViewer.insets(pictures: mediaSet?.items.count ?? 1))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .task(id: entry.id) { await media.resolve(entry.item.id, known: entry.media) }
+            .task(id: src) {
+                if let src { image = await model.image(src) }
             }
-        }
-        .padding(.vertical, 44)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .task(id: src) {
-            if let src { image = await model.image(src) }
+    }
+}
+
+/// The picture before or after the one shown in an item with several,
+/// waiting to its side.
+private struct PicturePreview: View {
+    @Environment(AppModel.self) private var model
+    let item: MediaItemView
+    let insets: EdgeInsets
+    @State private var image: NSImage?
+
+    var body: some View {
+        StillPicture(image: image ?? item.preview.flatMap { model.cachedImage($0) })
+            .padding(insets)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .task(id: item.src) {
+                if let src = item.preview { image = await model.image(src) }
+            }
+    }
+}
+
+/// A picture fitted to the room it has, or nothing yet.
+private struct StillPicture: View {
+    let image: NSImage?
+
+    var body: some View {
+        if let image {
+            Image(nsImage: image).resizable().scaledToFit()
+        } else {
+            Color.clear
         }
     }
 }
@@ -607,6 +720,8 @@ struct MediaItemPlayer: View {
     @Binding var muted: Bool
     @Binding var playing: Bool
     var seek = SeekRequest()
+    /// The video has a frame to show.
+    @State private var videoReady = false
 
     var body: some View {
         switch item.kind {
@@ -614,7 +729,14 @@ struct MediaItemPlayer: View {
             ZoomableImage(src: item.src, animated: item.isGIF)
         case .video:
             if let url = URL(string: item.src) {
-                VideoPlayerView(url: url, muted: muted, playing: playing, seek: seek)
+                VideoPlayerView(url: url, muted: muted, playing: playing, seek: seek) { videoReady = true }
+                    // The player is black until it has a frame; its poster,
+                    // which the item showed while it waited, stays till then.
+                    .overlay {
+                        if !videoReady, let poster = item.poster.flatMap({ model.cachedImage($0) }) {
+                            Image(nsImage: poster).resizable().scaledToFit().allowsHitTesting(false)
+                        }
+                    }
             }
         case .embed:
             if let url = URL(string: item.src) {
@@ -639,9 +761,12 @@ struct ZoomableImage: View {
     @State private var dragged: CGSize = .zero
 
     var body: some View {
-        Group {
-            if let image {
-                picture(image)
+        // Decoded already (the item waited beside the one before it): it
+        // shows in the first frame. A GIF shows still until its frames are.
+        let shown = image ?? model.cachedImage(src, animated: animated) ?? model.cachedImage(src)
+        return Group {
+            if let shown {
+                picture(shown)
                     .scaleEffect(scale)
                     .offset(offset)
                     .gesture(MagnifyGesture()
@@ -708,10 +833,13 @@ struct VideoPlayerView: NSViewRepresentable {
     let muted: Bool
     let playing: Bool
     var seek = SeekRequest()
+    /// The first frame is ready to show.
+    var onReady: (() -> Void)?
 
     final class Coordinator {
         var looper: AVPlayerLooper?
         var seekToken = 0
+        var ready: NSKeyValueObservation?
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -725,6 +853,11 @@ struct VideoPlayerView: NSViewRepresentable {
         view.player = player
         view.controlsStyle = .floating
         view.videoGravity = .resizeAspect
+        let onReady = onReady
+        context.coordinator.ready = view.observe(\.isReadyForDisplay, options: [.initial, .new]) { view, _ in
+            guard view.isReadyForDisplay else { return }
+            DispatchQueue.main.async { onReady?() }
+        }
         if playing { player.play() }
         return view
     }

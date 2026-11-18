@@ -788,14 +788,19 @@ final class ReaderTextView: NSTextView {
         } else if modifiers.isEmpty, key == .leftArrow, let onLeft {
             tracker?.cancel()
             onLeft()
-        } else if modifiers.isEmpty, key == .downArrow || key == .rightArrow {
+        } else if modifiers.isEmpty, key == .rightArrow || key == .leftArrow {
+            // Held, Right does what a swipe to the left does and Left what
+            // one to the right does: the web page of an article, the next
+            // or previous chapter of a book. Nothing that way: nothing.
+            tracker?.hold(swipe: key == .rightArrow ? .left : .right, key: event.keyCode)
+        } else if modifiers.isEmpty, key == .downArrow {
             // A page at a time, not a line: the trackpad is for less.
             if scroll.atBottom {
                 tracker?.hold(.next, key: event.keyCode)
             } else {
                 scrollBy(page, animated: true)
             }
-        } else if modifiers.isEmpty, key == .upArrow || key == .leftArrow {
+        } else if modifiers.isEmpty, key == .upArrow {
             if scroll.atTop {
                 tracker?.hold(.previous, key: event.keyCode)
             } else {
