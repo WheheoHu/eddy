@@ -74,6 +74,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The media viewer: Left and Right on a single picture no longer go to another item; Up and Down do.
 - The media viewer works out the items before and after ahead of time and has their pictures decoded, so the one slid to is there at once; a video shows its poster until its first frame.
 - View → Show or Hide Contents (⌘B) replaces Show Contents / Hide Contents.
+- Library and Gallery: Esc on the shelf or among the pictures brings the sidebar in where it was away (hidden, or off the edge of a narrow window), with the keys in it. Return or Right from a sidebar that lies over the shelf or the pictures sends it away again. Switching to either mode puts the keys in the sidebar only if it shows.
 
 ### Removed
 
@@ -82,6 +83,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Library and Gallery in a narrow window: Esc could leave the keys in a sidebar that was out of sight, and nothing brought it in.
+- Three-Pane, in a window where the sidebar and list come in over the article: Left in the list sent them away instead of going on to the sidebar.
 - ⌘B did nothing where a book’s contents lie over the text instead of beside it: Three-Pane in its narrowest window, and the Library under 940 points.
 - Three-Pane, in a window with room for the list and the article: Right from the sidebar and Left from the list only showed and hid the sidebar. The keys now go to the list with the sidebar left in place, and back to it.
 - Three-Pane, in a window too narrow to show the sidebar beside the other columns: the keys could start in the sidebar while it was out of sight.

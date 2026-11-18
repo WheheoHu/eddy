@@ -24,6 +24,10 @@ struct LeadingColumn<Column: View, Content: View>: View {
     let width: CGFloat
     /// Swipes and Esc are off: something lies over the window.
     var gesturesEnabled = true
+    /// The column was brought in or sent away from here (Esc, a click on
+    /// the content, a swipe): the screen moves the keys with it, so they
+    /// aren't left in a column that is out of sight.
+    var onShown: ((Bool) -> Void)?
     @ViewBuilder var column: Column
     @ViewBuilder var content: Content
 
@@ -91,6 +95,7 @@ struct LeadingColumn<Column: View, Content: View>: View {
             dock.shown($beside, model: model).wrappedValue = new
             dock.drag.end()
         }
+        onShown?(new)
     }
 }
 

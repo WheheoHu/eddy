@@ -182,9 +182,13 @@ struct LibraryView: View {
         .onAppear {
             pickChosenFeed()
             openCurrent()
-            // The keys start in the first column, at what is chosen there.
-            if open == nil { DispatchQueue.main.async { focus = .sidebar } }
+            // The keys start in the first column that shows: the sidebar,
+            // at what is chosen there, or the shelf where it is away.
+            if open == nil { DispatchQueue.main.async { focus = sidebarShows ? .sidebar : .list } }
         }
+        // The window turned out, or became, too narrow for the sidebar
+        // beside the shelf: the keys don't stay in it out of sight.
+        .onChange(of: dock.over) { if open == nil, focus == .sidebar, !sidebarShows { focus = .list } }
         .onChange(of: model.revealed) { _, revealed in
             guard let revealed else { return }
             model.revealed = nil
@@ -220,9 +224,12 @@ struct LibraryView: View {
     // MARK: Shelf
 
     private var shelf: some View {
-        LeadingColumn(dock: dock, beside: $showSidebar, width: PaneTier.sidebarWidth, gesturesEnabled: !model.overlayVisible) {
+        LeadingColumn(
+            dock: dock, beside: $showSidebar, width: PaneTier.sidebarWidth, gesturesEnabled: !model.overlayVisible,
+            onShown: { shown in if !shown, focus == .sidebar { focus = .list } }
+        ) {
             SidebarColumn(dock: dock, beside: $showSidebar) {
-                LibrarySidebar(selection: chosen, focus: $focus, onReturn: enterShelf)
+                LibrarySidebar(selection: chosen, focus: $focus, onReturn: enterShelf, onEscape: leaveSidebar)
             }
         } content: {
             let books = shelfBooks
@@ -301,7 +308,7 @@ struct LibraryView: View {
             }
             .focusable()
             .focusEffectDisabled()
-            .pane($focus, .list, onReturn: { if let book = books.first(where: { $0.id == selectedBook }) { show(book) } }, onEscape: { focus = .sidebar })
+            .pane($focus, .list, onReturn: { if let book = books.first(where: { $0.id == selectedBook }) { show(book) } }, onEscape: revealSidebar)
             .onKeyPress(keys: [.upArrow, .downArrow, .leftArrow, .rightArrow]) { press in
                 moveSelection(press.key, in: books, proxy: proxy)
             }
@@ -395,7 +402,7 @@ struct LibraryView: View {
             } primaryAction: { ids in
                 if let book = rows.first(where: { ids.contains($0.id) }) { show(book) }
             }
-            .pane($focus, .list, onReturn: { if let book = rows.first(where: { tableSelection.contains($0.id) }) { show(book) } }, onEscape: { focus = .sidebar })
+            .pane($focus, .list, onReturn: { if let book = rows.first(where: { tableSelection.contains($0.id) }) { show(book) } }, onEscape: revealSidebar)
             .onDeleteCommand {
                 if tableSelection.count == 1, let entry = rows.first(where: { tableSelection.contains($0.id) })?.entry {
                     model.requestDelete(entry)
@@ -513,7 +520,35 @@ struct LibraryView: View {
 
     /// Return in the sidebar: the shelf takes focus, on the book read last
     /// when it is in this filter, else the first one.
+    /// The sidebar is on screen: beside the shelf, or pulled in over it.
+    /// Read when a key is handled, not in `body`.
+    private var sidebarShows: Bool { dock.shown($showSidebar, model: model).wrappedValue }
+
+    /// Esc on the shelf: back to the sidebar, which comes in if it was away.
+    private func revealSidebar() {
+        if !sidebarShows {
+            withAnimation(.easeOut(duration: 0.24)) { dock.shown($showSidebar, model: model).wrappedValue = true }
+        }
+        focus = .sidebar
+    }
+
+    /// Esc in the sidebar: it comes in if the keys were in it while it was
+    /// away; where it lies over the shelf it goes away and the keys go to
+    /// the shelf, which is what `LeadingColumn`'s own Esc does too.
+    private func leaveSidebar() {
+        if !sidebarShows {
+            revealSidebar()
+        } else if dock.over {
+            withAnimation(.easeOut(duration: 0.24)) { model.sidebarPulled = false }
+            focus = .list
+        }
+    }
+
     private func enterShelf() {
+        // A sidebar that lies over the shelf goes away.
+        if dock.over, sidebarShows {
+            withAnimation(.easeOut(duration: 0.24)) { model.sidebarPulled = false }
+        }
         let books = layout == .list ? shelfBooks.sorted(using: tableSort) : shelfBooks
         let pick = books.first { $0.id == lastOpened }?.id ?? books.first?.id
         selectedBook = pick
@@ -605,6 +640,7 @@ private struct LibrarySidebar: View {
     var focus: FocusState<PaneFocus?>.Binding?
     /// Return: on to the shelf.
     var onReturn: (() -> Void)?
+    var onEscape: (() -> Void)?
 
     var body: some View {
         List(selection: Binding(get: { selection }, set: { if let new = $0 { selection = new } })) {
@@ -638,7 +674,7 @@ private struct LibrarySidebar: View {
             }
         }
         .flatList()
-        .pane(focus, .sidebar, onReturn: onReturn)
+        .pane(focus, .sidebar, onReturn: onReturn, onEscape: onEscape)
     }
 
     /// `markAll`: the articles the row stands for, for "Mark All as Read".

@@ -295,6 +295,16 @@ struct ThreePaneView: View {
         if tier == .narrow, canRead { go(.reader) } else if tier != .wide || showSidebar { go(.sidebar) }
     }
 
+    /// Left in the middle column: a level back, to the sidebar, where Esc
+    /// in a narrow window goes to the article the columns lie over. A
+    /// sidebar that was shut in the wide window opens for it.
+    private func backToSidebar() {
+        if tier == .wide, !showSidebar {
+            withAnimation(.easeOut(duration: 0.24)) { showSidebar = true }
+        }
+        go(.sidebar)
+    }
+
     // MARK: Sidebar
 
     private var sidebarColumn: some View {
@@ -461,13 +471,13 @@ struct ThreePaneView: View {
                 CollectionList(
                     kinds: kinds, sort: collectionSort, selection: Binding(get: { entryID }, set: openEntry),
                     active: focus == .list || (readerFocused && !contentsBeside), reading: readerFocused,
-                    focus: $focus, onReturn: read, onEscape: leaveList
+                    focus: $focus, onReturn: read, onEscape: leaveList, onLeft: backToSidebar
                 )
             } else {
                 ThreePaneArticles(
                     rows: rows, marksFinished: selection == .smart(.continueReading),
                     active: focus == .list || (readerFocused && !contentsBeside), reading: readerFocused, table: listTable,
-                    focus: $focus, read: read, leave: leaveList
+                    focus: $focus, read: read, leave: leaveList, back: backToSidebar
                 )
                     .equatable()
                 if showsFilter {
@@ -957,6 +967,8 @@ private struct ThreePaneArticles: View, Equatable {
     let read: () -> Void
     /// Esc: back a column.
     let leave: () -> Void
+    /// Left: back a level, to the sidebar.
+    let back: () -> Void
 
     static func == (a: Self, b: Self) -> Bool {
         a.rows == b.rows && a.marksFinished == b.marksFinished && a.active == b.active && a.reading == b.reading
@@ -1001,9 +1013,9 @@ private struct ThreePaneArticles: View, Equatable {
         .flatList()
         .tableHandle(table)
         .pane(focus, .list, onReturn: read, onEscape: leave)
-        // Right goes on to the article, Left back a column.
+        // Right goes on to the article, Left back to the sidebar.
         .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in
-            if press.key == .rightArrow { read() } else { leave() }
+            if press.key == .rightArrow { read() } else { back() }
             return .handled
         }
         .overlay {
@@ -1053,8 +1065,10 @@ struct CollectionList: View {
     var focus: FocusState<PaneFocus?>.Binding?
     /// Return or Right: read the entry selected.
     var onReturn: (() -> Void)?
-    /// Esc or Left: back a column.
+    /// Esc: back a column.
     var onEscape: (() -> Void)?
+    /// Left: back a level, to the sidebar.
+    var onLeft: (() -> Void)?
     /// The order taken when the list appears or its filter or sort changes.
     /// Reading an entry changes its last-read time and progress; re-sorting
     /// on that would move rows away from under the pointer.
@@ -1103,7 +1117,7 @@ struct CollectionList: View {
         } primaryAction: { _ in onReturn?() }
         .pane(focus, .list, onReturn: onReturn, onEscape: onEscape)
         .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in
-            guard let act = press.key == .rightArrow ? onReturn : onEscape else { return .ignored }
+            guard let act = press.key == .rightArrow ? onReturn : (onLeft ?? onEscape) else { return .ignored }
             act()
             return .handled
         }

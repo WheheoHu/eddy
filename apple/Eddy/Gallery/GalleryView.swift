@@ -247,10 +247,11 @@ struct GalleryView: View {
     var body: some View {
         LeadingColumn(
             dock: dock, beside: $showSidebar, width: PaneTier.sidebarWidth,
-            gesturesEnabled: !model.overlayVisible && viewing == nil && model.mediaRequest == nil
+            gesturesEnabled: !model.overlayVisible && viewing == nil && model.mediaRequest == nil,
+            onShown: { shown in if !shown, focus == .sidebar { focus = .list } }
         ) {
             SidebarColumn(dock: dock, beside: $showSidebar) {
-                GallerySidebar(scopeKey: $scopeKey, focus: $focus, enter: enterGrid)
+                GallerySidebar(scopeKey: $scopeKey, focus: $focus, enter: enterGrid, escape: leaveSidebar)
             }
         } content: {
             VStack(spacing: 0) {
@@ -281,9 +282,13 @@ struct GalleryView: View {
         }
         .onAppear {
             load()
-            // The keys start in the first column, at the scope chosen.
-            DispatchQueue.main.async { focus = .sidebar }
+            // The keys start in the first column that shows: the sidebar,
+            // at the scope chosen, or the grid where the sidebar is away.
+            DispatchQueue.main.async { focus = sidebarShows ? .sidebar : .list }
         }
+        // The window turned out, or became, too narrow for the sidebar
+        // beside the grid: the keys don't stay in it out of sight.
+        .onChange(of: dock.over) { if focus == .sidebar, !sidebarShows { focus = .list } }
         .onDisappear { model.galleryScrolling = false }
         .onChange(of: scopeKey) { load(reset: true) }
         .onChange(of: unreadOnly) { load(reset: true) }
@@ -358,7 +363,7 @@ struct GalleryView: View {
                 .onChange(of: rowHeight) { resize(proxy) }
                 .focusable()
                 .focusEffectDisabled()
-                .pane($focus, .list, onReturn: openPicked, onEscape: { focus = .sidebar })
+                .pane($focus, .list, onReturn: openPicked, onEscape: revealSidebar)
                 .onKeyPress(keys: [.upArrow, .downArrow, .leftArrow, .rightArrow, .space]) { press in
                     gridKey(press.key, proxy)
                 }
@@ -383,13 +388,42 @@ struct GalleryView: View {
 
     // MARK: Keys
 
+    /// The sidebar is on screen: beside the grid, or pulled in over it.
+    /// Read when a key is handled, not in `body`.
+    private var sidebarShows: Bool { dock.shown($showSidebar, model: model).wrappedValue }
+
+    /// Esc in the grid, or Left from the start of a row: back to the
+    /// sidebar, which comes in if it was away.
+    private func revealSidebar() {
+        if !sidebarShows {
+            withAnimation(.easeOut(duration: 0.24)) { dock.shown($showSidebar, model: model).wrappedValue = true }
+        }
+        focus = .sidebar
+    }
+
+    /// Esc in the sidebar: it comes in if the keys were in it while it was
+    /// away; where it lies over the grid it goes away and the keys go to
+    /// the grid, which is what `LeadingColumn`'s own Esc does too.
+    private func leaveSidebar() {
+        if !sidebarShows {
+            revealSidebar()
+        } else if dock.over {
+            withAnimation(.easeOut(duration: 0.24)) { model.sidebarPulled = false }
+            focus = .list
+        }
+    }
+
     /// Return or Right in the sidebar: the keys go to the grid, at the item
-    /// they were at last, or the first of the rows in view.
+    /// they were at last, or the first of the rows in view. A sidebar that
+    /// lies over the grid goes away.
     private func enterGrid() {
         guard !items.isEmpty else { return }
         if place(of: picked) == nil {
             let top = rows.indices.contains(position.rowsAbove) ? rows[position.rowsAbove] : rows.first
             picked = top?.cells.first?.entry.id
+        }
+        if dock.over, sidebarShows {
+            withAnimation(.easeOut(duration: 0.24)) { model.sidebarPulled = false }
         }
         focus = .list
     }
@@ -424,7 +458,7 @@ struct GalleryView: View {
         switch key {
         case .leftArrow:
             guard at.cell > 0 else {
-                focus = .sidebar
+                revealSidebar()
                 return .handled
             }
             to.cell -= 1
@@ -714,6 +748,8 @@ private struct GallerySidebar: View {
     var focus: FocusState<PaneFocus?>.Binding
     /// Return or Right: on to the grid.
     let enter: () -> Void
+    /// Esc.
+    let escape: () -> Void
 
     var body: some View {
         List(selection: Binding<String?>(get: { scopeKey }, set: { if let key = $0 { scopeKey = key } })) {
@@ -747,7 +783,7 @@ private struct GallerySidebar: View {
             }
         }
         .flatList()
-        .pane(focus, .sidebar, onReturn: enter)
+        .pane(focus, .sidebar, onReturn: enter, onEscape: escape)
         .onKeyPress(.rightArrow) {
             enter()
             return .handled
