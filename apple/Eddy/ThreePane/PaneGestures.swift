@@ -71,6 +71,12 @@ struct PaneSwipes: NSViewRepresentable {
                     self.settings?.go(heading)
                 }
             )
+            // The columns under the pointer scroll up and down only, so a
+            // swipe needn't be as level as over text to be told from a
+            // scroll, and one that sets off unevenly can still become one.
+            tracker.sidewaysRatio = 1.2
+            tracker.decidesAfter = 12
+            tracker.reconsiders = true
             tracker.onChange = { [weak self] gesture, committed in
                 MainActor.assumeIsolated {
                     guard let self, let drag = self.settings?.drag else { return }
@@ -127,7 +133,13 @@ struct PaneSwipes: NSViewRepresentable {
             case .passing:
                 return false
             case .shared:
-                return tracker.handle(event, in: nil)
+                if tracker.handle(event, in: nil) { return true }
+                // Until a swipe is told from a scroll (the first few points
+                // the fingers move), nothing scrolls: a swipe would
+                // otherwise nudge the list up or down before the columns
+                // start to move. The view still sees the gesture begin.
+                guard tracker.undecided, event.phase == .changed, let settings else { return false }
+                return settings.destination(.left, overColumns) != nil || settings.destination(.right, overColumns) != nil
             case .scrim:
                 _ = tracker.handle(event, in: nil)
                 return true

@@ -51,6 +51,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- A sideways swipe over the sidebar or a list is picked up when the fingers don't travel perfectly level, and no longer nudges the list up or down before the columns move.
 - Swiping columns in and back is smooth: they no longer stutter while following the fingers, or hitch as the swipe ends.
 - Scrolling an article no longer stops when the pointer reaches a table. A table wider than the text still scrolls sideways.
 - A table on the first screen of an article shows when the article opens, not only after scrolling away and back.

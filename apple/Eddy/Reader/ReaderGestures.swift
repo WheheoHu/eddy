@@ -93,6 +93,21 @@ final class EdgeGestureTracker {
 
     var active: Bool { gesture != nil }
 
+    /// How many times further sideways than up or down the fingers must
+    /// have gone, when a gesture is told apart, to be a swipe. Over text
+    /// that scrolls both ways a swipe has to be plainly sideways; over a
+    /// list, which only scrolls up and down, less so.
+    var sidewaysRatio: CGFloat = 2
+    /// How far the fingers go before the gesture is told apart: further
+    /// tells it better, and what a view scrolls starts that much later.
+    var decidesAfter: CGFloat = 8
+    /// A gesture taken for a scroll can still turn out a swipe: the fingers
+    /// set off unevenly and then went plainly sideways.
+    var reconsiders = false
+
+    /// A trackpad gesture has begun and it isn't yet clear which way it goes.
+    var undecided: Bool { axis == .undecided && gesture == nil }
+
     /// A gesture is following the fingers somewhere; heavy work waits.
     private(set) static var anyActive = false
 
@@ -155,8 +170,10 @@ final class EdgeGestureTracker {
     private func begin(rightward: CGFloat, dy: CGFloat, scroll: NSScrollView?) -> Bool {
         classifyX += rightward
         classifyY += dy
-        if axis == .undecided, abs(classifyX) + abs(classifyY) > 8 {
-            axis = abs(classifyX) > 2 * abs(classifyY) ? .horizontal : .vertical
+        if axis == .undecided, abs(classifyX) + abs(classifyY) > decidesAfter {
+            axis = abs(classifyX) > sidewaysRatio * abs(classifyY) ? .horizontal : .vertical
+        } else if reconsiders, axis == .vertical, abs(classifyX) > 36, abs(classifyX) > 2.5 * abs(classifyY) {
+            axis = .horizontal
         }
         switch axis {
         case .horizontal:
