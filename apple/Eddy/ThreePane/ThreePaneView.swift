@@ -15,10 +15,13 @@ struct ThreePaneView: View {
     @AppStorage("threePane.collectionSort") private var collectionSort: CollectionSort = .added
     /// What the sidebar has chosen; the model keeps it (`threePaneSelection`).
     private var selection: Selection? { model.threePaneSelection }
-    /// Names of the subscription folders folded up; new folders start open.
-    /// Read here and handed to the sidebar, which only draws again when
-    /// what it is handed changes.
-    @AppStorage("threePane.collapsedFolders") private var collapsedFoldersJSON = "[]"
+    /// The subscription folders folded up; new folders start open. Kept
+    /// here and handed to the sidebar, which only draws again when what it
+    /// is handed changes; state, so that folding animates the same from a
+    /// click and from a key.
+    @State private var collapsed = ThreePaneView.storedFolds()
+    /// The sidebar's table, to slide its rows when a folder folds.
+    @State private var sidebarTable = TableHandle()
     /// The collection entry picked in the middle column.
     @State private var entryID: String?
     /// Articles read while the unread-only list has been on screen. They
@@ -112,6 +115,12 @@ struct ThreePaneView: View {
             // The sidebar's choice was made before this view was: its list
             // starts here.
             startOver()
+            // A subscription chosen in another mode shows in its folder.
+            if case let .feed(id) = selection, let folder = model.feeds.first(where: { $0.id == id })?.category, collapsed.contains(folder) {
+                toggleFolder(folder)
+            }
+            // Once the columns are there to take the keys.
+            DispatchQueue.main.async { focusFirstColumn() }
             // Coming from another mode with its sidebar in: it stays in.
             place = model.sidebarPulled ? .sidebar : (canRead ? .reader : .list)
         }
@@ -292,12 +301,64 @@ struct ThreePaneView: View {
                 AddMenu()
             }
             ThreePaneSidebar(
-                selection: selection, tier: tier, canRead: canRead, collapsedFoldersJSON: $collapsedFoldersJSON,
-                focus: $focus, choose: choose, go: go
+                selection: selection, tier: tier, canRead: canRead, collapsed: collapsed, active: focus == .sidebar,
+                table: sidebarTable, focus: $focus, choose: choose, go: go, enter: enterList, toggle: toggleFolder
             )
                 .equatable()
             StatusFooter()
             ModeBar()
+        }
+    }
+
+    private static let foldsKey = "threePane.collapsedFolders"
+
+    private static func storedFolds() -> Set<String> {
+        let json = UserDefaults.standard.string(forKey: foldsKey) ?? "[]"
+        return (try? JSONDecoder().decode(Set<String>.self, from: Data(json.utf8))) ?? []
+    }
+
+    /// Folds a folder of the sidebar, or unfolds it: its subscriptions go
+    /// or come with the same move whatever asked, the arrow or Space. The
+    /// list itself only swaps its rows, so the move is made on its table.
+    private func toggleFolder(_ name: String) {
+        let opening = collapsed.contains(name)
+        let row = ThreePaneSidebar.row(ofFolder: name, in: model, collapsed: collapsed)
+        collapsed.formSymmetricDifference([name])
+        if let row { sidebarTable.fold(at: row, count: model.feeds(inFolder: name).count, opening: opening) }
+        if let json = try? String(data: JSONEncoder().encode(collapsed.sorted()), encoding: .utf8) {
+            UserDefaults.standard.set(json, forKey: Self.foldsKey)
+        }
+    }
+
+    /// Return or Right in the sidebar: on to the middle column, at its
+    /// first row unless one of its rows is open already.
+    private func enterList() {
+        go(.list)
+        if let kinds = selection?.kinds {
+            guard entryID == nil else { return }
+            // In the order the list shows them: Saved by kind.
+            let first = kinds.lazy.compactMap { kind in
+                model.collection.filter { $0.kind == kind }.sorted(by: collectionSort.inOrder).first
+            }.first
+            if let first { openEntry(first.id) }
+        } else {
+            let rows = rowsForSelection
+            if let current = model.currentItemID, rows.contains(where: { $0.id == current }) { return }
+            if let first = rows.first { open(first.id) }
+        }
+    }
+
+    /// The keys start in the first column that shows: the sidebar's chosen
+    /// row, where there is a sidebar.
+    private func focusFirstColumn() {
+        if arrangement.sidebarShown {
+            readerFocused = false
+            focus = .sidebar
+        } else if arrangement.listShown {
+            readerFocused = false
+            focus = .list
+        } else {
+            readerFocused = true
         }
     }
 
@@ -372,11 +433,13 @@ struct ThreePaneView: View {
             if let kinds {
                 CollectionList(
                     kinds: kinds, sort: collectionSort, selection: Binding(get: { entryID }, set: openEntry),
+                    active: focus == .list || readerFocused,
                     focus: $focus, onReturn: read, onEscape: leaveList
                 )
             } else {
                 ThreePaneArticles(
                     rows: rows, marksFinished: selection == .smart(.continueReading),
+                    active: focus == .list || readerFocused,
                     focus: $focus, read: read, leave: leaveList
                 )
                     .equatable()
@@ -551,7 +614,7 @@ struct ThreePaneView: View {
             HStack(spacing: 0) {
                 if let entry, beside {
                     EntryContents(
-                        entry: entry, currentItemID: id, open: open, jump: jump,
+                        entry: entry, currentItemID: id, open: open, jump: jump, active: focus == .contents,
                         focus: $focus, onReturn: read, onEscape: { go(.list) }
                     )
                         .frame(width: 260)
@@ -563,7 +626,7 @@ struct ThreePaneView: View {
                         itemID: id, scrollTarget: $scrollTarget, pageTarget: pageTarget, openItem: open,
                         showContents: entry == nil ? nil : (tier == .narrowest ? $contentsDrawer : $showContents),
                         neighbors: neighbors(of: item, in: entry), startAtEnd: landAtEnd == id,
-                        arrival: Arrival.side(arrival, for: id),
+                        arrival: Arrival.side(arrival, for: id), leftLeaves: true,
                         onEscape: { leaveReader(contentsShown: entry != nil && beside) },
                         focused: readerFocused, onFocus: { readerFocused = true },
                         onBack: readerBack, stripLeads: arrangement.leading == .reader, stripLeading: readerLead
@@ -645,37 +708,66 @@ private struct ThreePaneSidebar: View, Equatable {
     let selection: ThreePaneView.Selection?
     let tier: PaneTier
     let canRead: Bool
-    /// Names of the subscription folders folded up, as JSON. The view that
-    /// owns it hands it over: a folder folding has to count as a change
-    /// here, or the rows wouldn't follow until something else changed.
-    @Binding var collapsedFoldersJSON: String
+    /// The subscription folders folded up. The view that owns them hands
+    /// them over: a folder folding has to count as a change here, or the
+    /// rows wouldn't follow until something else changed.
+    let collapsed: Set<String>
+    /// Keyboard focus is in this column: the row chosen carries the mark.
+    let active: Bool
+    /// Given the list's table, for the owner to slide rows on.
+    let table: TableHandle
     var focus: FocusState<PaneFocus?>.Binding
     let choose: (ThreePaneView.Selection?) -> Void
     let go: (PanePlace) -> Void
+    /// Return or Right: on to the middle column.
+    let enter: () -> Void
+    /// Folds a folder, or unfolds it.
+    let toggle: (String) -> Void
 
     static func == (a: Self, b: Self) -> Bool {
         a.selection == b.selection && a.tier == b.tier && a.canRead == b.canRead
-            && a.collapsedFoldersJSON == b.collapsedFoldersJSON
+            && a.collapsed == b.collapsed && a.active == b.active
     }
 
     var body: some View {
-        // Folders fold, and the list leaves room at its start for their arrows.
-        let lead: CGFloat = model.folders.isEmpty ? 8 : 0
-        return ScrollViewReader { proxy in
-            rows(lead: lead)
+        ScrollViewReader { proxy in
+            rows(lead: 8)
                 // Coming from another mode with a subscription or folder
-                // chosen there: it may lie further down than shows.
-                // Once the list has its rows.
-                .onAppear { DispatchQueue.main.async { reveal(selection, in: proxy) } }
+                // chosen there: it may lie further down than shows. Once
+                // the list has its rows.
+                .onAppear { DispatchQueue.main.async { reveal(selection, in: proxy, anchor: .center) } }
+                // Chosen from elsewhere (the palette, a subscription's
+                // folder with Left): into view, if it isn't. A row out of
+                // view isn't the table's selected row, and the arrow keys
+                // would start from the top.
+                .onChange(of: selection) { _, new in reveal(new, in: proxy, anchor: nil) }
         }
     }
 
+    /// Which row of the list a folder is, counting the rows `rows` puts
+    /// above it; nil if there is no such folder. Keep it in step with
+    /// `rows`.
+    static func row(ofFolder name: String, in model: AppModel, collapsed: Set<String>) -> Int? {
+        let folders = model.folders
+        guard let index = folders.firstIndex(of: name) else { return nil }
+        // "Library", the smart lists, Saved.
+        var row = 1 + ThreePaneView.Smart.allCases.count + 1
+        let kinds = CollectionKindView.all.filter { kind in model.collection.contains { $0.kind == kind } }
+        if !kinds.isEmpty { row += 1 + kinds.count }
+        // "Subscriptions", then each folder before with what it shows.
+        row += 1
+        for folder in folders[..<index] {
+            row += 1 + (collapsed.contains(folder) ? 0 : model.feeds(inFolder: folder).count)
+        }
+        return row
+    }
+
     /// Brings the row chosen into view, where it is one of the many.
-    private func reveal(_ selection: ThreePaneView.Selection?, in proxy: ScrollViewProxy) {
+    private func reveal(_ selection: ThreePaneView.Selection?, in proxy: ScrollViewProxy, anchor: UnitPoint?) {
         switch selection {
-        case let .feed(id): proxy.scrollTo(id, anchor: .center)
-        case let .folder(name): proxy.scrollTo(name, anchor: .center)
-        case let .tag(id): proxy.scrollTo(id, anchor: .center)
+        case let .feed(id): proxy.scrollTo(id, anchor: anchor)
+        case let .folder(name): proxy.scrollTo(name, anchor: anchor)
+        case let .tag(id): proxy.scrollTo(id, anchor: anchor)
         default: break
         }
     }
@@ -686,11 +778,11 @@ private struct ThreePaneSidebar: View, Equatable {
             ForEach(ThreePaneView.Smart.allCases, id: \.self) { smart in
                 let tag = ThreePaneView.Selection.smart(smart)
                 SideRow(symbol: smart.icon, title: Text(LocalizedStringKey(smart.rawValue)), count: badge(smart), chosen: selection == tag)
-                    .flatRow(chosen: selection == tag, lead: lead)
+                    .flatRow(chosen: selection == tag, active: active, lead: lead)
                     .tag(tag)
             }
             SideRow(symbol: "bookmark", title: Text("Saved"), count: model.collection.count, chosen: selection == .saved)
-                .flatRow(chosen: selection == .saved, lead: lead)
+                .flatRow(chosen: selection == .saved, active: active, lead: lead)
                 .tag(ThreePaneView.Selection.saved)
             let kinds = CollectionKindView.all.filter { kind in model.collection.contains { $0.kind == kind } }
             if !kinds.isEmpty {
@@ -698,28 +790,35 @@ private struct ThreePaneSidebar: View, Equatable {
                 ForEach(kinds) { kind in
                     let tag = ThreePaneView.Selection.kind(kind)
                     SideRow(symbol: kind.icon, title: Text(kind.title), count: model.collection.filter { $0.kind == kind }.count, chosen: selection == tag)
-                        .flatRow(chosen: selection == tag, lead: lead)
+                        .flatRow(chosen: selection == tag, active: active, lead: lead)
                         .tag(tag)
                 }
             }
             if !model.feeds.isEmpty {
                 SideHeading(title: "Subscriptions", lead: lead)
+                // A folder's subscriptions are rows of the list like any
+                // other, there while it is open: the list has no folding of
+                // its own to draw an arrow for or to animate differently
+                // for a click and a key.
                 ForEach(model.folders, id: \.self) { folder in
                     let tag = ThreePaneView.Selection.folder(folder)
-                    DisclosureGroup(isExpanded: expanded(folder)) {
-                        feedRows(model.feeds(inFolder: folder), lead)
-                    } label: {
+                    let open = !collapsed.contains(folder)
+                    HStack(spacing: 0) {
+                        FoldArrow(open: open) { toggle(folder) }
                         SideRow(symbol: "folder", title: Text(verbatim: folder), count: model.unread(inFolder: folder), chosen: selection == tag) {
                             if model.inGallery(folder: folder) { GalleryMark() }
                         }
-                        .tag(tag)
-                        .contextMenu {
-                            Button("Mark All as Read…") { model.requestMarkAllRead(ArticleList(filter: .category(name: folder), title: folder)) }
-                            let shown = model.inGallery(folder: folder)
-                            Button(shown ? "Remove from Gallery" : "Show in Gallery") { model.setGallery(folder: folder, !shown) }
-                        }
                     }
-                    .flatRow(chosen: selection == tag, lead: lead)
+                    // The arrow stands before the icon, in the room every
+                    // row has at its start, so the icons stay in one line.
+                    .flatRow(chosen: selection == tag, active: active, lead: lead - FoldArrow.width)
+                    .tag(tag)
+                    .contextMenu {
+                        Button("Mark All as Read…") { model.requestMarkAllRead(ArticleList(filter: .category(name: folder), title: folder)) }
+                        let shown = model.inGallery(folder: folder)
+                        Button(shown ? "Remove from Gallery" : "Show in Gallery") { model.setGallery(folder: folder, !shown) }
+                    }
+                    if open { feedRows(model.feeds(inFolder: folder), lead + 14) }
                 }
                 feedRows(model.feeds(inFolder: nil), lead)
             }
@@ -728,14 +827,15 @@ private struct ThreePaneSidebar: View, Equatable {
                 ForEach(model.tags) { t in
                     let tag = ThreePaneView.Selection.tag(t.id)
                     SideRow(symbol: "number", title: Text(verbatim: t.name), count: Int(t.count), chosen: selection == tag)
-                        .flatRow(chosen: selection == tag, lead: lead)
+                        .flatRow(chosen: selection == tag, active: active, lead: lead)
                         .tag(tag)
                 }
             }
         }
         .flatList()
-        .pane(focus, .sidebar, onReturn: { go(.list) }, onEscape: sidebarEscape)
-        .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in folderKey(press.key) }
+        .tableHandle(table)
+        .pane(focus, .sidebar, onReturn: enter, onEscape: sidebarEscape)
+        .onKeyPress(keys: [.leftArrow, .rightArrow, .space]) { press in key(press.key) }
     }
 
     /// Esc in the sidebar sends it away again, where it is in over the
@@ -748,21 +848,26 @@ private struct ThreePaneSidebar: View, Equatable {
         }
     }
 
-    /// Left folds the selected folder, or goes up to it from a subscription
-    /// inside it; Right unfolds it.
-    private func folderKey(_ key: KeyEquivalent) -> KeyPress.Result {
-        switch selection {
-        case let .folder(name):
-            let open = !collapsedFolders.contains(name)
-            guard key == .leftArrow ? open : !open else { return .ignored }
-            withAnimation(.easeInOut(duration: 0.15)) { expanded(name).wrappedValue = !open }
+    /// Right goes on to the middle column, as Return does. Left goes back a
+    /// level: from a subscription to its folder, else where Esc leads.
+    /// Space folds the folder chosen, or unfolds it.
+    private func key(_ key: KeyEquivalent) -> KeyPress.Result {
+        switch key {
+        case .space:
+            guard case let .folder(name) = selection else { return .ignored }
+            toggle(name)
             return .handled
-        case let .feed(id):
-            guard key == .leftArrow, let folder = model.feeds.first(where: { $0.id == id })?.category else { return .ignored }
-            choose(.folder(folder))
+        case .rightArrow:
+            enter()
             return .handled
         default:
-            return .ignored
+            if case let .feed(id) = selection, let folder = model.feeds.first(where: { $0.id == id })?.category {
+                choose(.folder(folder))
+                return .handled
+            }
+            guard let sidebarEscape else { return .ignored }
+            sidebarEscape()
+            return .handled
         }
     }
 
@@ -780,7 +885,7 @@ private struct ThreePaneSidebar: View, Equatable {
             SideRow(symbol: "dot.radiowaves.up.forward", title: Text(verbatim: feed.title), count: Int(feed.unread), chosen: selection == tag) {
                 if let reason = model.galleryReason(feed) { GalleryMark(throughFolder: reason.isEmpty ? nil : reason) }
             }
-            .flatRow(chosen: selection == tag, lead: lead)
+            .flatRow(chosen: selection == tag, active: active, lead: lead)
             .tag(tag)
             .contextMenu {
                 Button("Mark All as Read…") { model.requestMarkAllRead(ArticleList(filter: .source(id: feed.id), title: feed.title)) }
@@ -793,20 +898,6 @@ private struct ThreePaneSidebar: View, Equatable {
             }
         }
     }
-
-    private var collapsedFolders: Set<String> {
-        (try? JSONDecoder().decode(Set<String>.self, from: Data(collapsedFoldersJSON.utf8))) ?? []
-    }
-
-    private func expanded(_ folder: String) -> Binding<Bool> {
-        Binding {
-            !collapsedFolders.contains(folder)
-        } set: { open in
-            var collapsed = collapsedFolders
-            if open { collapsed.remove(folder) } else { collapsed.insert(folder) }
-            collapsedFoldersJSON = (try? String(data: JSONEncoder().encode(collapsed.sorted()), encoding: .utf8)) ?? collapsedFoldersJSON
-        }
-    }
 }
 
 /// The middle column's articles. A view of its own, equal to itself while
@@ -816,19 +907,22 @@ private struct ThreePaneArticles: View, Equatable {
     let rows: [ItemView]
     /// Finished articles show a check: Continue Reading keeps them listed.
     let marksFinished: Bool
+    /// The keys are with the articles, in this column or in the one being
+    /// read: its row carries the mark.
+    let active: Bool
     var focus: FocusState<PaneFocus?>.Binding
     /// Return, or a double click: on to the reader.
     let read: () -> Void
     /// Esc: back a column.
     let leave: () -> Void
 
-    static func == (a: Self, b: Self) -> Bool { a.rows == b.rows && a.marksFinished == b.marksFinished }
+    static func == (a: Self, b: Self) -> Bool { a.rows == b.rows && a.marksFinished == b.marksFinished && a.active == b.active }
 
     var body: some View {
         @Bindable var model = model
         return List(rows, selection: $model.currentItemID) { item in
             ArticleRow(item: item, marksFinished: marksFinished)
-                .flatRow(chosen: item.id == model.currentItemID, inset: 6)
+                .flatRow(chosen: item.id == model.currentItemID, active: active, inset: 6)
                 .tag(item.id)
         }
         .contextMenu(forSelectionType: String.self) { ids in
@@ -862,6 +956,11 @@ private struct ThreePaneArticles: View, Equatable {
         } primaryAction: { _ in read() }
         .flatList()
         .pane(focus, .list, onReturn: read, onEscape: leave)
+        // Right goes on to the article, Left back a column.
+        .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in
+            if press.key == .rightArrow { read() } else { leave() }
+            return .handled
+        }
         .overlay {
             if rows.isEmpty {
                 ContentUnavailableView("Nothing Here", systemImage: "tray")
@@ -902,9 +1001,12 @@ struct CollectionList: View {
     let kinds: [CollectionKindView]
     let sort: CollectionSort
     @Binding var selection: String?
+    /// The keys are with the entries: the one selected carries the mark.
+    var active = false
     var focus: FocusState<PaneFocus?>.Binding?
-    /// Return: read the entry selected.
+    /// Return or Right: read the entry selected.
     var onReturn: (() -> Void)?
+    /// Esc or Left: back a column.
     var onEscape: (() -> Void)?
     /// The order taken when the list appears or its filter or sort changes.
     /// Reading an entry changes its last-read time and progress; re-sorting
@@ -953,6 +1055,11 @@ struct CollectionList: View {
             }
         } primaryAction: { _ in onReturn?() }
         .pane(focus, .list, onReturn: onReturn, onEscape: onEscape)
+        .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in
+            guard let act = press.key == .rightArrow ? onReturn : onEscape else { return .ignored }
+            act()
+            return .handled
+        }
         .onDeleteCommand(perform: deleteSelected)
         .onKeyPress(keys: [.delete], phases: .down) { press in
             guard press.modifiers.contains(.command) else { return .ignored }
@@ -982,7 +1089,7 @@ struct CollectionList: View {
 
     private func rows(_ entries: [CollectionEntryView]) -> some View {
         ForEach(entries) { entry in
-            CollectionRow(entry: entry).flatRow(chosen: entry.id == selection, inset: 6).tag(entry.id)
+            CollectionRow(entry: entry).flatRow(chosen: entry.id == selection, active: active, inset: 6).tag(entry.id)
         }
     }
 

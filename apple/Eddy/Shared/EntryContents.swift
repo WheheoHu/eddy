@@ -135,6 +135,8 @@ struct EntryContents: View {
     let open: (String) -> Void
     /// Moves within the open page or PDF.
     let jump: (OutlineEntry.Target) -> Void
+    /// The keys are with the contents: the row open carries the mark.
+    var active = false
     var focus: FocusState<PaneFocus?>.Binding?
     /// Return: read from here.
     var onReturn: (() -> Void)?
@@ -235,7 +237,7 @@ struct EntryContents: View {
                         }
                     }
                     .padding(.vertical, 5)
-                    .flatRow(chosen: chapter.id == currentItemID)
+                    .flatRow(chosen: chapter.id == currentItemID, active: active)
                     .tag(chapter.id)
                     .contextMenu {
                         if !chapter.isDone {
@@ -344,7 +346,7 @@ struct EntryContents: View {
                     }
                     .padding(.leading, CGFloat(max(line.level - 1, 0)) * 12)
                     .padding(.vertical, 5)
-                    .flatRow(chosen: line.id == outlineSelection)
+                    .flatRow(chosen: line.id == outlineSelection, active: active)
                     .tag(line.id)
                 }
             }

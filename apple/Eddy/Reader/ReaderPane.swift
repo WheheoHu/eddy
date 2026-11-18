@@ -33,6 +33,9 @@ struct ReaderPane: View {
     /// The side the text comes in from: where this item lies from the one
     /// read before it.
     var arrival: ArrivalSide = .below
+    /// Left in the text goes back a column, as Esc does, instead of up a
+    /// page: Three-Pane's columns are levels the arrows move between.
+    var leftLeaves = false
     /// Esc in the text: focus goes back a column.
     var onEscape: (() -> Void)?
     /// Keyboard focus belongs in the reader; its view takes it.
@@ -279,6 +282,7 @@ struct ReaderPane: View {
                     gestures: covered ? EdgeGestures() : gestures,
                     onStep: neighbors.map { neighbors in { neighbors.go($0) } },
                     onEscape: escape,
+                    onLeft: leftLeaves ? escape : nil,
                     focused: focused && !covered,
                     onFocus: onFocus,
                     appearance: appearance.nsAppearance,

@@ -38,6 +38,8 @@ struct ArticleTextView: NSViewRepresentable {
     /// Cmd+Left and Cmd+Right.
     var onStep: ((Direction) -> Void)?
     var onEscape: (() -> Void)?
+    /// Left, where it leads back a column instead of up a page.
+    var onLeft: (() -> Void)?
     /// Keyboard focus belongs in the text; it takes it when this turns on,
     /// or when it appears with it on.
     var focused = false
@@ -110,6 +112,7 @@ struct ArticleTextView: NSViewRepresentable {
         scroll.verticalScrollElasticity = gestures.pullTarget != nil ? .none : .automatic
         textView.onStep = onStep
         textView.onEscape = onEscape
+        textView.onLeft = onLeft
         textView.onFocus = onFocus
         textView.wantsFocus = focused
         textView.codeLanguages = codeLanguages
@@ -586,6 +589,7 @@ final class ReaderTextView: NSTextView {
     weak var tracker: EdgeGestureTracker?
     var onStep: ((Direction) -> Void)?
     var onEscape: (() -> Void)?
+    var onLeft: (() -> Void)?
     var onFocus: (() -> Void)?
     var codeLanguages: [String] = []
     var onCodeLanguage: ((CodeBlockMark, String?) -> Void)?
@@ -775,6 +779,9 @@ final class ReaderTextView: NSTextView {
         if modifiers == .command, key == .leftArrow || key == .rightArrow, let onStep {
             tracker?.cancel()
             onStep(key == .leftArrow ? .previous : .next)
+        } else if modifiers.isEmpty, key == .leftArrow, let onLeft {
+            tracker?.cancel()
+            onLeft()
         } else if modifiers.isEmpty, key == .downArrow || key == .rightArrow {
             if scroll.atBottom {
                 tracker?.hold(.next, key: event.keyCode)

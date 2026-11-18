@@ -21,6 +21,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Continue Reading can show everything, only subscription articles, or only what is in the collection, with a switch under the list in Three-Pane and under the shelf in the Library. The Library's Continue Reading also shelves the subscriptions that have part-read articles.
 - Mark as Read in more places: a button beside the star over the article, Reader → Mark as Read (⇧⌘U) and Mark All as Read… (⇧⌘K) in the menu bar, Mark All as Read… on a subscription or folder in the sidebar and on a subscription on the Library's shelf, and Mark as Read on books, chapters, saved pages and PDFs.
 - Continue Reading: an article read to its end shows a check where its progress was, and stays listed until the list is opened again.
+- The row the keys are at carries a bar in the accent colour at its start: the folder or subscription chosen while the keys are in the sidebar, the article or entry while they are in the list or the text, the chapter in a book’s contents. It follows clicks as well as keys.
+- Three-Pane by keyboard: Right goes on a column and Left back one, as Return and Esc do. Return or Right in the sidebar goes to the list and opens its first row, unless one of its rows is open already. Left on a subscription goes to its folder. Space folds the folder chosen, and unfolds it.
+- Gallery by keyboard: Up and Down choose in the sidebar, Return or Right goes to the pictures, the arrows move among them, Space or Return opens the one framed and Esc closes it; Esc again, or Left from the start of a row, goes back to the sidebar.
+- Switching between Three-Pane, Library and Gallery puts the keys in the first column, at what is chosen there; in the Library with a book carried over from another mode, in its contents.
 
 ### Changed
 
@@ -53,6 +57,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The sidebars of Three-Pane and the Library follow each other. A folder, a kind of the collection, Saved or Continue Reading chosen in one is what the other shows when switched to; a subscription chosen in Three-Pane is the one picked on the Library's shelf, and a subscription opened in the Library is the list Three-Pane shows. Unread, Starred and tags, which the Library has no shelf for, leave its shelf as it was.
 - Three-Pane keeps what its sidebar had chosen when coming back from another mode, instead of starting at All Articles, and scrolls the sidebar to it.
 - Going back to the Library's shelf closes the book: switching mode after that no longer brings its last article back.
+- Three-Pane: a folder’s arrow stands in its row beside the folder icon, not at the sidebar’s edge, and a folder folds with the same slide whether its arrow is clicked or Space pressed. Left and Right no longer fold folders.
+- Three-Pane: Left in an article goes back to the list instead of up a page; Up still scrolls. The Library’s reader keeps Left and Right for paging.
 
 ### Removed
 
