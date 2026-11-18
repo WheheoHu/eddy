@@ -77,6 +77,18 @@ To try the app without touching your real library, point it at a scratch data di
 open --env EDDY_DATA_DIR=$PWD/build/app-test apple/DerivedData/Build/Products/Debug/Eddy.app
 ```
 
+### Windows (Rust core and CLI)
+
+The macOS app is Apple-only, but the Rust core and the headless CLI build on Windows (MSVC toolchain, from a Visual Studio developer shell). `fetch-pdfium.sh` is a bash script, so run it from Git Bash or another shell with `curl`, `unzip` and `shasum`; the cargo commands work from either shell:
+
+```sh
+scripts/fetch-pdfium.sh windows   # downloads the Windows pdfium build into build/
+cargo build -p eddy-cli
+cargo run -p eddy-cli -- save https://example.com/article
+```
+
+On Windows pdfium is a shared library: copy `build/pdfium/windows/release/lib/x64/pdfium.dll` next to the built exe (`target/debug/`). `eddy-pdf` loads it from there by full path; the import library in the archive is not needed. Debug builds and tests also fall back to the unpacked copy under `build/`, so `cargo test -p eddy-pdf` works without the copy; release binaries only ever load the DLL next to the exe.
+
 ### Chrome extension
 
 Open `chrome://extensions`, turn on Developer mode and load the `extensions/chrome/` folder unpacked. Then click **Connect Chrome** in Eddy's settings.

@@ -204,9 +204,65 @@ fn pdfium() -> Option<&'static Pdfium> {
     static PDFIUM: OnceLock<Option<Pdfium>> = OnceLock::new();
     PDFIUM
         .get_or_init(|| {
-            Pdfium::bind_to_statically_linked_library()
-                .ok()
-                .map(Pdfium::new)
+            #[cfg(target_vendor = "apple")]
+            {
+                // Linked against the static pdfium from fetch-pdfium.sh.
+                Some(Pdfium::new(
+                    Pdfium::bind_to_statically_linked_library().ok()?,
+                ))
+            }
+            #[cfg(not(target_vendor = "apple"))]
+            {
+                // Shared pdfium, bound by full path so the default DLL
+                // search order (which includes the working directory) is
+                // never used. Installed apps ship the DLL next to the exe.
+                let name = Pdfium::pdfium_platform_library_name();
+                let exe_dir = std::env::current_exe()
+                    .ok()
+                    .and_then(|exe| exe.parent().map(|p| p.to_path_buf()));
+                // Dev builds and tests (whose binaries sit in
+                // target/<profile>/deps) also try the unpacked
+                // fetch-pdfium.sh output. Release binaries never do: the
+                // build machine's layout must not end up in anything that
+                // gets distributed.
+                #[cfg(all(debug_assertions, windows))]
+                let from_fetch = {
+                    #[cfg(target_arch = "aarch64")]
+                    let arch = "arm64";
+                    #[cfg(not(target_arch = "aarch64"))]
+                    let arch = "x64";
+                    // crates/eddy-pdf → crates → workspace root.
+                    Some(
+                        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                            .join("..")
+                            .join("..")
+                            .join("build")
+                            .join("pdfium")
+                            .join("windows")
+                            .join("release")
+                            .join("lib")
+                            .join(arch)
+                            .join(&name),
+                    )
+                };
+                #[cfg(not(all(debug_assertions, windows)))]
+                let from_fetch: Option<std::path::PathBuf> = None;
+                let candidates = exe_dir
+                    .into_iter()
+                    .map(|dir| dir.join(&name))
+                    .chain(from_fetch);
+                let mut errors = Vec::new();
+                for candidate in candidates {
+                    match Pdfium::bind_to_library(&candidate) {
+                        Ok(bindings) => return Some(Pdfium::new(bindings)),
+                        Err(e) => errors.push(format!("{}: {e}", candidate.display())),
+                    }
+                }
+                // A missing DLL is the likely setup mistake; say so once
+                // instead of failing every import silently.
+                eprintln!("eddy-pdf: pdfium failed to load: {}", errors.join("; "));
+                None
+            }
         })
         .as_ref()
 }
