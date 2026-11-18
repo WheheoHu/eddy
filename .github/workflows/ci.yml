@@ -33,8 +33,9 @@ jobs:
       - run: cargo fmt --all --check
 
   core:
-    # The whole workspace only builds on macOS: eddy-pdf links the static
-    # pdfium that scripts/fetch-pdfium.sh downloads for it.
+    # The whole workspace builds on macOS: eddy-pdf links the static pdfium
+    # that scripts/fetch-pdfium.sh downloads for it. eddy-ffi and the Apple
+    # app exist only there.
     name: Lint and test (macOS, whole workspace)
     runs-on: macos-15
     steps:
@@ -49,6 +50,34 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked
       - name: Test
         run: cargo test --workspace --locked
+
+  windows:
+    # What of the core a Windows machine can build and run: the engine and
+    # the headless CLI (the Mac app is Apple-only). pdfium is a DLL loaded
+    # from next to the executable, so fetching it is enough for tests.
+    name: Test (Windows, core and CLI)
+    runs-on: windows-latest
+    env:
+      # The core job owns linting; a second MSVC toolchain's extra warnings
+      # would only add noise here.
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Fetch pdfium
+        shell: bash
+        run: scripts/fetch-pdfium.sh windows
+      - name: Test
+        shell: bash
+        run: cargo test --locked -p eddy-core -p eddy-store -p eddy-pdf
+      - name: Build CLI
+        run: cargo build --locked -p eddy-cli
+      # The core job owns linting the whole workspace on macOS, but the code
+      # compiled only on Windows would otherwise never be linted.
+      - name: Clippy (Windows-only crates)
+        shell: bash
+        run: cargo clippy --locked -p eddy-cli -p eddy-pdf --all-targets -- -D warnings
 
   server:
     # The server ships as a Linux image, so what it is made of is also

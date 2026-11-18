@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "tools/*"]
+members = ["crates/*", "tools/*", "windows/eddy-win/src-tauri"]
 
 [workspace.package]
 version = "0.2.0"

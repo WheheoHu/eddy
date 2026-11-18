@@ -21,8 +21,9 @@ use std::sync::Arc;
 use eddy_core::{Engine, EngineOptions, GalleryScope, ItemFilter, ItemQuery, Platform};
 use eddy_model::{BlockKind, Document};
 
-/// Development-only keychain: secrets in `cli-secrets.json` (mode 0600)
-/// inside the CLI's own data directory.
+/// Development-only keychain: secrets in `cli-secrets.json` inside the CLI's
+/// own data directory. The file is mode 0600 on Unix; on Windows it inherits
+/// the data directory's ACL, which is fine for a development tool.
 struct FileSecrets(PathBuf);
 
 impl FileSecrets {
@@ -34,15 +35,17 @@ impl FileSecrets {
     }
 
     fn save(&self, map: &std::collections::HashMap<String, String>) -> bool {
-        use std::os::unix::fs::OpenOptionsExt;
         let Ok(bytes) = serde_json::to_vec(map) else {
             return false;
         };
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options
             .open(&self.0)
             .and_then(|mut f| std::io::Write::write_all(&mut f, &bytes))
             .is_ok()
