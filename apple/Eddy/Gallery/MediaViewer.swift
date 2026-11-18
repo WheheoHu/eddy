@@ -48,11 +48,10 @@ struct MediaViewer: View {
             Color.black.opacity(0.96).ignoresSafeArea()
             ZStack {
                 // The items before and after wait just out of view and come
-                // in with the drag.
-                if dragOffset != 0 {
-                    if let before = neighbor(-1) { NeighborPreview(entry: entries[before], media: media).offset(y: dragOffset - stageHeight) }
-                    if let after = neighbor(1) { NeighborPreview(entry: entries[after], media: media).offset(y: dragOffset + stageHeight) }
-                }
+                // in with the drag, or with a key: always there, so that one
+                // asked for by a key has a place to slide in from.
+                if let before = neighbor(-1) { NeighborPreview(entry: entries[before], media: media).offset(y: dragOffset - stageHeight) }
+                if let after = neighbor(1) { NeighborPreview(entry: entries[after], media: media).offset(y: dragOffset + stageHeight) }
                 MediaStage(entry: entry, media: media, playback: playback, muted: $muted, insets: EdgeInsets(top: 44, leading: 0, bottom: items.count > 1 ? 96 : 44, trailing: 0))
                     .offset(y: dragOffset)
             }
@@ -91,6 +90,10 @@ struct MediaViewer: View {
         }
         .onChange(of: scrubs, initial: true) { configureScroll() }
         .onChange(of: entries.map(\.id)) { configureScroll() }
+        // What the scroll does is worked out from the item showing: told
+        // again when that changes, or a swipe would still start from the
+        // item before and land back on this one.
+        .onChange(of: current) { configureScroll() }
     }
 
     private var topBar: some View {

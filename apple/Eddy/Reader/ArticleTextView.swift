@@ -38,6 +38,8 @@ struct ArticleTextView: NSViewRepresentable {
     /// Cmd+Left and Cmd+Right.
     var onStep: ((Direction) -> Void)?
     var onEscape: (() -> Void)?
+    /// Left, where it leads back a column instead of up a page.
+    var onLeft: (() -> Void)?
     /// Keyboard focus belongs in the text; it takes it when this turns on,
     /// or when it appears with it on.
     var focused = false
@@ -110,6 +112,7 @@ struct ArticleTextView: NSViewRepresentable {
         scroll.verticalScrollElasticity = gestures.pullTarget != nil ? .none : .automatic
         textView.onStep = onStep
         textView.onEscape = onEscape
+        textView.onLeft = onLeft
         textView.onFocus = onFocus
         textView.wantsFocus = focused
         textView.codeLanguages = codeLanguages
@@ -586,6 +589,7 @@ final class ReaderTextView: NSTextView {
     weak var tracker: EdgeGestureTracker?
     var onStep: ((Direction) -> Void)?
     var onEscape: (() -> Void)?
+    var onLeft: (() -> Void)?
     var onFocus: (() -> Void)?
     var codeLanguages: [String] = []
     var onCodeLanguage: ((CodeBlockMark, String?) -> Void)?
@@ -772,20 +776,26 @@ final class ReaderTextView: NSTextView {
             return
         }
         let page = max(scroll.contentView.bounds.height - lineStep, lineStep)
-        if modifiers == .command, key == .leftArrow || key == .rightArrow, let onStep {
+        // Shift with Left or Right turns to the chapter or article before or
+        // after, the way a swipe that way does in a book; Command does too.
+        if modifiers == .shift || modifiers == .command, key == .leftArrow || key == .rightArrow, let onStep {
             tracker?.cancel()
             onStep(key == .leftArrow ? .previous : .next)
+        } else if modifiers.isEmpty, key == .leftArrow, let onLeft {
+            tracker?.cancel()
+            onLeft()
         } else if modifiers.isEmpty, key == .downArrow || key == .rightArrow {
+            // A page at a time, not a line: the trackpad is for less.
             if scroll.atBottom {
                 tracker?.hold(.next, key: event.keyCode)
             } else {
-                scrollBy(key == .downArrow ? lineStep : page, animated: key == .rightArrow)
+                scrollBy(page, animated: true)
             }
         } else if modifiers.isEmpty, key == .upArrow || key == .leftArrow {
             if scroll.atTop {
                 tracker?.hold(.previous, key: event.keyCode)
             } else {
-                scrollBy(key == .upArrow ? -lineStep : -page, animated: key == .leftArrow)
+                scrollBy(-page, animated: true)
             }
         } else {
             super.keyDown(with: event)

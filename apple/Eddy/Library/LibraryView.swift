@@ -157,6 +157,8 @@ struct LibraryView: View {
     @State private var tableSelection: Set<Book.ID> = []
     @State private var query = ""
     @State private var open: Book?
+    /// The open book was being read in another mode before this one.
+    @State private var openedBySwitch = false
     /// Scrolled back into view when the shelf returns.
     @State private var lastOpened: String?
     @FocusState private var focus: PaneFocus?
@@ -170,7 +172,7 @@ struct LibraryView: View {
     var body: some View {
         Group {
             if let open {
-                LibraryReader(book: open, mode: $mode, dock: dock, close: close)
+                LibraryReader(book: open, mode: $mode, dock: dock, startsInContents: openedBySwitch, close: close)
                     .id(open.id)
             } else {
                 shelf
@@ -180,6 +182,8 @@ struct LibraryView: View {
         .onAppear {
             pickChosenFeed()
             openCurrent()
+            // The keys start in the first column, at what is chosen there.
+            if open == nil { DispatchQueue.main.async { focus = .sidebar } }
         }
         .onChange(of: model.revealed) { _, revealed in
             guard let revealed else { return }
@@ -282,7 +286,7 @@ struct LibraryView: View {
             ScrollView {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: coverWidth, maximum: coverWidth + 32), spacing: coverSpacing, alignment: .top)], alignment: .leading, spacing: 22) {
                     ForEach(books) { book in
-                        BookTile(book: book, selected: focus == .list && selectedBook == book.id)
+                        BookTile(book: book, selected: selectedBook == book.id, active: focus == .list)
                             .onTapGesture {
                                 selectedBook = book.id
                                 show(book)
@@ -462,6 +466,7 @@ struct LibraryView: View {
     /// read there.
     private func show(_ book: Book, mirrored: Bool = true) {
         lastOpened = book.id
+        openedBySwitch = !mirrored
         open = book
         if mirrored, case let .feed(sourceID) = book.kind { model.opened(feed: sourceID) }
     }
@@ -488,7 +493,6 @@ struct LibraryView: View {
         lastOpened = book.id
         selectedBook = book.id
         tableSelection = [book.id]
-        focusShelf = true
     }
 
     /// Back to the shelf, with the book just read selected. Nothing is
@@ -640,7 +644,7 @@ private struct LibrarySidebar: View {
     /// `markAll`: the articles the row stands for, for "Mark All as Read".
     private func row(_ filter: LibraryFilter, _ symbol: String, _ title: Text, _ count: Int = 0, markAll: ArticleList? = nil) -> some View {
         SideRow(symbol: symbol, title: title, count: count, chosen: selection == filter)
-            .flatRow(chosen: selection == filter)
+            .flatRow(chosen: selection == filter, active: focus?.wrappedValue == .sidebar)
             .tag(filter)
             .contextMenu {
                 if let markAll {
@@ -674,8 +678,10 @@ private struct DateCell: View {
 
 private struct BookTile: View {
     let book: Book
-    /// Picked with the keyboard.
+    /// Picked with the keyboard, or the one last open.
     var selected = false
+    /// The keys are with the shelf; else the frame is only a reminder.
+    var active = true
     @State private var hovering = false
 
     var body: some View {
@@ -685,7 +691,7 @@ private struct BookTile: View {
                 .shadow(color: .black.opacity(hovering ? 0.28 : 0.16), radius: hovering ? 9 : 5, y: hovering ? 5 : 3)
                 .overlay {
                     if selected {
-                        RoundedRectangle(cornerRadius: 8).strokeBorder(Color.accentColor, lineWidth: 3).padding(-4)
+                        RoundedRectangle(cornerRadius: 8).strokeBorder(active ? Color.accentColor : Theme.text3, lineWidth: 3).padding(-4)
                     }
                 }
                 .overlay(alignment: .topTrailing) {

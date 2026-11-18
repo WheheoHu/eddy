@@ -238,14 +238,33 @@ extension View {
     /// A row of a flat list: no rule of the system's, and a shade behind it
     /// while it is the one chosen.
     ///
-    /// `lead`: from the shade's edge to the row's content. A list with rows
-    /// that fold leaves room for their arrows itself, so its rows pass 0.
-    func flatRow(chosen: Bool, inset: CGFloat = 10, lead: CGFloat = 8) -> some View {
-        listRowSeparator(.hidden)
-            .listRowInsets(EdgeInsets(top: 0, leading: inset + lead, bottom: 0, trailing: inset + 4))
+    /// `active`: keyboard focus is in the row's column. The row chosen
+    /// there carries a bar in the accent colour at its start, which says
+    /// where the keys go: the sidebar's folder or subscription, or the
+    /// list's article.
+    ///
+    /// `activeEdge`: the side the bar is on. At the end of the row when
+    /// the keys have gone on from this column to the one after it (the
+    /// article being read), so the bar is on the side they went.
+    ///
+    /// `lead`: from the shade's edge to the row's content.
+    func flatRow(chosen: Bool, active: Bool = false, activeEdge: HorizontalEdge = .leading, inset: CGFloat = 10, lead: CGFloat = 8) -> some View {
+        let edge: Edge.Set = activeEdge == .leading ? .leading : .trailing
+        return listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 0, leading: FlatList.gutter + inset + lead, bottom: 0, trailing: inset + 4))
             .listRowBackground(
                 RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
                     .fill(chosen ? Theme.track : Color.clear)
+                    .overlay(alignment: activeEdge == .leading ? .leading : .trailing) {
+                        // Always there, shown or not: a row's views don't
+                        // change kind with its state.
+                        RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                            .fill(Theme.accent)
+                            .frame(width: 3)
+                            .padding(.vertical, 7)
+                            .padding(edge, 2)
+                            .opacity(chosen && active ? 1 : 0)
+                    }
                     .padding(.horizontal, inset)
             )
     }
@@ -257,6 +276,38 @@ extension View {
             .scrollContentBackground(.hidden)
             .environment(\.defaultMinListRowHeight, 30)
             .background(TableTuner())
+    }
+}
+
+enum FlatList {
+    /// Room left at the start of every row. The table behind a list puts a
+    /// row's content 8 points in; with an indentation set for an outline's
+    /// levels it puts it 26 in, and the rows were drawn for that. Nothing
+    /// sets one any more (no list here has levels, and setting one against
+    /// the list's own 0 left rows at either place, by when they were last
+    /// laid out), so the difference is made up here.
+    static let gutter: CGFloat = 18
+}
+
+/// The arrow at the start of a row that folds: it points down while the rows
+/// under it show. Drawn in the row, inside its shade, not by the list at
+/// the column's edge.
+struct FoldArrow: View {
+    let open: Bool
+    let toggle: () -> Void
+
+    static let width: CGFloat = 16
+
+    var body: some View {
+        Image(systemName: "chevron.right")
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(Theme.text2)
+            .rotationEffect(.degrees(open ? 90 : 0))
+            .frame(width: Self.width, height: 34)
+            .contentShape(Rectangle())
+            .onTapGesture(perform: toggle)
+            .accessibilityLabel(open ? Text("Fold") : Text("Unfold"))
+            .accessibilityAddTraits(.isButton)
     }
 }
 
@@ -298,28 +349,158 @@ private struct TableTuner: NSViewRepresentable {
         }
 
         func tune() {
-            // The list is a sibling of this background, a few levels up.
-            var root: NSView? = superview
-            for _ in 0..<4 {
-                guard let current = root else { return }
-                if let table = Self.table(in: current) {
-                    if table.selectionHighlightStyle != .none { table.selectionHighlightStyle = .none }
-                    if table.floatsGroupRows { table.floatsGroupRows = false }
-                    table.backgroundColor = .clear
-                    if let outline = table as? NSOutlineView, outline.indentationPerLevel != 14 { outline.indentationPerLevel = 14 }
-                    table.enclosingScrollView?.drawsBackground = false
-                    return
-                }
-                root = current.superview
-            }
-        }
-
-        private static func table(in view: NSView) -> NSTableView? {
-            if let table = view as? NSTableView { return table }
-            for child in view.subviews {
-                if let found = table(in: child) { return found }
-            }
-            return nil
+            guard let table = nearestTable(to: self) else { return }
+            if table.selectionHighlightStyle != .none { table.selectionHighlightStyle = .none }
+            if table.floatsGroupRows { table.floatsGroupRows = false }
+            table.backgroundColor = .clear
+            table.enclosingScrollView?.drawsBackground = false
         }
     }
+}
+
+/// The table behind a SwiftUI list, for what has to be done to it by hand:
+/// a list's rows come and go without any move of their own, so a folder's
+/// rows are slid into place here (`fold`). Put behind the list with
+/// `tableHandle(_:)`.
+@MainActor
+final class TableHandle {
+    fileprivate(set) weak var table: NSTableView?
+
+    private static let duration: CFTimeInterval = 0.2
+
+    /// A folder at `row` has opened or shut, bringing or taking the `count`
+    /// rows under it: the rows below slide from where they were, and the
+    /// ones that came fade in. Called right after the change is made; it
+    /// plays once the list has taken it up. Only how the rows are drawn
+    /// changes, so rows that miss it are simply in place.
+    func fold(at row: Int, count: Int, opening: Bool) {
+        guard count > 0, let table, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        let before = table.numberOfRows
+        play(table, row: row, count: count, opening: opening, before: before, tries: 4)
+    }
+
+    /// Scrolls a row into view if it isn't all there, by the least it
+    /// takes, with a move. Called right after the row is chosen.
+    func reveal(row: Int) {
+        DispatchQueue.main.async { [weak self] in
+            guard let table = self?.table, row >= 0, row < table.numberOfRows,
+                  let scroll = table.enclosingScrollView
+            else { return }
+            let clip = scroll.contentView
+            let rect = table.rect(ofRow: row), visible = clip.documentVisibleRect
+            guard rect.minY < visible.minY || rect.maxY > visible.maxY else { return }
+            let wanted = rect.minY < visible.minY ? rect.minY : rect.maxY - visible.height
+            let y = max(0, min(wanted, table.frame.height - visible.height)) - scroll.contentInsets.top
+            let origin = NSPoint(x: clip.bounds.minX, y: y)
+            guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+                clip.scroll(to: origin)
+                scroll.reflectScrolledClipView(clip)
+                return
+            }
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.25
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                clip.animator().setBoundsOrigin(origin)
+            } completionHandler: { [weak scroll, weak clip] in
+                MainActor.assumeIsolated {
+                    if let scroll, let clip { scroll.reflectScrolledClipView(clip) }
+                }
+            }
+        }
+    }
+
+    private func play(_ table: NSTableView, row: Int, count: Int, opening: Bool, before: Int, tries: Int) {
+        DispatchQueue.main.async { [weak self, weak table] in
+            guard let self, let table else { return }
+            // The list takes a change up a turn of the run loop or two on.
+            guard table.numberOfRows != before else {
+                if tries > 0 { self.play(table, row: row, count: count, opening: opening, before: before, tries: tries - 1) }
+                return
+            }
+            guard row >= 0, row < table.numberOfRows else { return }
+            let height = table.rect(ofRow: row).height * CGFloat(count)
+            // Down the screen is up the layer's y axis unless the table is flipped.
+            let down: CGFloat = table.isFlipped ? 1 : -1
+            let ease = CAMediaTimingFunction(controlPoints: 0.2, 0.8, 0.2, 1)
+            table.enumerateAvailableRowViews { view, index in
+                guard index > row, let layer = view.layer else { return }
+                let fresh = opening && index <= row + count
+                let slide = CABasicAnimation(keyPath: "transform.translation.y")
+                // The rows under an opening folder were higher up, the ones
+                // under a shutting one lower; the rows that came drop in
+                // from just above.
+                slide.fromValue = (opening ? (fresh ? -8 : -height) : height) * down
+                slide.toValue = 0
+                slide.isAdditive = true
+                slide.duration = Self.duration
+                slide.timingFunction = ease
+                layer.add(slide, forKey: "fold")
+                if fresh {
+                    let fade = CABasicAnimation(keyPath: "opacity")
+                    fade.fromValue = 0
+                    fade.toValue = 1
+                    fade.duration = Self.duration
+                    layer.add(fade, forKey: "foldFade")
+                }
+            }
+        }
+    }
+}
+
+private struct TableReach: NSViewRepresentable {
+    let handle: TableHandle
+
+    func makeNSView(context: Context) -> NSView { Probe(handle: handle) }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        (view as? Probe)?.find()
+    }
+
+    private final class Probe: NSView {
+        let handle: TableHandle
+
+        init(handle: TableHandle) {
+            self.handle = handle
+            super.init(frame: .zero)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { fatalError("not used") }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            DispatchQueue.main.async { [weak self] in self?.find() }
+        }
+
+        func find() {
+            if handle.table == nil { handle.table = nearestTable(to: self) }
+        }
+    }
+}
+
+extension View {
+    /// Gives `handle` the table behind this list.
+    func tableHandle(_ handle: TableHandle) -> some View {
+        background(TableReach(handle: handle))
+    }
+}
+
+/// The table of the list a background view sits behind: a sibling, a few
+/// levels up.
+@MainActor
+private func nearestTable(to view: NSView) -> NSTableView? {
+    func table(in view: NSView) -> NSTableView? {
+        if let table = view as? NSTableView { return table }
+        for child in view.subviews {
+            if let found = table(in: child) { return found }
+        }
+        return nil
+    }
+    var root = view.superview
+    for _ in 0..<4 {
+        guard let current = root else { return nil }
+        if let found = table(in: current) { return found }
+        root = current.superview
+    }
+    return nil
 }

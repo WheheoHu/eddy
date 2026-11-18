@@ -204,6 +204,11 @@ struct GalleryView: View {
     /// have no media drop out of the grid while the viewer is open, and a
     /// position would then name a different item.
     @State private var viewing: String?
+    /// The keys are in the sidebar or with the grid.
+    @FocusState private var focus: PaneFocus?
+    /// The item the arrow keys are at, framed while the keys are with the
+    /// grid; Space or Return opens it.
+    @State private var picked: String?
     /// Lists changed while the viewer was open; reload when it closes so
     /// the items being looked at don't move.
     @State private var stale = false
@@ -245,7 +250,7 @@ struct GalleryView: View {
             gesturesEnabled: !model.overlayVisible && viewing == nil && model.mediaRequest == nil
         ) {
             SidebarColumn(dock: dock, beside: $showSidebar) {
-                GallerySidebar(scopeKey: $scopeKey)
+                GallerySidebar(scopeKey: $scopeKey, focus: $focus, enter: enterGrid)
             }
         } content: {
             VStack(spacing: 0) {
@@ -274,7 +279,11 @@ struct GalleryView: View {
                 }
             }
         }
-        .onAppear(perform: { load() })
+        .onAppear {
+            load()
+            // The keys start in the first column, at the scope chosen.
+            DispatchQueue.main.async { focus = .sidebar }
+        }
         .onDisappear { model.galleryScrolling = false }
         .onChange(of: scopeKey) { load(reset: true) }
         .onChange(of: unreadOnly) { load(reset: true) }
@@ -282,6 +291,13 @@ struct GalleryView: View {
             if viewing == nil { load() } else { stale = true }
         }
         .onChange(of: viewing) { _, now in
+            if let now {
+                // The viewer moves on from item to item: the grid follows.
+                picked = now
+            } else {
+                // The viewer had the keys; they go back to the grid.
+                DispatchQueue.main.async { focus = .list }
+            }
             if now == nil, stale {
                 stale = false
                 load()
@@ -340,6 +356,17 @@ struct GalleryView: View {
                     model.galleryScrolling = gliding || phase != .idle
                 }
                 .onChange(of: rowHeight) { resize(proxy) }
+                .focusable()
+                .focusEffectDisabled()
+                .pane($focus, .list, onReturn: openPicked, onEscape: { focus = .sidebar })
+                .onKeyPress(keys: [.upArrow, .downArrow, .leftArrow, .rightArrow, .space]) { press in
+                    gridKey(press.key, proxy)
+                }
+                // Back from the viewer, which may have gone on to an item
+                // further down.
+                .onChange(of: viewing) { _, now in
+                    if now == nil, let row = place(of: picked)?.row { proxy.scrollTo(rows[row].id) }
+                }
             }
         }
     }
@@ -352,6 +379,79 @@ struct GalleryView: View {
             if bottoms[middle] < offset { low = middle + 1 } else { high = middle }
         }
         return low
+    }
+
+    // MARK: Keys
+
+    /// Return or Right in the sidebar: the keys go to the grid, at the item
+    /// they were at last, or the first of the rows in view.
+    private func enterGrid() {
+        guard !items.isEmpty else { return }
+        if place(of: picked) == nil {
+            let top = rows.indices.contains(position.rowsAbove) ? rows[position.rowsAbove] : rows.first
+            picked = top?.cells.first?.entry.id
+        }
+        focus = .list
+    }
+
+    /// Space or Return on the item picked: the viewer.
+    private func openPicked() {
+        if place(of: picked) != nil { viewing = picked }
+    }
+
+    /// Where an item is in the grid.
+    private func place(of id: String?) -> (row: Int, cell: Int)? {
+        guard let id else { return nil }
+        for (r, row) in rows.enumerated() {
+            if let c = row.cells.firstIndex(where: { $0.entry.id == id }) { return (r, c) }
+        }
+        return nil
+    }
+
+    /// The arrows move through the grid: along a row and on to the next,
+    /// up and down to the item nearest above or below. Left from the start
+    /// of a row goes back to the sidebar.
+    private func gridKey(_ key: KeyEquivalent, _ proxy: ScrollViewProxy) -> KeyPress.Result {
+        if key == .space {
+            openPicked()
+            return .handled
+        }
+        guard let at = place(of: picked) else {
+            enterGrid()
+            return .handled
+        }
+        var to = at
+        switch key {
+        case .leftArrow:
+            guard at.cell > 0 else {
+                focus = .sidebar
+                return .handled
+            }
+            to.cell -= 1
+        case .rightArrow:
+            if at.cell + 1 < rows[at.row].cells.count {
+                to.cell += 1
+            } else if at.row + 1 < rows.count {
+                to = (at.row + 1, 0)
+            }
+        default:
+            let row = at.row + (key == .upArrow ? -1 : 1)
+            guard rows.indices.contains(row) else { return .handled }
+            // The item whose middle is nearest this one's.
+            func middles(_ row: JustifiedRow) -> [CGFloat] {
+                var x: CGFloat = 0
+                return row.cells.map { cell in
+                    defer { x += cell.width + Self.spacing }
+                    return x + cell.width / 2
+                }
+            }
+            let here = middles(rows[at.row])[at.cell]
+            let there = middles(rows[row])
+            to = (row, there.indices.min { abs(there[$0] - here) < abs(there[$1] - here) } ?? 0)
+        }
+        picked = rows[to.row].cells[to.cell].entry.id
+        proxy.scrollTo(rows[to.row].id)
+        return .handled
     }
 
     /// Lays the grid out again. Called when what it depends on changes
@@ -386,7 +486,17 @@ struct GalleryView: View {
             entry: entry, media: media, pixels: pixels,
             read: entry.item.read || scrolledPast.contains(entry.id)
         )
-        .onTapGesture { viewing = entry.id }
+        // The item the keys are at, while they are with the grid.
+        .overlay {
+            Rectangle()
+                .strokeBorder(Theme.accent, lineWidth: 3)
+                .opacity(entry.id == picked && focus == .list ? 1 : 0)
+                .allowsHitTesting(false)
+        }
+        .onTapGesture {
+            picked = entry.id
+            viewing = entry.id
+        }
         .contextMenu { menu(for: entry.item) }
         .accessibilityAddTraits(.isButton)
         .accessibilityLabel(Text(entry.item.title))
@@ -601,6 +711,9 @@ struct MediaBadges: View {
 private struct GallerySidebar: View {
     @Environment(AppModel.self) private var model
     @Binding var scopeKey: String
+    var focus: FocusState<PaneFocus?>.Binding
+    /// Return or Right: on to the grid.
+    let enter: () -> Void
 
     var body: some View {
         List(selection: Binding<String?>(get: { scopeKey }, set: { if let key = $0 { scopeKey = key } })) {
@@ -634,11 +747,16 @@ private struct GallerySidebar: View {
             }
         }
         .flatList()
+        .pane(focus, .sidebar, onReturn: enter)
+        .onKeyPress(.rightArrow) {
+            enter()
+            return .handled
+        }
     }
 
     private func row(_ key: String, _ symbol: String, _ title: Text, _ count: Int = 0) -> some View {
         SideRow(symbol: symbol, title: title, count: count, chosen: scopeKey == key)
-            .flatRow(chosen: scopeKey == key)
+            .flatRow(chosen: scopeKey == key, active: focus.wrappedValue == .sidebar)
             .tag(key)
     }
 }

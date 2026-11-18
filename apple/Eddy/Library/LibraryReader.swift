@@ -9,6 +9,9 @@ struct LibraryReader: View {
     @Binding var mode: AppMode
     /// Whether the window has room for the contents beside the text.
     let dock: ColumnDock
+    /// The book is open because another mode was reading it, not because
+    /// it was just picked: the keys start in the contents column.
+    var startsInContents = false
     let close: () -> Void
 
     @AppStorage("library.contents") private var showContents = true
@@ -52,6 +55,11 @@ struct LibraryReader: View {
         .onAppear {
             chooseStart()
             model.currentList = articleList
+            if startsInContents, contentsShown.wrappedValue {
+                readerFocused = false
+                // Once the column is there to take the keys.
+                DispatchQueue.main.async { focus = .contents }
+            }
         }
         .onDisappear { model.currentList = nil }
         .onChange(of: currentID) { _, new in
@@ -103,12 +111,13 @@ struct LibraryReader: View {
     private var contents: some View {
         if let entry {
             EntryContents(
-                entry: entry, currentItemID: currentID, open: pick, jump: jump,
+                entry: entry, currentItemID: currentID, open: pick, jump: jump, active: focus == .contents || readerFocused,
                 focus: $focus, onReturn: { readerFocused = true }, onEscape: close
             )
         } else {
             FeedContents(
                 title: book.title, items: entries, currentID: currentID, select: pick,
+                active: focus == .contents || readerFocused,
                 focus: $focus, onReturn: { readerFocused = true }, onEscape: close,
                 onMarkAllRead: articleList.map { list in { model.requestMarkAllRead(list) } }
             )
@@ -222,6 +231,8 @@ private struct FeedContents: View {
     let items: [ItemView]
     let currentID: String?
     let select: (String) -> Void
+    /// The keys are with the articles: the one open carries the mark.
+    var active = false
     var focus: FocusState<PaneFocus?>.Binding?
     var onReturn: (() -> Void)?
     var onEscape: (() -> Void)?
@@ -261,7 +272,7 @@ private struct FeedContents: View {
                             Text(item.title).font(.system(size: 13.5, weight: item.read ? .regular : .semibold)).foregroundStyle(item.read ? Theme.text2 : Theme.text1).lineLimit(3)
                         }
                         .padding(.vertical, 6)
-                        .flatRow(chosen: item.id == currentID)
+                        .flatRow(chosen: item.id == currentID, active: active)
                         .tag(item.id)
                         .contextMenu {
                             if !item.isDone {
