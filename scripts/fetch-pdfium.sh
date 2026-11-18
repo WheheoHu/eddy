@@ -38,12 +38,28 @@ fi
 mkdir -p "$ROOT/build/pdfium"
 ZIP="$ROOT/build/pdfium/$PLATFORM-$RELEASE.zip"
 URL="https://github.com/paulocoutinhox/pdfium-lib/releases/download/$RELEASE/$PLATFORM.zip"
-if [[ ! -f "$ZIP" ]] || ! echo "$SHA256  $ZIP" | shasum -a 256 --check --status; then
+
+# macOS has shasum; Git Bash on Windows (GitHub's runners included) only has
+# sha256sum on its PATH. The hash is compared here instead of with --check,
+# which the two tools and their BSD and GNU versions do not agree on.
+checksum_ok() {
+  local actual
+  if command -v shasum >/dev/null 2>&1; then
+    actual="$(shasum -a 256 "$ZIP")"
+  else
+    actual="$(sha256sum "$ZIP")"
+  fi
+  # GNU sha256sum puts a backslash first when it had to escape the file name.
+  actual="${actual#\\}"
+  [[ "${actual%% *}" == "$SHA256" ]]
+}
+
+if [[ ! -f "$ZIP" ]] || ! checksum_ok; then
   echo "downloading $URL"
   curl -fL --retry 3 -o "$ZIP.part" "$URL"
   mv "$ZIP.part" "$ZIP"
 fi
-echo "$SHA256  $ZIP" | shasum -a 256 --check --status || {
+checksum_ok || {
   echo "checksum mismatch for $ZIP" >&2
   rm -f "$ZIP"
   exit 1

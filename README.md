@@ -79,7 +79,7 @@ open --env EDDY_DATA_DIR=$PWD/build/app-test apple/DerivedData/Build/Products/De
 
 ### Windows (Rust core and CLI)
 
-The macOS app is Apple-only, but the Rust core and the headless CLI build on Windows (MSVC toolchain, from a Visual Studio developer shell). `fetch-pdfium.sh` is a bash script, so run it from Git Bash or another shell with `curl`, `unzip` and `shasum`; the cargo commands work from either shell:
+The macOS app is Apple-only, but the Rust core and the headless CLI build on Windows (MSVC toolchain, from a Visual Studio developer shell). `fetch-pdfium.sh` is a bash script, so run it from Git Bash or another shell with `curl`, `unzip` and `sha256sum` (or `shasum`); the cargo commands work from either shell:
 
 ```sh
 scripts/fetch-pdfium.sh windows   # downloads the Windows pdfium build into build/
