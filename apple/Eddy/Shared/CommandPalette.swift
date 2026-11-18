@@ -41,12 +41,10 @@ struct PaletteItem: Identifiable {
 /// finds here. Esc closes it.
 struct CommandPalette: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.openSettings) private var openSettings
     @AppStorage("app.mode") private var mode: AppMode = .threePane
     @AppStorage("reader.appearance") private var appearance: ReaderAppearance = .app
     @AppStorage(ReaderFonts.latinKey) private var latinFont = ReaderFonts.systemSans
     @AppStorage(ReaderFonts.cjkKey) private var cjkFont = ReaderFonts.systemSans
-    @AppStorage("settings.tab") private var settingsTab: SettingsTab = .accounts
     @AppStorage("threePane.contents") private var threePaneContents = false
     @AppStorage("library.contents") private var libraryContents = true
 
@@ -66,7 +64,7 @@ struct CommandPalette: View {
     var body: some View {
         let items = visibleItems
         ZStack(alignment: .top) {
-            Color.black.opacity(0.12)
+            Theme.scrim
                 .ignoresSafeArea()
                 .onTapGesture { close() }
             VStack(spacing: 0) {
@@ -92,12 +90,14 @@ struct CommandPalette: View {
                 }
                 list(items)
             }
-            .frame(width: 580)
-            .background(WindowReader(memory: focusMemory))
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator))
+            .frame(maxWidth: 580)
+            .background(FocusRecorder(memory: focusMemory))
+            .background(Theme.list, in: RoundedRectangle(cornerRadius: Theme.Radius.panel, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.panel, style: .continuous).strokeBorder(Theme.outline))
             .shadow(color: .black.opacity(0.25), radius: 24, y: 10)
             .padding(.top, 70)
+            // Clear of the edges of a narrow window.
+            .padding(.horizontal, 20)
         }
         .onAppear {
             fieldFocused = true
@@ -359,8 +359,7 @@ struct CommandPalette: View {
     private var settingsItems: [PaletteItem] {
         var items = SettingsTab.allCases.map { tab in
             PaletteItem(id: "settings:\(tab.rawValue)", group: .settings, title: String(localized: "Settings: \(String(localized: String.LocalizationValue(tab.rawValue)))"), icon: tab.icon) {
-                settingsTab = tab
-                openSettings()
+                model.showSettings(tab)
             }
         }
         for option in ReaderAppearance.allCases {
@@ -486,9 +485,9 @@ final class FocusMemory {
     weak var responder: NSResponder?
 }
 
-/// Records the window as the palette arrives in it, before its field is
-/// focused.
-private struct WindowReader: NSViewRepresentable {
+/// Records the window as the palette (or a panel) arrives in it, before
+/// anything of its own is focused.
+struct FocusRecorder: NSViewRepresentable {
     let memory: FocusMemory
 
     func makeNSView(context: Context) -> NSView {

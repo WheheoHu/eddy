@@ -29,3 +29,11 @@ Keep the complete navy rounded-square tile and EVERY part of the ivory, medium-b
 Keep a square canvas and the existing transparent padding around the tile, with the tile occupying approximately 82% of the canvas width and centered as it is in the source. All four corners of the full canvas and all space outside the rounded tile must be transparent. The navy tile itself, including its internal negative space, remains fully opaque.
 Crisp clean antialiased tile edges with no gray or white fringe. No new shadows or gradients. No typography, labels, watermark or extra objects. Output one high-resolution RGBA PNG. This is a cutout of the approved art, not a new design.
 ```
+
+## Browser marks
+
+`../Eddy/Assets.xcassets/Browsers/` holds the line drawings shown on "Open in Browser" for the default browser: Chrome, Safari, Firefox, Edge, Arc, Opera and Vivaldi. `Shared/BrowserIcon.swift` picks one by the browser's bundle identifier and falls back to the `globe` symbol.
+
+They are the outline `brand-*` icons of [Tabler Icons](https://github.com/tabler/tabler-icons) (MIT; the license ships in the app as `../Eddy/Licenses/TablerIcons.txt`), changed in three ways: the header comment is removed, `stroke="currentColor"` is `#000` (the image sets render as templates, so only the shape counts), and the stroke is 1.5 instead of 2 to sit beside SF Symbols at toolbar size.
+
+To add a browser, add its SVG as an image set with the same `Contents.json` properties (vector preserved, template rendering) and a line for its bundle identifier in `DefaultBrowser.marks`.

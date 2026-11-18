@@ -188,6 +188,8 @@ struct GalleryView: View {
     @Environment(\.displayScale) private var displayScale
     @AppStorage("app.mode") private var mode: AppMode = .threePane
     @AppStorage("gallery.sidebar") private var showSidebar = true
+    /// Whether the window has room for the sidebar beside the grid.
+    @State private var dock = ColumnDock()
     @AppStorage("gallery.unreadOnly") private var unreadOnly = false
     @AppStorage("gallery.scope") private var scopeKey = "all"
     @AppStorage(GalleryDensity.key) private var rowHeight = GalleryDensity.standard
@@ -238,28 +240,30 @@ struct GalleryView: View {
     private var media: GalleryMedia { model.media }
 
     var body: some View {
-        LeadingColumn(visible: showSidebar, width: 220) {
-            GallerySidebar(scopeKey: $scopeKey)
+        LeadingColumn(
+            dock: dock, beside: $showSidebar, width: PaneTier.sidebarWidth,
+            gesturesEnabled: !model.overlayVisible && viewing == nil && model.mediaRequest == nil
+        ) {
+            SidebarColumn(dock: dock, beside: $showSidebar) {
+                GallerySidebar(scopeKey: $scopeKey)
+            }
         } content: {
-            grid
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
-                    gridWidth = $0
-                    relayout()
+            VStack(spacing: 0) {
+                ContentStrip(dock: dock, beside: $showSidebar) {
+                    Button { unreadOnly.toggle() } label: { Label("Unread Only", systemImage: "circle.inset.filled") }
+                        .buttonStyle(FlatButtonStyle(on: unreadOnly))
+                        .help("Show only media you haven’t opened")
                 }
-        }
-        .toolbar {
-            ColumnToggle(visible: $showSidebar)
-            AddToolbar(model: model)
-            ToolbarItem {
-                Toggle(isOn: $unreadOnly) { Label("Unread Only", systemImage: unreadOnly ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle") }
-                    .help("Show only media you haven’t opened")
-            }
-            ToolbarItem {
-                Button { Task { await model.refresh() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }.disabled(model.busy)
+                ColumnTitle(title: Text("Gallery"), note: loaded ? Text("^[\(items.count) Item](inflect: true)") : nil)
+                grid
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
+                        gridWidth = $0
+                        relayout()
+                    }
             }
         }
-        .toolbar(removing: .title)
+        .docks(dock, model: model)
         .overlay {
             // The viewer gets every loaded item, including ones since found
             // to have no media, and steps over those itself: the list only
@@ -600,44 +604,41 @@ private struct GallerySidebar: View {
 
     var body: some View {
         List(selection: Binding<String?>(get: { scopeKey }, set: { if let key = $0 { scopeKey = key } })) {
-            Section("Gallery") {
-                Label("All Media", systemImage: "photo.on.rectangle.angled")
-                    .tag(GalleryScopeView.all.key)
-                if model.collection.contains(where: { $0.kind == .media }) {
-                    Label("Saved Media", systemImage: "play.rectangle")
-                        .badge(model.galleryUnread(.saved))
-                        .tag(GalleryScopeView.saved.key)
-                }
+            SideHeading(title: "Gallery", first: true)
+            row(GalleryScopeView.all.key, "photo.on.rectangle.angled", Text("All Media"))
+            if model.collection.contains(where: { $0.kind == .media }) {
+                row(GalleryScopeView.saved.key, "play.rectangle", Text("Saved Media"), model.galleryUnread(.saved))
             }
             if !model.galleryFolders.isEmpty {
-                Section("Folders") {
-                    ForEach(model.galleryFolders, id: \.self) { folder in
-                        Label(folder, systemImage: "folder")
-                            .tag(GalleryScopeView.folder(name: folder).key)
-                            .contextMenu {
-                                Button("Remove from Gallery") { model.setGallery(folder: folder, false) }
-                            }
-                    }
+                SideHeading(title: "Folders")
+                ForEach(model.galleryFolders, id: \.self) { folder in
+                    row(GalleryScopeView.folder(name: folder).key, "folder", Text(verbatim: folder))
+                        .contextMenu {
+                            Button("Remove from Gallery") { model.setGallery(folder: folder, false) }
+                        }
                 }
             }
             let feeds = model.galleryFeeds
             if !feeds.isEmpty {
-                Section("Subscriptions") {
-                    ForEach(feeds) { feed in
-                        Label(feed.title, systemImage: "dot.radiowaves.up.forward")
-                            .badge(model.galleryUnread(.source(id: feed.id)))
-                            .tag(GalleryScopeView.source(id: feed.id).key)
-                            .contextMenu {
-                                if feed.gallery {
-                                    Button("Remove from Gallery") { model.setGallery(source: feed, false) }
-                                } else if let folder = feed.category {
-                                    Button("Remove Folder “\(folder)” from Gallery") { model.setGallery(folder: folder, false) }
-                                }
+                SideHeading(title: "Subscriptions")
+                ForEach(feeds) { feed in
+                    row(GalleryScopeView.source(id: feed.id).key, "dot.radiowaves.up.forward", Text(verbatim: feed.title), model.galleryUnread(.source(id: feed.id)))
+                        .contextMenu {
+                            if feed.gallery {
+                                Button("Remove from Gallery") { model.setGallery(source: feed, false) }
+                            } else if let folder = feed.category {
+                                Button("Remove Folder “\(folder)” from Gallery") { model.setGallery(folder: folder, false) }
                             }
-                    }
+                        }
                 }
             }
         }
-        .listStyle(.sidebar)
+        .flatList()
+    }
+
+    private func row(_ key: String, _ symbol: String, _ title: Text, _ count: Int = 0) -> some View {
+        SideRow(symbol: symbol, title: title, count: count, chosen: scopeKey == key)
+            .flatRow(chosen: scopeKey == key)
+            .tag(key)
     }
 }

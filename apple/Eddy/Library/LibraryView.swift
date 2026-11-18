@@ -77,6 +77,18 @@ enum LibraryFilter: Hashable, RawRepresentable {
         }
     }
 
+    /// The name over the shelf.
+    var title: Text {
+        switch self {
+        case .all: Text("Library")
+        case .continueReading: Text("Continue Reading")
+        case .saved: Text("Saved")
+        case let .kind(kind): Text(kind.title)
+        case .subscriptions: Text("All Subscriptions")
+        case let .category(name): Text(verbatim: name)
+        }
+    }
+
     /// Subscriptions have no covers, so they start as a list.
     var defaultLayout: ShelfLayout {
         switch self {
@@ -104,6 +116,8 @@ struct LibraryView: View {
     @AppStorage("library.sort") private var sort: ShelfSort = .updated
     @AppStorage("library.filter") private var filter: LibraryFilter = .all
     @AppStorage("library.sidebar") private var showSidebar = true
+    /// Whether the window has room for the sidebar beside the shelf.
+    @State private var dock = ColumnDock()
     /// Covers or list, per filter.
     @AppStorage("library.layouts") private var layoutsJSON = "{}"
     @AppStorage("library.columns") private var columnsData = Data()
@@ -125,12 +139,13 @@ struct LibraryView: View {
     var body: some View {
         Group {
             if let open {
-                LibraryReader(book: open, mode: $mode, close: close)
+                LibraryReader(book: open, mode: $mode, dock: dock, close: close)
                     .id(open.id)
             } else {
                 shelf
             }
         }
+        .docks(dock, model: model)
         .onAppear(perform: openCurrent)
         .onChange(of: model.revealed) { _, revealed in
             guard let revealed else { return }
@@ -166,11 +181,38 @@ struct LibraryView: View {
     // MARK: Shelf
 
     private var shelf: some View {
-        LeadingColumn(visible: showSidebar, width: 220) {
-            LibrarySidebar(selection: $filter, focus: $focus, onReturn: enterShelf)
+        LeadingColumn(dock: dock, beside: $showSidebar, width: PaneTier.sidebarWidth, gesturesEnabled: !model.overlayVisible) {
+            SidebarColumn(dock: dock, beside: $showSidebar) {
+                LibrarySidebar(selection: $filter, focus: $focus, onReturn: enterShelf)
+            }
         } content: {
             let books = shelfBooks
-            Group {
+            VStack(spacing: 0) {
+                ContentStrip(dock: dock, beside: $showSidebar) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(Theme.text3)
+                        TextField("Filter", text: $query).textFieldStyle(.plain).font(.system(size: 13))
+                    }
+                    .padding(.horizontal, 8)
+                    .frame(minWidth: 70, maxWidth: 170, minHeight: 28, maxHeight: 28)
+                    .background(Theme.track, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    if layout == .covers {
+                        FlatMenu("Sort By", symbol: "arrow.up.arrow.down", help: "Sort order") {
+                            Picker("Sort By", selection: $sort) { ForEach(ShelfSort.allCases) { Text($0.rawValue).tag($0) } }
+                                .pickerStyle(.inline)
+                        }
+                    }
+                    SwitchBar(
+                        selection: layoutBinding,
+                        options: [
+                            .symbol(.covers, "square.grid.2x2", help: String(localized: "Covers")),
+                            .symbol(.list, "list.bullet", help: String(localized: "List")),
+                        ],
+                        segment: 34
+                    )
+                    .padding(.leading, 4)
+                }
+                ColumnTitle(title: filter.title, note: Text("^[\(books.count) Item](inflect: true)"))
                 if layout == .list {
                     table(books)
                 } else {
@@ -187,30 +229,6 @@ struct LibraryView: View {
                 }
             }
         }
-        .searchable(text: $query, placement: .toolbar, prompt: "Filter")
-        .toolbar {
-            ColumnToggle(visible: $showSidebar)
-            AddToolbar(model: model)
-            ToolbarItem {
-                Picker("Layout", selection: layoutBinding) {
-                    Label("Covers", systemImage: "square.grid.2x2").tag(ShelfLayout.covers)
-                    Label("List", systemImage: "list.bullet").tag(ShelfLayout.list)
-                }
-                .pickerStyle(.segmented)
-                .help("Show covers or a list")
-            }
-            if layout == .covers {
-                ToolbarItem {
-                    Picker("Sort By", selection: $sort) { ForEach(ShelfSort.allCases) { Text($0.rawValue).tag($0) } }
-                        .pickerStyle(.menu)
-                        .help("Sort order")
-                }
-            }
-            ToolbarItem {
-                Button { Task { await model.refresh() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }.disabled(model.busy)
-            }
-        }
-        .toolbar(removing: .title)
         .onAppear {
             columns = (try? JSONDecoder().decode(TableColumnCustomization<Book>.self, from: columnsData)) ?? columns
         }
@@ -222,7 +240,7 @@ struct LibraryView: View {
     private func covers(_ books: [Book]) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: Self.coverWidth, maximum: 150), spacing: Self.coverSpacing, alignment: .top)], alignment: .leading, spacing: 22) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: coverWidth, maximum: coverWidth + 32), spacing: coverSpacing, alignment: .top)], alignment: .leading, spacing: 22) {
                     ForEach(books) { book in
                         BookTile(book: book, selected: focus == .list && selectedBook == book.id)
                             .onTapGesture {
@@ -234,8 +252,8 @@ struct LibraryView: View {
                             .accessibilityLabel(Text("\(book.title), \(book.detail)"))
                     }
                 }
-                .padding(Self.shelfPadding)
-                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { gridColumns = Self.columns(in: $0) }
+                .padding(shelfPadding)
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { gridColumns = columns(in: $0) }
             }
             .focusable()
             .focusEffectDisabled()
@@ -250,12 +268,20 @@ struct LibraryView: View {
         }
     }
 
-    private static let coverWidth: CGFloat = 118
-    private static let coverSpacing: CGFloat = 18
-    private static let shelfPadding: CGFloat = 28
+    /// Covers are smaller in a narrow window, so that a screen of the
+    /// shelf still holds a dozen books.
+    private var coverWidth: CGFloat {
+        switch dock.tier {
+        case .narrowest: 96
+        case .narrow: 108
+        default: 118
+        }
+    }
+    private var coverSpacing: CGFloat { dock.tier == .narrowest ? 14 : 18 }
+    private var shelfPadding: CGFloat { dock.tier == .narrowest ? 16 : 28 }
 
     /// How many columns the adaptive grid fits in `width`.
-    private static func columns(in width: CGFloat) -> Int {
+    private func columns(in width: CGFloat) -> Int {
         max(1, Int((width - 2 * shelfPadding + coverSpacing) / (coverWidth + coverSpacing)))
     }
 
@@ -496,39 +522,35 @@ private struct LibrarySidebar: View {
 
     var body: some View {
         List(selection: Binding(get: { selection }, set: { if let new = $0 { selection = new } })) {
-            Section("Library") {
-                Label("All", systemImage: "books.vertical").tag(LibraryFilter.all)
-                Label("Continue Reading", systemImage: "book")
-                    .badge(model.collection.filter(\.inProgress).count)
-                    .tag(LibraryFilter.continueReading)
-                Label("Saved", systemImage: "bookmark").badge(model.collection.count).tag(LibraryFilter.saved)
-            }
+            SideHeading(title: "Library", first: true)
+            row(.all, "books.vertical", Text("All"))
+            row(.continueReading, "book", Text("Continue Reading"), model.collection.filter(\.inProgress).count)
+            row(.saved, "bookmark", Text("Saved"), model.collection.count)
             let kinds = CollectionKindView.all.filter { kind in model.collection.contains { $0.kind == kind } }
             if !kinds.isEmpty {
-                Section("Collection") {
-                    ForEach(kinds) { kind in
-                        Label(kind.title, systemImage: kind.icon)
-                            .badge(model.collection.filter { $0.kind == kind }.count)
-                            .tag(LibraryFilter.kind(kind))
-                    }
+                SideHeading(title: "Collection")
+                ForEach(kinds) { kind in
+                    row(.kind(kind), kind.icon, Text(kind.title), model.collection.filter { $0.kind == kind }.count)
                 }
             }
             if !model.feeds.isEmpty {
-                Section("Subscriptions") {
-                    Label("All Subscriptions", systemImage: "dot.radiowaves.up.forward")
-                        .badge(model.unreadTotal)
-                        .tag(LibraryFilter.subscriptions)
-                    if categories.count > 1 {
-                        ForEach(categories, id: \.self) { category in
-                            Label(category, systemImage: "folder").badge(unread(in: category)).tag(LibraryFilter.category(category))
-                        }
+                SideHeading(title: "Subscriptions")
+                row(.subscriptions, "dot.radiowaves.up.forward", Text("All Subscriptions"), model.unreadTotal)
+                if categories.count > 1 {
+                    ForEach(categories, id: \.self) { category in
+                        row(.category(category), "folder", Text(verbatim: category), unread(in: category))
                     }
                 }
             }
         }
-        .listStyle(.sidebar)
+        .flatList()
         .pane(focus, .sidebar, onReturn: onReturn)
-        .safeAreaInset(edge: .bottom) { StatusFooter() }
+    }
+
+    private func row(_ filter: LibraryFilter, _ symbol: String, _ title: Text, _ count: Int = 0) -> some View {
+        SideRow(symbol: symbol, title: title, count: count, chosen: selection == filter)
+            .flatRow(chosen: selection == filter)
+            .tag(filter)
     }
 
     private var categories: [String] {

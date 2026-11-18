@@ -47,26 +47,12 @@ enum SettingsTab: CaseIterable, Identifiable, RawRepresentable {
         switch self {
         case .accounts: "person.crop.circle"
         case .reading: "textformat"
-        case .saving: "square.and.arrow.down"
+        case .saving: "arrow.down.to.line"
         case .storage: "internaldrive"
         case .translation: "translate"
         case .summaries: "sparkles"
         case .video: "film.stack"
         case .about: "info.circle"
-        }
-    }
-
-    /// Background of the icon tile in the sidebar.
-    var tint: Color {
-        switch self {
-        case .accounts: .blue
-        case .reading: .orange
-        case .saving: .green
-        case .storage: .gray
-        case .translation: .cyan
-        case .summaries: .purple
-        case .video: .indigo
-        case .about: .gray
         }
     }
 
@@ -84,42 +70,90 @@ enum SettingsGroup: String, CaseIterable, Identifiable {
     var tabs: [SettingsTab] { SettingsTab.allCases.filter { $0.group == self } }
 }
 
-/// System Settings style: categories down the left, the chosen page on the
-/// right. A plain list rather than `NavigationSplitView`, which would add a
-/// sidebar toggle there is no use for here.
-struct SettingsView: View {
+/// Settings, as a panel over the window: categories down the left, the
+/// chosen page on the right, and what is behind it dimmed. In a narrow
+/// window the categories become a rail of icons. Esc or a click outside
+/// closes it.
+struct SettingsPanel: View {
+    @Environment(AppModel.self) private var model
     @AppStorage("settings.tab") private var tab: SettingsTab = .accounts
+    @State private var focusMemory = FocusMemory()
 
     var body: some View {
-        HStack(spacing: 0) {
-            List(selection: $tab) {
-                // Room for the window buttons, which sit over the sidebar.
-                Color.clear.frame(height: 28).listRowInsets(EdgeInsets()).listRowBackground(Color.clear)
-                ForEach(SettingsGroup.allCases) { group in
-                    Section(group.rawValue) {
-                        ForEach(group.tabs) { tab in
-                            SettingsSidebarRow(tab: tab).tag(tab)
+        GeometryReader { proxy in
+            let rail = proxy.size.width < 700
+            ZStack {
+                Theme.scrim
+                    .ignoresSafeArea()
+                    .onTapGesture(perform: close)
+                HStack(spacing: 0) {
+                    sidebar(rail: rail)
+                    Hairline(vertical: true)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(LocalizedStringKey(tab.rawValue))
+                            .font(Theme.title())
+                            .foregroundStyle(Theme.text1)
+                            .padding(.horizontal, 28)
+                            .padding(.top, 16)
+                            .padding(.bottom, 10)
+                        detail
+                            .settingsPageStyle()
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .background(Theme.list)
+                }
+                .frame(maxWidth: 820, maxHeight: 600)
+                .background(FocusRecorder(memory: focusMemory))
+                .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.panel, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: Theme.Radius.panel, style: .continuous).strokeBorder(Theme.outline))
+                .shadow(color: .black.opacity(0.28), radius: 30, y: 14)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 24)
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+        }
+        .accessibilityAddTraits(.isModal)
+        // Whatever had focus behind the panel lets go, so Esc and the other
+        // keys come here and not to a list under it.
+        .onAppear {
+            DispatchQueue.main.async { focusMemory.window?.makeFirstResponder(nil) }
+        }
+    }
+
+    private func sidebar(rail: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button(action: close) { Image(systemName: "xmark") }
+                .buttonStyle(FlatButtonStyle())
+                .keyboardShortcut(.cancelAction)
+                .help("Close Settings (Esc)")
+                .accessibilityLabel("Close Settings")
+                .frame(height: 48)
+                .padding(.horizontal, 12)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(SettingsGroup.allCases) { group in
+                        if rail {
+                            if group != SettingsGroup.allCases.first { Hairline().padding(.vertical, 10) }
+                        } else {
+                            Text(LocalizedStringKey(group.rawValue))
+                                .font(Theme.heading)
+                                .foregroundStyle(Theme.text1)
+                                .padding(.horizontal, 10)
+                                .padding(.top, group == SettingsGroup.allCases.first ? 4 : 16)
+                                .padding(.bottom, 6)
+                        }
+                        ForEach(group.tabs) { item in
+                            SettingsSidebarRow(tab: item, chosen: item == tab, rail: rail) { tab = item }
                         }
                     }
                 }
+                .padding(.horizontal, 10)
+                .padding(.bottom, 12)
             }
-            .listStyle(.sidebar)
-            .scrollContentBackground(.hidden)
-            .background(.ultraThinMaterial)
-            .frame(width: 200)
-            // Only the sidebar runs under the (transparent) title bar; the
-            // page keeps its top inset so nothing scrolls out of reach.
-            .ignoresSafeArea()
-            Divider().ignoresSafeArea()
-            detail
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(minWidth: 760, idealWidth: 820, minHeight: 520, idealHeight: 600)
-        // SwiftUI rebuilds the window's title bar from these whenever the
-        // page changes, so they have to say "none" too, not just AppKit.
-        .toolbar(removing: .title)
-        .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
-        .background(SettingsWindowStyler(tab: tab))
+        .frame(width: rail ? 56 : 200)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(Theme.side)
     }
 
     @ViewBuilder private var detail: some View {
@@ -134,64 +168,46 @@ struct SettingsView: View {
         case .about: AboutSettings()
         }
     }
-}
 
-/// Takes the title bar off the settings window: the content runs to the
-/// top, the window buttons float over the sidebar, like System Settings.
-private struct SettingsWindowStyler: NSViewRepresentable {
-    /// Only so a page change reaches `updateNSView`.
-    let tab: SettingsTab
-
-    func makeNSView(context: Context) -> NSView { Probe() }
-
-    func updateNSView(_ view: NSView, context: Context) {
-        DispatchQueue.main.async {
-            if let window = view.window { Probe.style(window) }
+    /// Gives focus back to what had it before the panel came up.
+    private func close() {
+        if let window = focusMemory.window {
+            window.makeFirstResponder((focusMemory.responder as? NSView).flatMap { $0.window === window ? $0 : nil })
         }
-    }
-
-    private final class Probe: NSView {
-        private var observer: Any?
-
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            guard let window else { return }
-            // SwiftUI finishes setting the window up after the view is in
-            // it, and sets the title again on every page change; style it
-            // after that, and again whenever it comes to the front.
-            DispatchQueue.main.async { Self.style(window) }
-            observer = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { note in
-                if let window = note.object as? NSWindow { Self.style(window) }
-            }
-        }
-
-        deinit {
-            if let observer { NotificationCenter.default.removeObserver(observer) }
-        }
-
-        static func style(_ window: NSWindow) {
-            window.titleVisibility = .hidden
-            window.titlebarAppearsTransparent = true
-            window.styleMask.insert(.fullSizeContentView)
-            window.isMovableByWindowBackground = true
-        }
+        model.settingsVisible = false
     }
 }
 
 private struct SettingsSidebarRow: View {
     let tab: SettingsTab
+    let chosen: Bool
+    let rail: Bool
+    let action: () -> Void
+    @State private var hovering = false
 
     var body: some View {
-        Label {
-            Text(tab.rawValue)
-        } icon: {
-            Image(systemName: tab.icon)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.white)
-                .frame(width: 24, height: 24)
-                .background(tab.tint.gradient, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        Button(action: action) {
+            HStack(spacing: 9) {
+                Image(systemName: tab.icon)
+                    .font(.system(size: 14, weight: chosen ? .semibold : .regular))
+                    .frame(width: 20)
+                if !rail {
+                    Text(LocalizedStringKey(tab.rawValue))
+                        .font(.system(size: 14, weight: chosen ? .semibold : .regular))
+                    Spacer(minLength: 0)
+                }
+            }
+            .foregroundStyle(Theme.text1)
+            .padding(.horizontal, rail ? 0 : 10)
+            .frame(maxWidth: .infinity, minHeight: 34)
+            .background(chosen ? Theme.track : hovering ? Theme.hover : Color.clear, in: RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous))
+            .contentShape(Rectangle())
         }
-        .padding(.vertical, 2)
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(rail ? Text(LocalizedStringKey(tab.rawValue)) : Text(""))
+        .accessibilityLabel(Text(LocalizedStringKey(tab.rawValue)))
+        .accessibilityAddTraits(chosen ? .isSelected : [])
     }
 }
 
@@ -225,8 +241,7 @@ private struct AccountsSettings: View {
                 }
                 if serverMode, let status {
                     LabeledContent("Server") {
-                        Label(status.serverOnline ? "Online" : "Offline", systemImage: status.serverOnline ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                            .foregroundStyle(status.serverOnline ? .green : .orange)
+                        StatusValue(text: status.serverOnline ? String(localized: "Online") : String(localized: "Offline"), good: status.serverOnline)
                     }
                     if let server {
                         LabeledContent("Server version", value: server.version.isEmpty ? "Unknown" : server.version)
@@ -262,9 +277,9 @@ private struct AccountsSettings: View {
                 serverFreshRSS
             } else {
                 Section {
-                    TextField("Server address", text: $freshURL, prompt: Text("https://rss.example.com"))
-                    TextField("Username", text: $freshUser)
-                    SecureField("API password", text: $freshPassword)
+                    SettingsField("Server address", text: $freshURL, prompt: Text("https://rss.example.com"))
+                    SettingsField("Username", text: $freshUser)
+                    SettingsField("API password", text: $freshPassword, secure: true)
                     HStack {
                         Button("Connect") { connectFresh() }.disabled(working || freshURL.isEmpty || freshUser.isEmpty || freshPassword.isEmpty)
                         if status?.mode == .standalone {
@@ -294,8 +309,8 @@ private struct AccountsSettings: View {
                     }
                     .disabled(working)
                 } else {
-                    TextField("Address", text: $serverURL)
-                    TextField("Pairing code", text: $pairingCode, prompt: Text("ABCD-EFGH"))
+                    SettingsField("Address", text: $serverURL)
+                    SettingsField("Pairing code", text: $pairingCode, prompt: Text("ABCD-EFGH"))
                     Button("Pair and Sync") { connectServer() }.disabled(working || pairingCode.isEmpty)
                 }
             } header: {
@@ -317,7 +332,6 @@ private struct AccountsSettings: View {
                 Text(note).foregroundStyle(.secondary)
             }
         }
-        .formStyle(.grouped)
         .task(id: status?.mode) { await loadServer() }
         .confirmationDialog("Sign out and erase everything Eddy keeps on this Mac?", isPresented: $confirmingSignOut) {
             Button("Sign Out and Erase", role: .destructive) { signOut(discardUnsent: false) }
@@ -397,10 +411,10 @@ private struct AccountsSettings: View {
                 }
             } else {
                 if onServer == nil {
-                    TextField("Server address", text: $freshURL, prompt: Text("https://rss.example.com"))
-                    TextField("Username", text: $freshUser)
+                    SettingsField("Server address", text: $freshURL, prompt: Text("https://rss.example.com"))
+                    SettingsField("Username", text: $freshUser)
                 }
-                SecureField("API password", text: $freshPassword)
+                SettingsField("API password", text: $freshPassword, secure: true)
                 Button(onServer == nil ? "Connect" : "Use While Offline") { connectFreshInServerMode() }
                     .disabled(working || freshPassword.isEmpty || (onServer == nil && (freshURL.isEmpty || freshUser.isEmpty)))
             }
@@ -570,7 +584,6 @@ private struct AboutSettings: View {
                 }
             }
         }
-        .formStyle(.grouped)
     }
 }
 
@@ -599,7 +612,7 @@ private struct WebSignInSection: View {
         Section {
             ForEach(SignInSite.all) { site in
                 HStack {
-                    Text(site.name)
+                    Text(site.name).fontWeight(.medium)
                     Spacer()
                     if signedIn.contains(site.id) {
                         Text("Signed in").foregroundStyle(.secondary)
@@ -752,16 +765,18 @@ private struct FullTextRuleRow: View {
                 }
             }
             .labelsHidden()
-            Picker("", selection: Binding(get: { rule.mode }, set: { rule = FullTextRuleView(scope: rule.scope, mode: $0) })) {
-                ForEach(FullTextModeView.allCases, id: \.self) { Text($0.title).tag($0) }
-            }
-            .labelsHidden()
-            .frame(width: 120)
+            .flatPopup()
+            Spacer(minLength: 8)
+            SwitchBar(
+                selection: Binding(get: { rule.mode }, set: { rule = FullTextRuleView(scope: rule.scope, mode: $0) }),
+                options: [.text(.auto, String(localized: "Automatic")), .text(.always, String(localized: "Always")), .text(.never, String(localized: "Never"))]
+            )
             Button { moveUp?() } label: { Image(systemName: "chevron.up") }
-                .buttonStyle(.borderless).disabled(moveUp == nil).help("Higher priority")
+                .buttonStyle(FlatButtonStyle(size: 26)).disabled(moveUp == nil).help("Higher priority")
             Button { moveDown?() } label: { Image(systemName: "chevron.down") }
-                .buttonStyle(.borderless).disabled(moveDown == nil).help("Lower priority")
-            Button(role: .destructive, action: remove) { Image(systemName: "minus.circle") }.buttonStyle(.borderless)
+                .buttonStyle(FlatButtonStyle(size: 26)).disabled(moveDown == nil).help("Lower priority")
+            Button(role: .destructive, action: remove) { Image(systemName: "minus") }
+                .buttonStyle(FlatButtonStyle(size: 26)).help("Remove")
         }
     }
 
@@ -808,19 +823,23 @@ private struct ReadingSettings: View {
 
     var body: some View {
         Form {
-            Picker("Open in", selection: $mode) {
-                ForEach(AppMode.allCases) { Text($0.rawValue).tag($0) }
+            Section {
+                SettingsChoice("Open in", selection: $mode, options: AppMode.allCases.map { ($0, String(localized: String.LocalizationValue($0.rawValue))) })
+            } footer: {
+                Text("Three-Pane suits browsing subscriptions; Library suits books, tutorials and long reads. Switch any time with ⌘1 and ⌘2.")
             }
-            Text("Three-Pane suits browsing subscriptions; Library suits books, tutorials and long reads. Switch any time with ⌘1 and ⌘2.")
-                .foregroundStyle(.secondary)
             Section("Text") {
-                Slider(value: $fontSize, in: 13...26, step: 1) { Text("Size: \(Int(fontSize)) pt") }
-                Slider(value: $width, in: 520...900, step: 20) { Text("Line width") }
-                Slider(value: $lineHeight, in: 1.2...1.9, step: 0.05) { Text("Line spacing") }
+                SettingsSlider("Size", value: $fontSize, in: 13...26, step: 1) { "\(Int($0)) pt" }
+                SettingsSlider("Line width", value: $width, in: 520...900, step: 20) { "\(Int($0)) pt" }
+                SettingsSlider("Line spacing", value: $lineHeight, in: 1.2...1.9, step: 0.05) { String(format: "%.2f", $0) }
             }
             Section {
-                ReaderFontPicker(title: "Latin font", selection: $latinFont, families: ReaderFonts.latinFamilies)
-                ReaderFontPicker(title: "Chinese font", selection: $cjkFont, families: ReaderFonts.cjkFamilies)
+                LabeledContent("Latin font") {
+                    ReaderFontPicker(title: "Latin font", selection: $latinFont, families: ReaderFonts.latinFamilies).labelsHidden().flatPopup()
+                }
+                LabeledContent("Chinese font") {
+                    ReaderFontPicker(title: "Chinese font", selection: $cjkFont, families: ReaderFonts.cjkFamilies).labelsHidden().flatPopup()
+                }
                 Toggle("Space between Chinese and Latin text", isOn: $cjkLatinSpacing)
                 Toggle("Justify text", isOn: $justify)
             } header: {
@@ -829,9 +848,7 @@ private struct ReadingSettings: View {
                 Text("Fonts come from the ones installed on this Mac; add more in Font Book. Exported PDFs use the same fonts.").foregroundStyle(.secondary)
             }
             Section {
-                Picker("Content appearance", selection: $appearance) {
-                    ForEach(ReaderAppearance.allCases) { Text($0.rawValue).tag($0) }
-                }
+                SettingsChoice("Content appearance", selection: $appearance, options: ReaderAppearance.allCases.map { ($0, String(localized: String.LocalizationValue($0.rawValue))) })
             } footer: {
                 Text("Articles, pages and PDFs can stay light or dark whatever the rest of Eddy uses.").foregroundStyle(.secondary)
             }
@@ -843,7 +860,6 @@ private struct ReadingSettings: View {
                 Text("Links in articles and web pages slide in beside the reader, where you can save them. Swipe right or press Esc to go back; ⌘-click opens a link in your browser.").foregroundStyle(.secondary)
             }
         }
-        .formStyle(.grouped)
     }
 }
 
@@ -874,10 +890,11 @@ private struct SavingSettings: View {
                 if let packs, !packs.packs.isEmpty || packs.ftrSites > 0 {
                     ForEach(packs.packs, id: \.name) { pack in
                         HStack {
-                            Text(pack.name)
+                            Text(pack.name).fontWeight(.medium)
                             Spacer()
-                            Text("\(pack.sites) sites").foregroundStyle(.secondary)
-                            Button(role: .destructive) { remove(pack.name) } label: { Image(systemName: "trash") }.buttonStyle(.borderless)
+                            Text("\(pack.sites) sites").foregroundStyle(Theme.text2)
+                            Button(role: .destructive) { remove(pack.name) } label: { Image(systemName: "trash") }
+                                .buttonStyle(FlatButtonStyle(size: 26)).help("Remove")
                         }
                     }
                     if packs.ftrSites > 0 { LabeledContent("Full-Text RSS site files", value: "\(packs.ftrSites)") }
@@ -893,7 +910,6 @@ private struct SavingSettings: View {
             }
             if !note.isEmpty { Text(note).foregroundStyle(.secondary) }
         }
-        .formStyle(.grouped)
         .onAppear { packs = model.engine?.rulePacks() }
         .fileImporter(isPresented: $importing, allowedContentTypes: [UTType(filenameExtension: "toml") ?? .plainText, .plainText], allowsMultipleSelection: true) { result in
             guard case let .success(urls) = result else { return }
@@ -947,22 +963,28 @@ private struct StorageSettings: View {
 
     var body: some View {
         Form {
-            LabeledContent("Offline cache", value: ByteCountFormatter.string(fromByteCount: Int64(usage), countStyle: .file))
-            Picker("Keep up to", selection: $limit) {
-                ForEach([UInt64(1), 2, 5, 10, 20], id: \.self) { gb in Text("\(gb) GB").tag(gb << 30) }
+            Section {
+                LabeledContent("Offline cache", value: ByteCountFormatter.string(fromByteCount: Int64(usage), countStyle: .file))
+                SettingsChoice("Keep up to", selection: $limit, options: [UInt64(1), 2, 5, 10, 20].map { ($0 << 30, "\($0) GB") })
+                    .onChange(of: limit) { _, new in
+                        try? model.engine?.setCacheLimit(bytes: new)
+                        usage = (try? model.engine?.cacheUsage()) ?? usage
+                    }
+            } footer: {
+                Text("Unread, starred, saved and in-progress articles are always kept.")
             }
-            .onChange(of: limit) { _, new in
-                try? model.engine?.setCacheLimit(bytes: new)
-                usage = (try? model.engine?.cacheUsage()) ?? usage
+            Section("Search") {
+                LabeledContent("Search index") {
+                    HStack(spacing: 10) {
+                        if !note.isEmpty { Text(note) }
+                        Button("Rebuild Search Index") {
+                            let n = (try? model.engine?.rebuildSearchIndex()) ?? 0
+                            note = "Indexed \(n) articles."
+                        }
+                    }
+                }
             }
-            Text("Unread, starred, saved and in-progress articles are always kept.").foregroundStyle(.secondary)
-            Button("Rebuild Search Index") {
-                let n = (try? model.engine?.rebuildSearchIndex()) ?? 0
-                note = "Indexed \(n) articles."
-            }
-            if !note.isEmpty { Text(note).foregroundStyle(.secondary) }
         }
-        .formStyle(.grouped)
         .onAppear {
             usage = (try? model.engine?.cacheUsage()) ?? 0
             limit = (try? model.engine?.cacheLimit()) ?? limit

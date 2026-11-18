@@ -120,23 +120,28 @@ struct CollectionRow: View {
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: entry.kind.icon)
-                .foregroundStyle(.secondary)
-                .frame(width: 18)
+                .font(.system(size: 15))
+                .foregroundStyle(Theme.text2)
+                .frame(width: 20)
             VStack(alignment: .leading, spacing: 2) {
-                Text(entry.title).fontWeight(entry.lastReadAt == nil ? .semibold : .regular).lineLimit(2)
+                Text(entry.title)
+                    .font(.system(size: 15, weight: entry.lastReadAt == nil ? .semibold : .regular))
+                    .foregroundStyle(entry.lastReadAt == nil ? Theme.text1 : Theme.text2)
+                    .lineLimit(2)
                 if let byline = entry.byline {
-                    Text(byline).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text(byline).font(.system(size: 12)).foregroundStyle(Theme.text2).lineLimit(1)
                 }
             }
             Spacer(minLength: 8)
-            Text(entry.progressText).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            Text(entry.progressText).font(.system(size: 12)).foregroundStyle(Theme.text3).lineLimit(1)
             if entry.progress >= 0.995 {
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green).accessibilityLabel("Finished")
+                Image(systemName: "checkmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.ok).accessibilityLabel("Finished")
             } else if entry.inProgress {
                 ProgressRing(value: entry.progress, size: 12)
             }
         }
-        .padding(.vertical, 3)
+        .padding(.vertical, 9)
+        .overlay(alignment: .bottom) { Hairline().padding(.leading, 30) }
     }
 }
 
@@ -147,8 +152,8 @@ struct FilterField: View {
 
     var body: some View {
         HStack(spacing: 5) {
-            Image(systemName: "line.3.horizontal.decrease").foregroundStyle(.secondary)
-            TextField(prompt, text: $text).textFieldStyle(.plain)
+            Image(systemName: "line.3.horizontal.decrease").foregroundStyle(Theme.text3)
+            TextField(prompt, text: $text).textFieldStyle(.plain).font(.system(size: 13))
             if !text.isEmpty {
                 Button { text = "" } label: { Image(systemName: "xmark.circle.fill") }
                     .buttonStyle(.plain)
@@ -158,7 +163,8 @@ struct FilterField: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
-        .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary.opacity(0.6)))
+        .frame(minHeight: 28)
+        .background(Theme.track, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 }
 

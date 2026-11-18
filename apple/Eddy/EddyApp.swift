@@ -46,13 +46,20 @@ struct EddyApp: App {
         WindowGroup("Eddy") {
             RootView(mode: mode)
                 .environment(model)
-                .frame(minWidth: 960, minHeight: 620)
+                // Every mode drops or tucks away columns as the window narrows.
+                .frame(minWidth: PaneTier.minWindowWidth, minHeight: 620)
         }
         .handlesExternalEvents(matching: ["*"])
         .defaultSize(width: 1360, height: 860)
-        // One toolbar height whether or not a screen shows a title.
-        .windowToolbarStyle(.unifiedCompact)
+        // Every column carries its own strip of controls; `WindowChrome`
+        // puts the window's buttons in the leading one.
+        .windowStyle(.hiddenTitleBar)
         .commands {
+            // Settings are a panel in the window, not a window of their own.
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") { model.settingsVisible ? (model.settingsVisible = false) : model.showSettings() }
+                    .keyboardShortcut(",", modifiers: .command)
+            }
             CommandGroup(after: .newItem) {
                 Button("Save Page…") { model.savingURL = true }.keyboardShortcut("l", modifiers: .command)
                 Button("Convert Video to Book…") { model.requestVideoConvert() }.keyboardShortcut("L", modifiers: [.command, .shift])
@@ -87,9 +94,6 @@ struct EddyApp: App {
                     .keyboardShortcut("a", modifiers: .option)
             }
         }
-        Settings {
-            SettingsView().environment(model)
-        }
     }
 }
 
@@ -105,7 +109,6 @@ struct RootView: View {
         Group {
             if let error = model.openError {
                 ContentUnavailableView("Eddy Couldn’t Open Its Library", systemImage: "exclamationmark.triangle", description: Text(error))
-                    .toolbar(removing: .title)
             } else {
                 switch mode {
                 case .threePane: ThreePaneView()
@@ -114,7 +117,9 @@ struct RootView: View {
                 }
             }
         }
-        .background(ModeSwitchInstaller())
+        .background(Theme.page)
+        .ignoresSafeArea(.container, edges: .top)
+        .background(WindowChrome())
         .overlay(alignment: .bottom) { MessageBanner() }
         // Links from the browser go to this window, not a new one.
         .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
@@ -127,6 +132,10 @@ struct RootView: View {
                 .id(request.id)
             }
         }
+        .overlay {
+            if model.settingsVisible { SettingsPanel().transition(.opacity) }
+        }
+        .animation(.easeOut(duration: 0.16), value: model.settingsVisible)
         .overlay {
             if model.paletteVisible { CommandPalette() }
         }

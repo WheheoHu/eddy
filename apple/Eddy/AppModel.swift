@@ -145,6 +145,25 @@ final class AppModel {
 
     var paletteVisible = false
 
+    /// A sidebar is in over the content, in a window too narrow to have it
+    /// beside. Kept here so that switching mode, from the switch at the
+    /// sidebar's foot, leaves the sidebar in.
+    var sidebarPulled = false
+
+    /// Settings are a panel over the window.
+    var settingsVisible = false
+
+    /// Something lies over the window's content and takes its keys.
+    var overlayVisible: Bool { paletteVisible || settingsVisible }
+
+    /// Opens Settings, on a page if one is named.
+    func showSettings(_ tab: SettingsTab? = nil) {
+        if let tab { UserDefaults.standard.set(tab.rawValue, forKey: "settings.tab") }
+        paletteVisible = false
+        mediaRequest = nil
+        settingsVisible = true
+    }
+
     /// Translation on or off for the item being read (⌥A).
     func toggleTranslation() {
         guard let id = currentItemID else { return }
@@ -222,6 +241,7 @@ final class AppModel {
     // MARK: Lists
 
     func reload() {
+        itemsCache.removeAll()
         guard let engine else { return }
         status = try? engine.status()
         sources = (try? engine.sources()) ?? []
@@ -242,6 +262,8 @@ final class AppModel {
     /// animation covers them all instead of redrawing every list three times
     /// while it plays.
     func reloadSoon() {
+        // What is listed has changed already; the rest follows shortly.
+        itemsCache.removeAll()
         guard pendingReload == nil else { return }
         pendingReload = Task {
             try? await Task.sleep(for: .milliseconds(350))
@@ -255,10 +277,23 @@ final class AppModel {
     }
 
     /// `keep` stay in an unread-only list after they are read.
+    ///
+    /// The last few answers are kept until something changes (`reload`,
+    /// `reloadSoon`): the views that list articles ask again whenever their
+    /// body runs, which is several times as a swipe between columns ends,
+    /// and each asking is a query and some hundreds of rows across the
+    /// bridge.
     func items(_ filter: ItemFilterView, unreadOnly: Bool = false, keep: [String] = [], limit: UInt32 = 500) -> [ItemView] {
         _ = revision
-        return (try? engine?.items(query: ItemQueryView(filter: filter, unreadOnly: unreadOnly, keep: keep, limit: limit, offset: 0))) ?? []
+        let query = ItemQueryView(filter: filter, unreadOnly: unreadOnly, keep: keep, limit: limit, offset: 0)
+        if let kept = itemsCache[query] { return kept }
+        let rows = (try? engine?.items(query: query)) ?? []
+        if itemsCache.count >= 8 { itemsCache.removeAll() }
+        itemsCache[query] = rows
+        return rows
     }
+
+    @ObservationIgnored private var itemsCache: [ItemQueryView: [ItemView]] = [:]
 
     func item(_ id: String) -> ItemView? {
         _ = revision
@@ -475,6 +510,7 @@ final class AppModel {
     func recordProgress(_ itemID: String, blockID: String, offset: Int, atEnd: Bool) {
         let finishing = atEnd && item(itemID)?.finished == false
         _ = try? engine?.recordProgress(itemId: itemID, blockId: blockID, offset: UInt32(max(0, offset)), atEnd: atEnd, force: false)
+        itemsCache.removeAll()
         if finishing { reloadSoon() }
     }
 
@@ -485,6 +521,7 @@ final class AppModel {
 
     func recordPage(_ itemID: String, page: Int, of count: Int, force: Bool = false) {
         _ = try? engine?.recordPageProgress(itemId: itemID, page: UInt32(max(0, page)), pageCount: UInt32(max(0, count)), force: force)
+        itemsCache.removeAll()
         if force { reloadSoon() }
     }
 

@@ -18,6 +18,9 @@ func claimFocus(_ view: NSView) {
 /// flag for it and the reader's views claim first responder themselves.
 enum PaneFocus: Hashable {
     case sidebar, list, contents
+    /// A column that is out of sight while another view stands in for it
+    /// (three-pane's collapsed sidebar): focus is never sent there.
+    case offstage
 }
 
 extension View {

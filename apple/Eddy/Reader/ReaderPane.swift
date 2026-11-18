@@ -1,6 +1,16 @@
 import EddyKit
 import SwiftUI
 
+/// What a swipe to the right leads back to from the reader: something
+/// that comes in over it, following the fingers.
+struct ReaderBack {
+    /// How far the fingers move before letting go goes back.
+    var commit: CGFloat
+    /// The fingers have moved this far; nil when they let go short of that.
+    var follow: (CGFloat?) -> Void
+    var go: () -> Void
+}
+
 /// One item, read: renderer choice, reading mode, translation, summary,
 /// typography, progress and resume. Used by both app modes.
 struct ReaderPane: View {
@@ -26,6 +36,15 @@ struct ReaderPane: View {
     var focused = false
     /// The reader's view took focus, by a click or by `focused`.
     var onFocus: (() -> Void)?
+    /// What lies behind the reader, for a swipe to the right where the
+    /// reader has nothing of its own that way; nil where nothing does.
+    var onBack: ReaderBack?
+    /// The reader's strip leads the window: it leaves room for the window's
+    /// buttons.
+    var stripLeads = false
+    /// What comes first in the reader's strip: the way back, or the button
+    /// that closes what is open.
+    var stripLeading: AnyView?
 
     @State private var document: DocumentView?
     @State private var pdfURL: URL?
@@ -84,6 +103,7 @@ struct ReaderPane: View {
     @AppStorage("reader.appearance") private var appearance: ReaderAppearance = .app
     @AppStorage("viewer.muted") private var muted = true
     @Environment(\.colorScheme) private var appScheme
+    @Environment(\.openURL) private var openURL
 
     private var style: ReaderStyle {
         ReaderStyle(fontSize: fontSize, fonts: ReaderFonts(latin: latinFont, cjk: cjkFont, spacing: cjkLatinSpacing), justify: justify, lineHeight: lineHeight, maxWidth: width)
@@ -103,35 +123,9 @@ struct ReaderPane: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            if showSummary {
-                SummaryPanel(
-                    id: itemID,
-                    maxHeight: paneHeight * 0.4,
-                    cached: { (try? model.engine?.cachedSummary(itemId: itemID)) ?? nil },
-                    summarize: { try await model.engine?.summarize(itemId: itemID, force: false) },
-                    close: { toggleSummary(false) }
-                )
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                Divider()
-            }
-            ZStack {
-                content
-                    .overlay(alignment: .top) { banners }
-                    .offset(x: covered ? -paneWidth : 0)
-                    .allowsHitTesting(!covered)
-                    .accessibilityHidden(covered)
-                ForEach(Array(links.enumerated()), id: \.element.id) { index, page in
-                    linkedPage(page, onTop: index == links.count - 1)
-                }
-            }
+            strip
+            pane
         }
-        .clipped()
-        .environment(\.colorScheme, scheme)
-        .onGeometryChange(for: CGSize.self) { $0.size } action: {
-            paneHeight = $0.height
-            paneWidth = $0.width
-        }
-        .toolbar { toolbar }
         .task(id: itemID) { await load() }
         .onDisappear(perform: flush)
         .onChange(of: model.readerCommand) { _, request in
@@ -181,6 +175,40 @@ struct ReaderPane: View {
             } else if let pages = document?.pages, pages.indices.contains(target.page) {
                 scrollTarget = ScrollTarget(blockID: pages[target.page])
             }
+        }
+    }
+
+    /// The text (or page, or media) and what shows over it, in the
+    /// content's own appearance; the strip above keeps the app's.
+    private var pane: some View {
+        VStack(spacing: 0) {
+            if showSummary {
+                SummaryPanel(
+                    id: itemID,
+                    maxHeight: paneHeight * 0.4,
+                    cached: { (try? model.engine?.cachedSummary(itemId: itemID)) ?? nil },
+                    summarize: { try await model.engine?.summarize(itemId: itemID, force: false) },
+                    close: { toggleSummary(false) }
+                )
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                Divider()
+            }
+            ZStack {
+                content
+                    .overlay(alignment: .top) { banners }
+                    .offset(x: covered ? -paneWidth : 0)
+                    .allowsHitTesting(!covered)
+                    .accessibilityHidden(covered)
+                ForEach(Array(links.enumerated()), id: \.element.id) { index, page in
+                    linkedPage(page, onTop: index == links.count - 1)
+                }
+            }
+        }
+        .clipped()
+        .environment(\.colorScheme, scheme)
+        .onGeometryChange(for: CGSize.self) { $0.size } action: {
+            paneHeight = $0.height
+            paneWidth = $0.width
         }
     }
 
@@ -429,105 +457,160 @@ struct ReaderPane: View {
         .padding(.top, 10)
     }
 
-    @ToolbarContentBuilder
-    private var toolbar: some ToolbarContent {
-        ToolbarItemGroup {
-            if let showContents {
-                Button { withAnimation(.easeInOut(duration: 0.2)) { showContents.wrappedValue.toggle() } } label: {
-                    Label("Contents", systemImage: "sidebar.left")
-                }
-                .help(showContents.wrappedValue ? "Hide contents" : "Show contents")
+    /// The reader's controls, along its top. Where they don't all fit, the
+    /// ones used least go into a menu.
+    ///
+    /// Which set shows goes by the reader's width, not by `ViewThatFits`:
+    /// that builds every candidate afresh to measure it whenever layout
+    /// runs, pop-up buttons and all, and layout runs with every frame of a
+    /// column sliding past.
+    private var strip: some View {
+        VStack(spacing: 0) {
+            ColumnStrip(leads: stripLeads) {
+                if let stripLeading { stripLeading }
+            } trailing: {
+                // The same set whether or not the strip leads the window:
+                // going to the reader and back must not rebuild it.
+                HStack(spacing: 4) { controls(compact: paneWidth < 620) }
+                    .popover(isPresented: $showType, arrowEdge: .bottom) { typography }
             }
-            if let page = links.last {
-                Button(action: closeLink) { Label("Back", systemImage: "chevron.left") }
-                    .help("Back (Esc)")
+            Hairline()
+        }
+        .background(Theme.page)
+    }
+
+    @ViewBuilder
+    private func controls(compact: Bool) -> some View {
+        if let showContents {
+            Button { withAnimation(.easeInOut(duration: 0.2)) { showContents.wrappedValue.toggle() } } label: {
+                Label("Contents", systemImage: "list.bullet.indent")
+            }
+            .buttonStyle(FlatButtonStyle(on: showContents.wrappedValue))
+            .help(showContents.wrappedValue ? "Hide contents" : "Show contents")
+        }
+        if let page = links.last {
+            Button(action: closeLink) { Label("Back", systemImage: "chevron.left") }
+                .help("Back (Esc)")
+            if !compact {
                 Text(page.title ?? page.address.host() ?? page.address.absoluteString)
+                    .font(.system(size: 13))
                     .lineLimit(1)
                     .truncationMode(.tail)
-                    .frame(maxWidth: 260)
-                    .foregroundStyle(.secondary)
-                Picker("Language", selection: Binding(get: { page.mode }, set: setLinkMode)) {
-                    ForEach(ReadingMode.allCases) { Text($0.rawValue).tag($0) }
+                    .frame(maxWidth: 220)
+                    .foregroundStyle(Theme.text2)
+            }
+            languageMenu(Binding(get: { page.mode }, set: setLinkMode))
+            Button { toggleLinkSummary(!page.showSummary) } label: { Label("Summary", systemImage: "sparkles") }
+                .buttonStyle(FlatButtonStyle(on: page.showSummary))
+                .help(page.showSummary ? "Hide the AI summary" : "AI summary")
+            Button { Task { await model.save(url: page.address.absoluteString) } } label: {
+                Label("Save Page", systemImage: "square.and.arrow.down")
+            }
+            .disabled(model.busy)
+            .help("Save this page to read later")
+            openInBrowser(page.address)
+        } else if let item {
+            let context = RenderContext(item: item, document: document, inGallery: inGallery)
+            let renderers = RendererRegistry.available(for: context)
+            if renderers.count > 1 {
+                SwitchBar(selection: $rendererID, options: renderers.map { .symbol($0.id, $0.icon, help: $0.title) }, segment: 34)
+                    .padding(.horizontal, 4)
+            }
+            if showingMedia {
+                // Nothing to translate, summarize or set type for.
+                Button { muted.toggle() } label: {
+                    Label(muted ? "Unmute" : "Mute", systemImage: muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
                 }
-                .pickerStyle(.menu)
-                .frame(width: 120)
-                .help("Show a translation alongside or instead of the original")
-                Button { toggleLinkSummary(!page.showSummary) } label: { Label("Summary", systemImage: "sparkles") }
-                    .help(page.showSummary ? "Hide the AI summary" : "AI summary")
-                Button { Task { await model.save(url: page.address.absoluteString) } } label: {
-                    Label("Save Page", systemImage: "square.and.arrow.down")
+                .help(muted ? "Unmute (M)" : "Mute (M)")
+                Button { model.play(item) } label: { Label("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") }
+                    .help("Show it over the whole window")
+                if let rawURL = item.url, isVideoUrl(url: rawURL) {
+                    Button {
+                        model.requestVideoConvert(source: rawURL, title: item.title)
+                    } label: {
+                        Label("Convert to Book…", systemImage: "book.pages")
+                    }
+                    .help("Convert this presentation video into an illustrated multi-chapter book")
                 }
-                .disabled(model.busy)
-                .help("Save this page to read later")
-                ShareLink(item: page.address)
-                Link(destination: page.address) { Label("Open in Browser", systemImage: "arrow.up.forward.square") }
-            } else if let item {
-                let context = RenderContext(item: item, document: document, inGallery: inGallery)
-                let renderers = RendererRegistry.available(for: context)
-                if renderers.count > 1 {
-                    Picker("View", selection: $rendererID) {
-                        ForEach(renderers) { Label($0.title, systemImage: $0.icon).tag($0.id) }
+            } else if !compact {
+                languageMenu($mode)
+                Button { toggleSummary(!showSummary) } label: { Label("Summary", systemImage: "sparkles") }
+                    .buttonStyle(FlatButtonStyle(on: showSummary))
+                    .help(showSummary ? "Hide the AI summary" : "AI summary")
+                Button { showType.toggle() } label: { Label("Text Style", systemImage: "textformat.size") }
+                    .buttonStyle(FlatButtonStyle(on: showType))
+                    .help("Text style")
+                if item.kind == .feed {
+                    Button { setFullText(!showingFullText) } label: {
+                        Label("Full Text", systemImage: "doc.text.magnifyingglass")
                     }
-                    .pickerStyle(.segmented)
-                    .help("How to view this item")
+                    .buttonStyle(FlatButtonStyle(on: showingFullText))
+                    .disabled(switchingFullText || document == nil)
+                    .help(showingFullText ? "Showing the full article from the original page; turn off for the feed’s version" : "Show the full article from the original page")
                 }
-                if showingMedia {
-                    // Nothing to translate, summarize or set type for.
-                    Button { muted.toggle() } label: {
-                        Label(muted ? "Unmute" : "Mute", systemImage: muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                    }
-                    .help(muted ? "Unmute (M)" : "Mute (M)")
-                    Button { model.play(item) } label: { Label("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") }
-                        .help("Show it over the whole window")
-                    if let rawURL = item.url, isVideoUrl(url: rawURL) {
-                        Button {
-                            model.requestVideoConvert(source: rawURL, title: item.title)
-                        } label: {
-                            Label("Convert to Book…", systemImage: "book.pages")
-                        }
-                        .help("Convert this presentation video into an illustrated multi-chapter book")
-                    }
-                } else {
+            }
+            Button { model.setStarred(item, !item.starred) } label: {
+                Label(item.starred ? "Unstar" : "Star", systemImage: item.starred ? "star.fill" : "star")
+                    .foregroundStyle(item.starred ? Theme.star : Theme.text1)
+            }
+            .help(item.starred ? "Unstar (S)" : "Star (S)")
+            let exports = !showingMedia && model.canExport(item.id, fromReader: true)
+            if !compact, exports {
+                FlatMenu("Export", symbol: "arrow.down.doc", help: "Export as PDF or EPUB") { exportItems(item) }
+            }
+            if let url = item.url.flatMap(URL.init(string:)) {
+                openInBrowser(url)
+            }
+            if compact, !showingMedia {
+                FlatMenu("More", symbol: "ellipsis", help: "Translation, summary, text style and more") {
                     Picker("Language", selection: $mode) {
                         ForEach(ReadingMode.allCases) { Text($0.rawValue).tag($0) }
                     }
-                    .pickerStyle(.menu)
-                    .frame(width: 120)
-                    .help("Show a translation alongside or instead of the original")
-                    Button { toggleSummary(!showSummary) } label: { Label("Summary", systemImage: "sparkles") }
-                        .help(showSummary ? "Hide the AI summary" : "AI summary")
-                    Button { showType.toggle() } label: { Label("Text Style", systemImage: "textformat.size") }
-                        .popover(isPresented: $showType) { typography }
+                    .pickerStyle(.inline)
+                    Divider()
+                    Toggle("Summary", isOn: Binding(get: { showSummary }, set: toggleSummary))
+                    Button("Text Style…") { showType = true }
                     if item.kind == .feed {
-                        Toggle(isOn: Binding(get: { showingFullText }, set: setFullText)) {
-                            Label("Full Text", systemImage: "doc.text.magnifyingglass")
-                        }
-                        .disabled(switchingFullText || document == nil)
-                        .help(showingFullText ? "Showing the full article from the original page; turn off for the feed’s version" : "Show the full article from the original page")
+                        Toggle("Full Text", isOn: Binding(get: { showingFullText }, set: setFullText))
+                            .disabled(switchingFullText || document == nil)
                     }
-                }
-                Button { model.setStarred(item, !item.starred) } label: {
-                    Label(item.starred ? "Unstar" : "Star", systemImage: item.starred ? "star.fill" : "star")
-                }
-                if !showingMedia, model.canExport(item.id, fromReader: true) {
-                    Menu {
-                        Button("Export as PDF…") {
-                            model.beginExport(targetID: item.id, format: .pdf, fromReader: true, preferredMode: mode)
-                        }
-                        Button("Export as EPUB…") {
-                            model.beginExport(targetID: item.id, format: .epub, fromReader: true, preferredMode: mode)
-                        }
-                    } label: {
-                        Label("Export", systemImage: "arrow.down.doc")
+                    if exports {
+                        Divider()
+                        exportItems(item)
                     }
-                    .help("Export as PDF or EPUB")
-                }
-                if let url = item.url.flatMap(URL.init(string:)) {
-                    ShareLink(item: url)
-                    Link(destination: url) { Label("Open in Browser", systemImage: "arrow.up.forward.square") }
                 }
             }
         }
+    }
+
+    /// Original, both, or the translation alone.
+    private func languageMenu(_ selection: Binding<ReadingMode>) -> some View {
+        FlatMenu("Language", symbol: "translate", help: "Show a translation alongside or instead of the original", on: selection.wrappedValue != .original) {
+            Picker("Language", selection: selection) {
+                ForEach(ReadingMode.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.inline)
+        }
+    }
+
+    @ViewBuilder
+    private func exportItems(_ item: ItemView) -> some View {
+        Button("Export as PDF…") {
+            model.beginExport(targetID: item.id, format: .pdf, fromReader: true, preferredMode: mode)
+        }
+        Button("Export as EPUB…") {
+            model.beginExport(targetID: item.id, format: .epub, fromReader: true, preferredMode: mode)
+        }
+    }
+
+    /// Opens the address in the default browser, under that browser's mark.
+    /// A button, not a `Link`: a link's label takes the accent color, and
+    /// the mark is drawn like the symbols beside it.
+    private func openInBrowser(_ url: URL) -> some View {
+        Button { openURL(url) } label: {
+            Label { Text("Open in Browser") } icon: { BrowserIcon() }
+        }
+        .help("Open in Browser")
     }
 
     private var typography: some View {
@@ -719,29 +802,38 @@ struct ReaderPane: View {
     /// Gestures past the reader's edges: pulls to the chapters or articles
     /// around this one; fingers moving left to the web page and right back
     /// from it. An item without a page (a book's chapter) turns chapters with
-    /// a swipe instead, left for the next one. PDFs don't swipe.
+    /// a swipe instead, left for the next one. PDFs don't swipe. Where
+    /// something lies behind the reader (`onBack`), fingers moving right go
+    /// there once the reader has nothing of its own that way: from the web
+    /// page the first swipe is still back to the text.
     private var gestures: EdgeGestures {
         EdgeGestures(
             pullTarget: neighbors.map { neighbors in { neighbors.target($0) } },
             swipeTarget: { fingers in
+                let back: EdgeTarget = onBack.map { .slide(commit: $0.commit) } ?? .none
                 if rendererID == RendererRegistry.web.id {
-                    return fingers == .right && hasText
-                        ? .item(String(localized: "Reader"), release: String(localized: "Release for the reader")) : .none
+                    guard fingers == .right else { return .none }
+                    return hasText
+                        ? .item(String(localized: "Reader"), release: String(localized: "Release for the reader")) : back
                 }
                 guard rendererID == RendererRegistry.article.id else { return .none }
+                if fingers == .right, onBack != nil { return back }
                 if hasPage {
                     return fingers == .left
                         ? .item(String(localized: "Web Page"), release: String(localized: "Release for the web page")) : .none
                 }
                 return neighbors?.target(fingers == .left ? .next : .previous) ?? .none
             },
+            slide: onBack?.follow,
             commit: { kind in
                 switch kind {
                 case let .pull(direction):
                     neighbors?.go(direction, .vertical)
                 case let .swipe(fingers):
                     if rendererID == RendererRegistry.web.id {
-                        slide(to: RendererRegistry.article.id)
+                        if hasText { slide(to: RendererRegistry.article.id) } else { onBack?.go() }
+                    } else if fingers == .right, let onBack {
+                        onBack.go()
                     } else if hasPage {
                         slide(to: RendererRegistry.web.id)
                     } else {

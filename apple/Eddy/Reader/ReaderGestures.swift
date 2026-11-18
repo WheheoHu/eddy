@@ -14,6 +14,18 @@ enum EdgeTarget: Equatable {
     case end(String)
     /// Letting go opens something; `release` is shown once it would.
     case item(String, release: String)
+    /// Something else follows the fingers (three-pane's columns, coming in
+    /// over the view): the view stays where it is and no capsule shows.
+    /// Letting go acts once the fingers have moved `commit` points.
+    case slide(commit: CGFloat)
+
+    /// Letting go past the threshold does something.
+    var acts: Bool {
+        switch self {
+        case .item, .slide: true
+        case .none, .end: false
+        }
+    }
 }
 
 /// A pull past the top or bottom of the text, or a sideways swipe, in
@@ -29,10 +41,7 @@ struct EdgeGesture: Equatable {
     var progress: Double
     var target: EdgeTarget
 
-    var armed: Bool {
-        if progress >= 1, case .item = target { return true }
-        return false
-    }
+    var armed: Bool { progress >= 1 && target.acts }
 }
 
 /// What a reader view does with gestures past its edges. A nil target
@@ -40,6 +49,9 @@ struct EdgeGesture: Equatable {
 struct EdgeGestures {
     var pullTarget: ((Direction) -> EdgeTarget)?
     var swipeTarget: ((SwipeDirection) -> EdgeTarget)?
+    /// A `.slide` swipe as it moves: how far the fingers have come, in
+    /// points; nil when they let go short of acting, or turn back.
+    var slide: ((CGFloat?) -> Void)?
     var commit: (EdgeGesture.Kind) -> Void = { _ in }
 }
 
@@ -80,6 +92,21 @@ final class EdgeGestureTracker {
     private var holdKey: UInt16?
 
     var active: Bool { gesture != nil }
+
+    /// How many times further sideways than up or down the fingers must
+    /// have gone, when a gesture is told apart, to be a swipe. Over text
+    /// that scrolls both ways a swipe has to be plainly sideways; over a
+    /// list, which only scrolls up and down, less so.
+    var sidewaysRatio: CGFloat = 2
+    /// How far the fingers go before the gesture is told apart: further
+    /// tells it better, and what a view scrolls starts that much later.
+    var decidesAfter: CGFloat = 8
+    /// A gesture taken for a scroll can still turn out a swipe: the fingers
+    /// set off unevenly and then went plainly sideways.
+    var reconsiders = false
+
+    /// A trackpad gesture has begun and it isn't yet clear which way it goes.
+    var undecided: Bool { axis == .undecided && gesture == nil }
 
     /// A gesture is following the fingers somewhere; heavy work waits.
     private(set) static var anyActive = false
@@ -132,7 +159,9 @@ final class EdgeGestureTracker {
             ownsGesture = false
             return false
         }
-        update(Double(distance / Self.threshold), haptic: phased)
+        var threshold = Self.threshold
+        if case let .slide(commit) = gesture?.target { threshold = commit }
+        update(Double(distance / threshold), haptic: phased)
         if !phased { restartIdleTimer() }
         return true
     }
@@ -141,8 +170,10 @@ final class EdgeGestureTracker {
     private func begin(rightward: CGFloat, dy: CGFloat, scroll: NSScrollView?) -> Bool {
         classifyX += rightward
         classifyY += dy
-        if axis == .undecided, abs(classifyX) + abs(classifyY) > 8 {
-            axis = abs(classifyX) > 2 * abs(classifyY) ? .horizontal : .vertical
+        if axis == .undecided, abs(classifyX) + abs(classifyY) > decidesAfter {
+            axis = abs(classifyX) > sidewaysRatio * abs(classifyY) ? .horizontal : .vertical
+        } else if reconsiders, axis == .vertical, abs(classifyX) > 36, abs(classifyX) > 2.5 * abs(classifyY) {
+            axis = .horizontal
         }
         switch axis {
         case .horizontal:
@@ -339,11 +370,24 @@ final class GestureContainer: NSView {
     /// and the display link draws the latest once per frame.
     private var wanted: EdgeGesture?
     private var drawn: EdgeGesture?
+    /// A `.slide` swipe is on.
+    private var sliding = false
     private var link: CADisplayLink?
     /// The capsule is measured only when its wording changes.
     private var indicatorSize: (label: String, size: CGSize)?
 
     private func follow(_ gesture: EdgeGesture?, committed: Bool) {
+        // A slide moves something else: this view only passes it on.
+        if let gesture, case let .slide(commit) = gesture.target {
+            sliding = true
+            tracker.gestures.slide?(CGFloat(gesture.progress) * commit)
+            return
+        }
+        if gesture == nil, sliding {
+            sliding = false
+            if !committed { tracker.gestures.slide?(nil) }
+            return
+        }
         guard let gesture else {
             stopFollowing()
             if committed {
@@ -491,6 +535,7 @@ struct EdgeIndicator: View {
         case .none: ""
         case let .end(message): message
         case let .item(label, release): gesture.armed ? release : label
+        case .slide: ""
         }
     }
 }

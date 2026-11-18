@@ -61,7 +61,6 @@ struct VideoSettingsPage: View {
             stage2Section
             asrSection
         }
-        .formStyle(.grouped)
         .onSubmit {
             commitPendingKeys()
             save()
@@ -100,22 +99,16 @@ struct VideoSettingsPage: View {
         Section {
             LabeledContent("ffmpeg") {
                 if let ver = toolchain?.ffmpegVersion ?? toolchain?.ffmpegPath {
-                    Label(ver, systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    StatusValue(text: ver, good: true)
                 } else {
-                    Label("Not found (install via brew install ffmpeg)", systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
+                    StatusValue(text: String(localized: "Not found (install via brew install ffmpeg)"), good: false)
                 }
             }
             LabeledContent("yt-dlp") {
                 if let ver = toolchain?.ytDlpVersion ?? toolchain?.ytDlpPath {
-                    Label(ver, systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    StatusValue(text: ver, good: true)
                 } else {
-                    Label("Not found (install via brew install yt-dlp)", systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
+                    StatusValue(text: String(localized: "Not found (install via brew install yt-dlp)"), good: false)
                 }
             }
             if model.status?.mode == .server {
@@ -124,9 +117,9 @@ struct VideoSettingsPage: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            TextField("Custom ffmpeg path (optional)", text: $ffmpegPath, prompt: Text("/opt/homebrew/bin/ffmpeg"))
+            SettingsField("Custom ffmpeg path (optional)", text: $ffmpegPath, prompt: Text("/opt/homebrew/bin/ffmpeg"))
                 .focused($focus, equals: .ffmpegPath)
-            TextField("Custom yt-dlp path (optional)", text: $ytDlpPath, prompt: Text("/opt/homebrew/bin/yt-dlp"))
+            SettingsField("Custom yt-dlp path (optional)", text: $ytDlpPath, prompt: Text("/opt/homebrew/bin/yt-dlp"))
                 .focused($focus, equals: .ytDlpPath)
             Button("Re-check Toolchain") {
                 save()
@@ -143,24 +136,24 @@ struct VideoSettingsPage: View {
 
     private var generalSection: some View {
         Section {
-            Picker("Default visual pipeline", selection: $pipeline) {
+            SettingsPicker("Default visual pipeline", selection: $pipeline) {
                 Text("Automatic (Gemini Video if set, else VLM)").tag(VideoPipelineModeView.auto)
                 Text("Gemini Native Video + Local HD Capture").tag(VideoPipelineModeView.geminiTwoStage)
                 Text("Local Scene Detection + VLM").tag(VideoPipelineModeView.localFramesTwoStage)
             }
             .onChange(of: pipeline) { _, _ in save() }
 
-            Picker("Default transcript", selection: $transcriptPolicy) {
+            SettingsPicker("Default transcript", selection: $transcriptPolicy) {
                 Text("Prefer Any Subtitles, Fallback to ASR").tag(TranscriptPolicyView.preferAnySubtitles)
                 Text("Prefer Manual Subtitles Only, Else ASR").tag(TranscriptPolicyView.preferManualSubtitles)
                 Text("Always Run Speech Recognition (ASR)").tag(TranscriptPolicyView.alwaysAsr)
             }
             .onChange(of: transcriptPolicy) { _, _ in save() }
 
-            TextField("Book language (blank uses Summaries language)", text: $targetLanguage, prompt: Text("English / 简体中文"))
+            SettingsField("Book language", text: $targetLanguage, prompt: Text("English / 简体中文"), note: "Blank uses the Summaries language")
                 .focused($focus, equals: .targetLanguage)
 
-            Stepper("Concurrent chapters: \(chapterConcurrency)", value: $chapterConcurrency, in: 1...6)
+            SettingsStepper("Concurrent chapters", value: $chapterConcurrency, in: 1...6)
                 .onChange(of: chapterConcurrency) { _, _ in save() }
         } header: {
             Text("Defaults")
@@ -170,11 +163,11 @@ struct VideoSettingsPage: View {
     private var stage1Section: some View {
         Section {
             protocolPicker($stage1Protocol)
-            TextField("API URL", text: $stage1URL, prompt: Text("https://generativelanguage.googleapis.com/v1beta"))
+            SettingsField("API URL", text: $stage1URL, prompt: Text("https://generativelanguage.googleapis.com/v1beta"), width: 320)
                 .focused($focus, equals: .s1URL)
-            TextField("Model", text: $stage1Model, prompt: Text("gemini-3.8-flash"))
+            SettingsField("Model", text: $stage1Model, prompt: Text("gemini-3.8-flash"), width: 320)
                 .focused($focus, equals: .s1Model)
-            SecureField(hasKey(.stage1) ? "API key (saved in keychain)" : "API key (blank inherits Stage 2 / Summaries key)", text: $stage1Key)
+            SettingsField("API key", text: $stage1Key, prompt: Text(hasKey(.stage1) ? "Saved in keychain" : "Blank inherits Stage 2 / Summaries key"), secure: true)
                 .focused($focus, equals: .s1Key)
                 .onSubmit { saveKey(.stage1, &stage1Key) }
             testRow(testing: testingStage1, note: stage1Note, disabled: stage1Model.isEmpty && stage1URL.isEmpty) {
@@ -191,11 +184,11 @@ struct VideoSettingsPage: View {
     private var vlmSection: some View {
         Section {
             protocolPicker($vlmProtocol)
-            TextField("API URL (blank inherits Stage 2 / Summaries URL)", text: $vlmURL, prompt: Text("https://api.openai.com/v1"))
+            SettingsField("API URL", text: $vlmURL, prompt: Text("https://api.openai.com/v1"), note: "Blank inherits Stage 2 / Summaries URL", width: 320)
                 .focused($focus, equals: .vlmURL)
-            TextField("Model (blank inherits Stage 2 model)", text: $vlmModel, prompt: Text("qwen3-vl-plus / claude-opus-5-5"))
+            SettingsField("Model", text: $vlmModel, prompt: Text("qwen3-vl-plus / claude-opus-5-5"), note: "Blank inherits Stage 2 model", width: 320)
                 .focused($focus, equals: .vlmModel)
-            SecureField(hasKey(.vlm) ? "API key (saved in keychain)" : "API key (blank inherits Stage 2 / Summaries key)", text: $vlmKey)
+            SettingsField("API key", text: $vlmKey, prompt: Text(hasKey(.vlm) ? "Saved in keychain" : "Blank inherits Stage 2 / Summaries key"), secure: true)
                 .focused($focus, equals: .vlmKey)
                 .onSubmit { saveKey(.vlm, &vlmKey) }
             testRow(testing: testingVlm, note: vlmNote, disabled: false) {
@@ -212,11 +205,11 @@ struct VideoSettingsPage: View {
     private var stage2Section: some View {
         Section {
             protocolPicker($stage2Protocol)
-            TextField("API URL (blank inherits Summaries URL)", text: $stage2URL, prompt: Text("https://api.openai.com/v1"))
+            SettingsField("API URL", text: $stage2URL, prompt: Text("https://api.openai.com/v1"), note: "Blank inherits Summaries URL", width: 320)
                 .focused($focus, equals: .s2URL)
-            TextField("Model (blank inherits Summaries model)", text: $stage2Model, prompt: Text("claude-opus-5-5"))
+            SettingsField("Model", text: $stage2Model, prompt: Text("claude-opus-5-5"), note: "Blank inherits Summaries model", width: 320)
                 .focused($focus, equals: .s2Model)
-            SecureField(hasKey(.stage2) ? "API key (saved in keychain)" : "API key (blank inherits Summaries key)", text: $stage2Key)
+            SettingsField("API key", text: $stage2Key, prompt: Text(hasKey(.stage2) ? "Saved in keychain" : "Blank inherits Summaries key"), secure: true)
                 .focused($focus, equals: .s2Key)
                 .onSubmit { saveKey(.stage2, &stage2Key) }
             testRow(testing: testingStage2, note: stage2Note, disabled: false) {
@@ -233,11 +226,11 @@ struct VideoSettingsPage: View {
     private var asrSection: some View {
         Section {
             protocolPicker($asrProtocol)
-            TextField("API URL", text: $asrURL, prompt: Text("https://dashscope.aliyuncs.com/compatible-mode/v1"))
+            SettingsField("API URL", text: $asrURL, prompt: Text("https://dashscope.aliyuncs.com/compatible-mode/v1"), width: 320)
                 .focused($focus, equals: .asrURL)
-            TextField("Model", text: $asrModel, prompt: Text("qwen3-asr-flash"))
+            SettingsField("Model", text: $asrModel, prompt: Text("qwen3-asr-flash"), width: 320)
                 .focused($focus, equals: .asrModel)
-            SecureField(hasKey(.asr) ? "API key (saved in keychain)" : "API key (blank inherits Summaries key)", text: $asrKey)
+            SettingsField("API key", text: $asrKey, prompt: Text(hasKey(.asr) ? "Saved in keychain" : "Blank inherits Summaries key"), secure: true)
                 .focused($focus, equals: .asrKey)
                 .onSubmit { saveKey(.asr, &asrKey) }
             testRow(testing: testingAsr, note: asrNote, disabled: asrModel.isEmpty) {
@@ -252,11 +245,11 @@ struct VideoSettingsPage: View {
     }
 
     private func protocolPicker(_ selection: Binding<VideoProtocolView>) -> some View {
-        Picker("Protocol", selection: selection) {
-            Text("Automatic").tag(VideoProtocolView.auto)
-            Text("OpenAI Compatible (/v1)").tag(VideoProtocolView.openAi)
-            Text("Gemini Native (/v1beta)").tag(VideoProtocolView.gemini)
-        }
+        SettingsChoice("Protocol", selection: selection, options: [
+            (VideoProtocolView.auto, String(localized: "Automatic")),
+            (.openAi, String(localized: "OpenAI Compatible (/v1)")),
+            (.gemini, String(localized: "Gemini Native (/v1beta)")),
+        ])
         .onChange(of: selection.wrappedValue) { _, _ in save() }
     }
 

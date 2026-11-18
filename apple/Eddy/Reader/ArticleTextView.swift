@@ -82,6 +82,9 @@ struct ArticleTextView: NSViewRepresentable {
         scroll.tracker = container.tracker
         textView.tracker = container.tracker
         context.coordinator.attach(scroll: scroll, textView: textView)
+        textView.onReflow = { [weak coordinator = context.coordinator] done in
+            if done { coordinator?.reflowed() } else { coordinator?.willReflow() }
+        }
         return container
     }
 
@@ -199,6 +202,11 @@ struct ArticleTextView: NSViewRepresentable {
             let spot: BuiltArticle.Spot?
             let offset: Int
             let delta: CGFloat
+            /// Where the line starts in the text as it is, and how far into
+            /// the line the view starts: exact for as long as the text
+            /// itself doesn't change.
+            let location: Int
+            let lineDelta: CGFloat
         }
 
         private func holdPosition() -> HeldPosition? {
@@ -214,23 +222,44 @@ struct ArticleTextView: NSViewRepresentable {
             // In the header (title, byline): anchoring to the first block
             // would scroll the header away when the text is rebuilt.
             if let first = article.blocks.first, location < first.range.location {
-                return HeldPosition(spot: nil, offset: 0, delta: top)
+                return HeldPosition(spot: nil, offset: 0, delta: top, location: location, lineDelta: top - lineTop)
             }
             guard let place = article.spot(at: location) else { return nil }
-            return HeldPosition(spot: place.spot, offset: place.offset, delta: top - lineTop)
+            return HeldPosition(spot: place.spot, offset: place.offset, delta: top - lineTop, location: location, lineDelta: top - lineTop)
+        }
+
+        /// The line at the top while the view's width changes: a window
+        /// being resized, or the columns beside the reader coming and going.
+        /// Narrower lines break anew, and the same distance down the text
+        /// would be another place in it.
+        private var heldForReflow: HeldPosition?
+
+        func willReflow() {
+            guard hasShown, heldForReflow == nil else { return }
+            heldForReflow = holdPosition()
+        }
+
+        func reflowed() {
+            guard let held = heldForReflow else { return }
+            heldForReflow = nil
+            restore(held, sameText: true)
         }
 
         /// Puts the held line back where it was, before anything is drawn.
-        private func restore(_ held: HeldPosition, retry: Bool = true) {
+        /// `sameText`: the text is the one the position was held in, only
+        /// laid out anew, so the line is found where it was; a rebuilt text
+        /// is searched for the line's block instead.
+        private func restore(_ held: HeldPosition, sameText: Bool = false, retry: Bool = true) {
             guard let scroll, let textView, let tlm = textView.textLayoutManager, let article else { return }
-            guard let spot = held.spot else {
+            guard sameText || held.spot != nil else {
                 scrollingProgrammatically = true
                 scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, held.delta)))
                 scroll.reflectScrolledClipView(scroll.contentView)
                 DispatchQueue.main.async { [weak self] in self?.scrollingProgrammatically = false }
                 return
             }
-            guard let utf16 = article.location(of: spot, offset: held.offset),
+            let delta = sameText ? held.lineDelta : held.delta
+            guard let utf16 = sameText ? held.location : held.spot.flatMap({ article.location(of: $0, offset: held.offset) }),
                   let location = tlm.location(tlm.documentRange.location, offsetBy: utf16)
             else { return }
             tlm.ensureLayout(for: NSTextRange(location: tlm.documentRange.location, end: location) ?? tlm.documentRange)
@@ -243,7 +272,7 @@ struct ArticleTextView: NSViewRepresentable {
             }) {
                 lineTop += line.typographicBounds.minY
             }
-            let target = max(0, lineTop + held.delta)
+            let target = max(0, lineTop + delta)
             scrollingProgrammatically = true
             scroll.contentView.scroll(to: NSPoint(x: 0, y: target))
             scroll.reflectScrolledClipView(scroll.contentView)
@@ -252,7 +281,7 @@ struct ArticleTextView: NSViewRepresentable {
             let cutShort = retry && abs(scroll.contentView.bounds.minY - target) > 0.5
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                if cutShort { self.restore(held, retry: false) }
+                if cutShort { self.restore(held, sameText: sameText, retry: false) }
                 self.scrollingProgrammatically = false
             }
         }
@@ -635,9 +664,18 @@ final class ReaderTextView: NSTextView {
         return became
     }
 
+    /// The width left for the lines is about to change (false), or has
+    /// (true): they break anew.
+    var onReflow: ((_ done: Bool) -> Void)?
+
     override func setFrameSize(_ newSize: NSSize) {
+        // Wider than the longest line allowed, only the margins change.
+        let lineWidth = { (width: CGFloat) in min(width - 56, self.maxWidth) }
+        let reflows = abs(lineWidth(newSize.width) - lineWidth(frame.width)) > 0.5
+        if reflows { onReflow?(false) }
         super.setFrameSize(newSize)
         updateInsets()
+        if reflows { onReflow?(true) }
     }
 
     func updateInsets() {

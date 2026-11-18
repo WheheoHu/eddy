@@ -7,6 +7,8 @@ struct LibraryReader: View {
     @Environment(AppModel.self) private var model
     let book: Book
     @Binding var mode: AppMode
+    /// Whether the window has room for the contents beside the text.
+    let dock: ColumnDock
     let close: () -> Void
 
     @AppStorage("library.contents") private var showContents = true
@@ -36,20 +38,17 @@ struct LibraryReader: View {
     }
 
     var body: some View {
-        LeadingColumn(visible: showContents, width: 270) {
-            contents
+        LeadingColumn(dock: dock, beside: $showContents, width: 270, gesturesEnabled: !model.overlayVisible) {
+            VStack(spacing: 0) {
+                ColumnStrip(leads: true) { home } trailing: { AddMenu() }
+                contents
+                // The way to another mode without going back to the shelf.
+                StatusFooter()
+                ModeBar()
+            }
         } content: {
             reader
         }
-        .toolbar {
-            ColumnToggle(visible: $showContents)
-            ToolbarItem(placement: .navigation) {
-                Button(action: close) { Label("Home", systemImage: "house") }
-                    .help("Back to the library")
-            }
-            AddToolbar(model: model)
-        }
-        .navigationTitle(book.title)
         .onAppear {
             chooseStart()
             model.currentList = articleList
@@ -70,17 +69,46 @@ struct LibraryReader: View {
 
     // MARK: Contents column
 
+    /// The contents show: beside the text as last left, or pulled in over it.
+    private var contentsShown: Binding<Bool> { dock.shown($showContents, model: model) }
+
+    /// Picking from contents that lie over the text goes to read: they go
+    /// away again.
+    private func pick(_ id: String) {
+        select(id)
+        if dock.over {
+            withAnimation(.easeOut(duration: 0.24)) { model.sidebarPulled = false }
+        }
+    }
+
+    /// A swipe to the right on the text brings the contents in over it.
+    private var readerBack: ReaderBack? {
+        guard dock.over, !contentsShown.wrappedValue else { return nil }
+        return ReaderBack(
+            commit: PaneDrag.commit,
+            follow: { [drag = dock.drag] distance in
+                if let distance { drag.move(to: .sidebar, distance) } else { drag.cancel() }
+            },
+            go: {
+                withAnimation(.easeOut(duration: 0.24)) {
+                    model.sidebarPulled = true
+                    dock.drag.end()
+                }
+            }
+        )
+    }
+
     /// Return reads from here; Esc goes back to the shelf.
     @ViewBuilder
     private var contents: some View {
         if let entry {
             EntryContents(
-                entry: entry, currentItemID: currentID, open: select, jump: jump,
+                entry: entry, currentItemID: currentID, open: pick, jump: jump,
                 focus: $focus, onReturn: { readerFocused = true }, onEscape: close
             )
         } else {
             FeedContents(
-                title: book.title, items: entries, currentID: currentID, select: select,
+                title: book.title, items: entries, currentID: currentID, select: pick,
                 focus: $focus, onReturn: { readerFocused = true }, onEscape: close,
                 onMarkAllRead: articleList.map { list in { model.requestMarkAllRead(list) } }
             )
@@ -97,7 +125,13 @@ struct LibraryReader: View {
     /// the shelf.
     private func leaveReader() {
         readerFocused = false
-        if showContents { focus = .contents } else { close() }
+        if contentsShown.wrappedValue { focus = .contents } else { close() }
+    }
+
+    /// Back to the shelf: first in the strip that leads the window.
+    private var home: some View {
+        Button(action: close) { Label("Library", systemImage: "chevron.left") }
+            .help("Back to the library (Esc)")
     }
 
     @ViewBuilder
@@ -106,18 +140,25 @@ struct LibraryReader: View {
             VStack(spacing: 0) {
                 ReaderPane(
                     itemID: id, scrollTarget: $scrollTarget, pageTarget: pageTarget, openItem: select,
+                    showContents: contentsShown,
                     neighbors: neighbors(of: id), startAtEnd: landAtEnd == id,
-                    onEscape: leaveReader, focused: readerFocused, onFocus: { readerFocused = true }
+                    onEscape: leaveReader, focused: readerFocused, onFocus: { readerFocused = true },
+                    onBack: readerBack,
+                    stripLeads: !contentsShown.wrappedValue, stripLeading: contentsShown.wrappedValue ? nil : AnyView(home)
                 )
                     .id(id)
                     .transition(.push(from: arrival))
                 if entries.count > 1 {
-                    Divider()
+                    Hairline()
                     SequenceBar(title: book.title, items: entries, current: id) { select($0) }
                 }
             }
+            .background(Theme.page)
         } else {
-            ContentUnavailableView("Nothing to Read", systemImage: "book.closed")
+            VStack(spacing: 0) {
+                ColumnStrip(leads: !contentsShown.wrappedValue) { if !contentsShown.wrappedValue { home } } trailing: { EmptyView() }
+                ContentUnavailableView("Nothing to Read", systemImage: "book.closed").frame(maxHeight: .infinity)
+            }
         }
     }
 
@@ -195,7 +236,7 @@ private struct FeedContents: View {
                 FilterField(text: $query, prompt: "Filter Articles")
                 if let onMarkAllRead {
                     Button(action: onMarkAllRead) { Image(systemName: "checkmark.circle") }
-                        .buttonStyle(.borderless)
+                        .buttonStyle(FlatButtonStyle(size: 28))
                         .help("Mark every unread article here as read")
                         .accessibilityLabel("Mark All as Read")
                 }
@@ -203,17 +244,25 @@ private struct FeedContents: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             List(selection: Binding(get: { currentID }, set: { if let id = $0 { select(id) } })) {
-                Section(title) {
+                Text(verbatim: title)
+                    .font(Theme.title(20))
+                    .foregroundStyle(Theme.text1)
+                    .lineLimit(2)
+                    .padding(.vertical, 6)
+                    .flatRow(chosen: false)
+                    .selectionDisabled()
+                Group {
                     ForEach(items.filter { $0.title.matches(filter: query) }) { item in
                         VStack(alignment: .leading, spacing: 3) {
                             HStack(spacing: 6) {
-                                Circle().fill(item.read ? Color.clear : Color.accentColor).frame(width: 6, height: 6)
-                                Text(item.date, format: .relative(presentation: .named)).font(.caption2).foregroundStyle(.secondary)
+                                RoundedRectangle(cornerRadius: 2).fill(item.read ? Color.clear : Theme.accent).frame(width: 6, height: 6)
+                                Text(item.date, format: .relative(presentation: .named)).font(.system(size: 11)).foregroundStyle(Theme.text3)
                                 if item.inProgress { ProgressRing(value: item.progress, size: 10) }
                             }
-                            Text(item.title).font(.callout.weight(item.read ? .regular : .semibold)).lineLimit(3)
+                            Text(item.title).font(.system(size: 13.5, weight: item.read ? .regular : .semibold)).foregroundStyle(item.read ? Theme.text2 : Theme.text1).lineLimit(3)
                         }
-                        .padding(.vertical, 2)
+                        .padding(.vertical, 6)
+                        .flatRow(chosen: item.id == currentID)
                         .tag(item.id)
                         .contextMenu {
                             if item.hasBeenRead {
@@ -231,7 +280,7 @@ private struct FeedContents: View {
                     }
                 }
             }
-            .listStyle(.sidebar)
+            .flatList()
             .pane(focus, .contents, onReturn: onReturn, onEscape: onEscape)
         }
     }

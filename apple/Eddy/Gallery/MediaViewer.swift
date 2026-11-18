@@ -108,15 +108,18 @@ struct MediaViewer: View {
             Button(action: toggleStar) { Image(systemName: starred ? "star.fill" : "star") }
                 .help(starred ? "Unstar (S)" : "Star (S)")
             if let url = entry.item.url.flatMap(URL.init(string:)) {
-                Button { NSWorkspace.shared.open(url) } label: { Image(systemName: "arrow.up.forward.square") }
+                Button { NSWorkspace.shared.open(url) } label: { BrowserIcon() }
                     .help("Open in Browser")
+                    .accessibilityLabel("Open in Browser")
             }
             Button(action: close) { Image(systemName: "xmark") }.help("Close (Esc)")
         }
         .buttonStyle(.borderless)
         .foregroundStyle(.white)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        // Clear of the window's buttons, which sit over its leading end.
+        .padding(.leading, WindowChrome.inset + WindowChrome.buttonsWidth)
+        .padding(.trailing, 14)
+        .frame(height: Theme.strip)
         .background(.black.opacity(0.4))
     }
 
@@ -255,8 +258,6 @@ final class MediaPlayback {
 /// item's media when it isn't known yet.
 struct MediaStage: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.openSettings) private var openSettings
-    @AppStorage("settings.tab") private var settingsTab: SettingsTab = .accounts
     let entry: GalleryEntryView
     let media: GalleryMedia
     let playback: MediaPlayback
@@ -280,8 +281,7 @@ struct MediaStage: View {
             } else if mediaSet?.status == .needsSignIn {
                 message("lock", "This post is only shown to signed-in visitors.") {
                     Button("Sign In…") {
-                        settingsTab = .accounts
-                        openSettings()
+                        model.showSettings(.accounts)
                     }
                     Button("Try Again") { Task { await retry() } }
                 }
