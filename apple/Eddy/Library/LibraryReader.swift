@@ -7,6 +7,8 @@ struct LibraryReader: View {
     @Environment(AppModel.self) private var model
     let book: Book
     @Binding var mode: AppMode
+    /// Whether the window has room for the contents beside the text.
+    let dock: ColumnDock
     let close: () -> Void
 
     @AppStorage("library.contents") private var showContents = true
@@ -36,10 +38,13 @@ struct LibraryReader: View {
     }
 
     var body: some View {
-        LeadingColumn(visible: showContents, width: 270) {
+        LeadingColumn(shown: contentsShown, over: dock.over, width: 270, drag: dock.drag, gesturesEnabled: !model.overlayVisible) {
             VStack(spacing: 0) {
                 ColumnStrip(leads: true) { home } trailing: { AddMenu() }
                 contents
+                // The way to another mode without going back to the shelf.
+                StatusFooter()
+                ModeBar()
             }
         } content: {
             reader
@@ -64,17 +69,46 @@ struct LibraryReader: View {
 
     // MARK: Contents column
 
+    /// The contents show: beside the text as last left, or pulled in over it.
+    private var contentsShown: Binding<Bool> { dock.shown($showContents, model: model) }
+
+    /// Picking from contents that lie over the text goes to read: they go
+    /// away again.
+    private func pick(_ id: String) {
+        select(id)
+        if dock.over {
+            withAnimation(.easeOut(duration: 0.24)) { model.sidebarPulled = false }
+        }
+    }
+
+    /// A swipe to the right on the text brings the contents in over it.
+    private var readerBack: ReaderBack? {
+        guard dock.over, !contentsShown.wrappedValue else { return nil }
+        return ReaderBack(
+            commit: PaneDrag.commit,
+            follow: { [drag = dock.drag] distance in
+                if let distance { drag.move(to: .sidebar, distance) } else { drag.cancel() }
+            },
+            go: {
+                withAnimation(.easeOut(duration: 0.24)) {
+                    model.sidebarPulled = true
+                    dock.drag.end()
+                }
+            }
+        )
+    }
+
     /// Return reads from here; Esc goes back to the shelf.
     @ViewBuilder
     private var contents: some View {
         if let entry {
             EntryContents(
-                entry: entry, currentItemID: currentID, open: select, jump: jump,
+                entry: entry, currentItemID: currentID, open: pick, jump: jump,
                 focus: $focus, onReturn: { readerFocused = true }, onEscape: close
             )
         } else {
             FeedContents(
-                title: book.title, items: entries, currentID: currentID, select: select,
+                title: book.title, items: entries, currentID: currentID, select: pick,
                 focus: $focus, onReturn: { readerFocused = true }, onEscape: close,
                 onMarkAllRead: articleList.map { list in { model.requestMarkAllRead(list) } }
             )
@@ -91,7 +125,7 @@ struct LibraryReader: View {
     /// the shelf.
     private func leaveReader() {
         readerFocused = false
-        if showContents { focus = .contents } else { close() }
+        if contentsShown.wrappedValue { focus = .contents } else { close() }
     }
 
     /// Back to the shelf: first in the strip that leads the window.
@@ -106,10 +140,11 @@ struct LibraryReader: View {
             VStack(spacing: 0) {
                 ReaderPane(
                     itemID: id, scrollTarget: $scrollTarget, pageTarget: pageTarget, openItem: select,
-                    showContents: $showContents,
+                    showContents: contentsShown,
                     neighbors: neighbors(of: id), startAtEnd: landAtEnd == id,
                     onEscape: leaveReader, focused: readerFocused, onFocus: { readerFocused = true },
-                    stripLeads: !showContents, stripLeading: showContents ? nil : AnyView(home)
+                    onBack: readerBack,
+                    stripLeads: !contentsShown.wrappedValue, stripLeading: contentsShown.wrappedValue ? nil : AnyView(home)
                 )
                     .id(id)
                     .transition(.push(from: arrival))
@@ -121,7 +156,7 @@ struct LibraryReader: View {
             .background(Theme.page)
         } else {
             VStack(spacing: 0) {
-                ColumnStrip(leads: !showContents) { if !showContents { home } } trailing: { EmptyView() }
+                ColumnStrip(leads: !contentsShown.wrappedValue) { if !contentsShown.wrappedValue { home } } trailing: { EmptyView() }
                 ContentUnavailableView("Nothing to Read", systemImage: "book.closed").frame(maxHeight: .infinity)
             }
         }

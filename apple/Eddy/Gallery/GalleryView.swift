@@ -188,6 +188,8 @@ struct GalleryView: View {
     @Environment(\.displayScale) private var displayScale
     @AppStorage("app.mode") private var mode: AppMode = .threePane
     @AppStorage("gallery.sidebar") private var showSidebar = true
+    /// Whether the window has room for the sidebar beside the grid.
+    @State private var dock = ColumnDock()
     @AppStorage("gallery.unreadOnly") private var unreadOnly = false
     @AppStorage("gallery.scope") private var scopeKey = "all"
     @AppStorage(GalleryDensity.key) private var rowHeight = GalleryDensity.standard
@@ -238,14 +240,18 @@ struct GalleryView: View {
     private var media: GalleryMedia { model.media }
 
     var body: some View {
-        LeadingColumn(visible: showSidebar, width: PaneTier.sidebarWidth) {
-            SidebarColumn(visible: $showSidebar) {
+        let sidebar = dock.shown($showSidebar, model: model)
+        return LeadingColumn(
+            shown: sidebar, over: dock.over, width: PaneTier.sidebarWidth, drag: dock.drag,
+            gesturesEnabled: !model.overlayVisible && viewing == nil && model.mediaRequest == nil
+        ) {
+            SidebarColumn(visible: sidebar) {
                 GallerySidebar(scopeKey: $scopeKey)
             }
         } content: {
             VStack(spacing: 0) {
-                ColumnStrip(leads: !showSidebar) {
-                    if !showSidebar { SidebarToggle(visible: $showSidebar) }
+                ColumnStrip(leads: !sidebar.wrappedValue) {
+                    if !sidebar.wrappedValue { SidebarToggle(visible: sidebar) }
                 } trailing: {
                     Button { unreadOnly.toggle() } label: { Label("Unread Only", systemImage: "circle.inset.filled") }
                         .buttonStyle(FlatButtonStyle(on: unreadOnly))
@@ -260,6 +266,7 @@ struct GalleryView: View {
                     }
             }
         }
+        .docks(dock, model: model)
         .overlay {
             // The viewer gets every loaded item, including ones since found
             // to have no media, and steps over those itself: the list only

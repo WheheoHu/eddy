@@ -207,15 +207,16 @@ struct SideRow<Mark: View>: View {
     @ViewBuilder var mark: Mark
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 0) {
             Image(systemName: symbol)
                 .font(.system(size: 14, weight: chosen ? .semibold : .regular))
                 .frame(width: 20)
             title
                 .font(.system(size: 14, weight: chosen ? .semibold : .regular))
                 .lineLimit(1)
-            mark
-            Spacer(minLength: 2)
+                .padding(.leading, 9)
+            mark.padding(.leading, 4)
+            Spacer(minLength: 6)
             Text(count > 0 ? "\(count)" : "")
                 .font(.system(size: 13))
                 .monospacedDigit()

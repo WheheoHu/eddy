@@ -145,6 +145,11 @@ final class AppModel {
 
     var paletteVisible = false
 
+    /// A sidebar is in over the content, in a window too narrow to have it
+    /// beside. Kept here so that switching mode, from the switch at the
+    /// sidebar's foot, leaves the sidebar in.
+    var sidebarPulled = false
+
     /// Settings are a panel over the window.
     var settingsVisible = false
 

@@ -24,6 +24,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The mode switch (Three-Pane, Library, Gallery) is at the bottom of the sidebar, with video conversions beside it.
 - Three-Pane: the list's name and unread count head the list in large type. Under the list a switch shows starred articles, unread ones, or all; it replaces the Unread Only button. Mark All as Read and search are over the list; Refresh and Add are over the sidebar.
 - Three-Pane, in a window with room for the list and the article: the sidebar comes in beside the list, over the article, instead of taking the list's place. A swipe to the right on the article brings it in too; a click on the article, Esc, or choosing something sends it away.
+- Library and Gallery fit a narrow window too, down to 480 points wide. Under 940 points the sidebar tucks away: the button at the start of the row of controls, or a swipe to the right, brings it in over the page, which sinks back behind it. A swipe to the left, a click on the page or Esc sends it away. A book's contents do the same while reading, and a swipe to the right on the text brings them in.
+- When a window is resized past a point where a column tucks away or comes back, the columns glide to their new places.
+- Choosing something in a sidebar that is in over the page leaves the sidebar in, and so does switching between Three-Pane, Library and Gallery from the switch at its foot. Picking a chapter from a book's contents still closes them.
+- Three-Pane in its narrowest window: the sidebar is as wide as everywhere else and comes in beside the list, which moves along and sinks back, instead of taking the whole window. The button over the list shows it.
+- The Library's covers are smaller in a narrow window, so a screen of the shelf still holds about a dozen books.
+- While reading in the Library, the contents column has the mode switch at its foot.
 - An article the columns have come in over sinks back behind them: a little smaller, with rounded corners, and dimmed.
 - The reader's controls are over the article, with a button that closes it. Where they don't all fit, translation, summary, text style, full text and export move into a menu.
 - Library and Gallery: the name of what is shown and how many items heads the page. The Library's filter field, sort order and covers-or-list switch are over the shelf.

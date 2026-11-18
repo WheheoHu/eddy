@@ -116,6 +116,8 @@ struct LibraryView: View {
     @AppStorage("library.sort") private var sort: ShelfSort = .updated
     @AppStorage("library.filter") private var filter: LibraryFilter = .all
     @AppStorage("library.sidebar") private var showSidebar = true
+    /// Whether the window has room for the sidebar beside the shelf.
+    @State private var dock = ColumnDock()
     /// Covers or list, per filter.
     @AppStorage("library.layouts") private var layoutsJSON = "{}"
     @AppStorage("library.columns") private var columnsData = Data()
@@ -137,12 +139,13 @@ struct LibraryView: View {
     var body: some View {
         Group {
             if let open {
-                LibraryReader(book: open, mode: $mode, close: close)
+                LibraryReader(book: open, mode: $mode, dock: dock, close: close)
                     .id(open.id)
             } else {
                 shelf
             }
         }
+        .docks(dock, model: model)
         .onAppear(perform: openCurrent)
         .onChange(of: model.revealed) { _, revealed in
             guard let revealed else { return }
@@ -178,22 +181,23 @@ struct LibraryView: View {
     // MARK: Shelf
 
     private var shelf: some View {
-        LeadingColumn(visible: showSidebar, width: PaneTier.sidebarWidth) {
-            SidebarColumn(visible: $showSidebar) {
+        let sidebar = dock.shown($showSidebar, model: model)
+        return LeadingColumn(shown: sidebar, over: dock.over, width: PaneTier.sidebarWidth, drag: dock.drag, gesturesEnabled: !model.overlayVisible) {
+            SidebarColumn(visible: sidebar) {
                 LibrarySidebar(selection: $filter, focus: $focus, onReturn: enterShelf)
             }
         } content: {
             let books = shelfBooks
             VStack(spacing: 0) {
-                ColumnStrip(leads: !showSidebar) {
-                    if !showSidebar { SidebarToggle(visible: $showSidebar) }
+                ColumnStrip(leads: !sidebar.wrappedValue) {
+                    if !sidebar.wrappedValue { SidebarToggle(visible: sidebar) }
                 } trailing: {
                     HStack(spacing: 6) {
                         Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(Theme.text3)
                         TextField("Filter", text: $query).textFieldStyle(.plain).font(.system(size: 13))
                     }
                     .padding(.horizontal, 8)
-                    .frame(width: 170, height: 28)
+                    .frame(minWidth: 70, maxWidth: 170, minHeight: 28, maxHeight: 28)
                     .background(Theme.track, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                     if layout == .covers {
                         FlatMenu("Sort By", symbol: "arrow.up.arrow.down", help: "Sort order") {
@@ -239,7 +243,7 @@ struct LibraryView: View {
     private func covers(_ books: [Book]) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: Self.coverWidth, maximum: 150), spacing: Self.coverSpacing, alignment: .top)], alignment: .leading, spacing: 22) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: coverWidth, maximum: coverWidth + 32), spacing: coverSpacing, alignment: .top)], alignment: .leading, spacing: 22) {
                     ForEach(books) { book in
                         BookTile(book: book, selected: focus == .list && selectedBook == book.id)
                             .onTapGesture {
@@ -251,8 +255,8 @@ struct LibraryView: View {
                             .accessibilityLabel(Text("\(book.title), \(book.detail)"))
                     }
                 }
-                .padding(Self.shelfPadding)
-                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { gridColumns = Self.columns(in: $0) }
+                .padding(shelfPadding)
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { gridColumns = columns(in: $0) }
             }
             .focusable()
             .focusEffectDisabled()
@@ -267,12 +271,20 @@ struct LibraryView: View {
         }
     }
 
-    private static let coverWidth: CGFloat = 118
-    private static let coverSpacing: CGFloat = 18
-    private static let shelfPadding: CGFloat = 28
+    /// Covers are smaller in a narrow window, so that a screen of the
+    /// shelf still holds a dozen books.
+    private var coverWidth: CGFloat {
+        switch dock.tier {
+        case .narrowest: 96
+        case .narrow: 108
+        default: 118
+        }
+    }
+    private var coverSpacing: CGFloat { dock.tier == .narrowest ? 14 : 18 }
+    private var shelfPadding: CGFloat { dock.tier == .narrowest ? 16 : 28 }
 
     /// How many columns the adaptive grid fits in `width`.
-    private static func columns(in width: CGFloat) -> Int {
+    private func columns(in width: CGFloat) -> Int {
         max(1, Int((width - 2 * shelfPadding + coverSpacing) / (coverWidth + coverSpacing)))
     }
 

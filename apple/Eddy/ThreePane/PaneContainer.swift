@@ -33,17 +33,20 @@ struct PaneContainer<Sidebar: View, Middle: View, Reader: View>: View {
         let column = arrangement.columnWidth(dragged)
         // The columns as they will be where the swipe in progress leads.
         let heading = drag.destination.map { PaneArrangement(tier: tier, place: $0, sidebarOpen: arrangement.sidebarOpen) }
-        let travel = arrangement.travel(column)
+        let travel = arrangement.leadingTravel(column)
         ZStack(alignment: .topLeading) {
-            // What shows around a reader that has sunk.
+            // What shows around a column that has sunk.
             Theme.well
-            Sinking(sunk: !arrangement.readerShown, becoming: heading.map { !$0.readerShown }, travel: travel, drag: drag) {
+            Sinking(sunk: !arrangement.readerShown, becoming: heading.map { !$0.readerShown }, travel: arrangement.coverTravel(column), drag: drag) {
                 reader
                     // The placeholder for nothing selected sits in the middle.
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(Theme.page)
             }
             .padding(.leading, arrangement.readerBase(column))
+            // Wholly behind the list, which has sunk itself: it would show
+            // through around the list's edges.
+            .opacity(arrangement.listSunk ? 0 : 1)
             .allowsHitTesting(arrangement.readerShown)
             .accessibilityHidden(!arrangement.readerShown)
             // A click on the reader beside the columns over it sends them away.
@@ -52,25 +55,31 @@ struct PaneContainer<Sidebar: View, Middle: View, Reader: View>: View {
                 .onTapGesture { if let back = arrangement.dismissal, back != .reader || canRead { go(back) } }
                 .allowsHitTesting(arrangement.dismissal != nil)
                 .accessibilityHidden(true)
-            Sliding(slot: arrangement.listSlot, heading: heading?.listSlot, travel: travel, drag: drag) {
-                list
-                    .frame(width: tier == .narrowest ? nil : column)
-                    .frame(maxHeight: .infinity)
-                    // Colors, not background styles: those stay where they
-                    // are when a column moves, and cover the reader.
-                    .background(Theme.list)
-                    .overlay(alignment: .trailing) { if tier != .narrowest { ColumnEdge() } }
-                    .shadow(color: .black.opacity(arrangement.readerShown || tier == .narrowest ? 0 : 0.14), radius: 18, x: 8)
+            Sliding(
+                slot: arrangement.listSlot, heading: heading?.listSlot,
+                travel: arrangement.listLeadingTravel(column), push: PaneTier.sidebarWidth, drag: drag
+            ) {
+                Sinking(sunk: arrangement.listSunk, becoming: heading?.listSunk, travel: PaneTier.sidebarWidth, drag: drag) {
+                    list
+                        .frame(width: tier == .narrowest ? nil : column)
+                        .frame(maxHeight: .infinity)
+                        // Colors, not background styles: those stay where they
+                        // are when a column moves, and cover the reader.
+                        .background(Theme.list)
+                        .overlay(alignment: .trailing) { if tier != .narrowest { ColumnEdge() } }
+                }
+                .shadow(color: .black.opacity(arrangement.readerShown || tier == .narrowest ? 0 : 0.14), radius: 18, x: 8)
             }
             .padding(.leading, arrangement.listBase)
             .allowsHitTesting(arrangement.listShown)
             .accessibilityHidden(!arrangement.listShown)
             Sliding(slot: arrangement.sidebarSlot, heading: heading?.sidebarSlot, travel: travel, drag: drag) {
                 sidebar
-                    .frame(width: tier == .narrowest ? nil : PaneTier.sidebarWidth)
+                    .frame(width: PaneTier.sidebarWidth)
                     .frame(maxHeight: .infinity)
                     .background(Theme.side)
-                    .overlay(alignment: .trailing) { if tier != .narrowest { ColumnEdge() } }
+                    .overlay(alignment: .trailing) { ColumnEdge() }
+                    .shadow(color: .black.opacity(arrangement.listSunk ? 0.14 : 0), radius: 18, x: 8)
             }
             .allowsHitTesting(arrangement.sidebarShown)
             .accessibilityHidden(!arrangement.sidebarShown)
@@ -89,11 +98,8 @@ struct PaneContainer<Sidebar: View, Middle: View, Reader: View>: View {
                 drag: drag,
                 go: go,
                 rowClicked: { column in
-                    switch column {
-                    case .sidebar: go(.list)
-                    case .list: if canRead { go(.reader) }
-                    case .reader: break
-                    }
+                    // A choice in the sidebar leaves the sidebar where it is.
+                    if column == .list, canRead { go(.reader) }
                 }
             )
             .allowsHitTesting(false)
@@ -133,29 +139,30 @@ struct ColumnEdge: View {
 }
 
 /// Keeps a column in the view tree while it is out of sight: moved out of
-/// its space by its own width (or `travel`), off the leading edge or to the
-/// trailing side. Showing it again is then only a move, and what it held is
-/// as it was. During a swipe that moves it, it goes as far as the fingers
-/// have; only then does it read the drag, so the columns that stay put
-/// aren't evaluated with every event.
-private struct Sliding<Content: View>: View {
-    /// Where it rests: 0 in place, -1 off the leading edge, 1 off the
-    /// trailing side.
+/// its place, off the leading edge (by `travel`, or its own width) or
+/// along towards the trailing side (by `push`). Showing it again is then
+/// only a move, and what it held is as it was. During a swipe that moves
+/// it, it goes as far as the fingers have; only then does it read the drag,
+/// so the columns that stay put aren't evaluated with every event.
+struct Sliding<Content: View>: View {
+    /// Where it rests: 0 in place, -1 off the leading edge, 1 pushed along.
     let slot: Int
     /// Where it rests where the swipe in progress leads; nil with none on.
     let heading: Int?
-    /// How far a slot is; nil for its own width.
+    /// How far slot -1 is; nil for its own width.
     let travel: CGFloat?
+    /// How far slot 1 is.
+    var push: CGFloat = 0
     let drag: PaneDrag
     @ViewBuilder let content: Content
     /// Wide enough to be out of the window until it has been measured.
     @State private var width: CGFloat = 4000
 
     var body: some View {
-        let step = (travel ?? width) + 1
-        var x = CGFloat(slot) * step
+        var x = rest(slot)
         if let heading, heading != slot {
-            x += CGFloat(heading > slot ? 1 : -1) * min(drag.distance, step * CGFloat(abs(heading - slot)))
+            let to = rest(heading)
+            x += (to > x ? 1 : -1) * min(drag.distance, abs(to - x))
         }
         return content
             // Measured only where its own width is the distance, so a window
@@ -165,12 +172,16 @@ private struct Sliding<Content: View>: View {
             }
             .offset(x: x)
     }
+
+    private func rest(_ slot: Int) -> CGFloat {
+        slot > 0 ? push : slot < 0 ? -((travel ?? width) + 1) : 0
+    }
 }
 
 /// A column the others have come in over: it sinks back, a little smaller
 /// with its corners rounded, and dims. A swipe takes it there by degrees;
 /// only then does it read the drag.
-private struct Sinking<Content: View>: View {
+struct Sinking<Content: View>: View {
     let sunk: Bool
     let becoming: Bool?
     /// How far the columns move to come all the way in; nil for the

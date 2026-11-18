@@ -61,9 +61,11 @@ enum PanePlace: Int, Comparable {
 ///
 /// Columns to the left lie over what is to their right: a column that comes
 /// in covers the reader, which sinks back (a little smaller, and dimmed).
-/// The exception is the sidebar over the list in the narrowest tier, which
-/// pushes the list out instead: two lists one over the other under the
-/// pointer send AppKit's hover tracking into a loop that ends the app.
+/// The sidebar is as wide in every tier. In the narrowest it comes in beside
+/// the list's leading edge and moves the list along by its own width, and
+/// the list sinks: it does not lie over the list, because two lists one
+/// over the other under the pointer send AppKit's hover tracking into a
+/// loop that ends the app.
 struct PaneArrangement: Equatable {
     let tier: PaneTier
     let place: PanePlace
@@ -119,15 +121,32 @@ struct PaneArrangement: Equatable {
     /// Where the sidebar rests: 0 in its place, -1 off the leading edge.
     var sidebarSlot: Int { sidebarShown ? 0 : -1 }
 
-    /// How far a step of the sidebar and of the list is; nil for the
-    /// column's own width (the whole window, in the narrowest tier).
-    func travel(_ column: CGFloat) -> CGFloat? {
+    /// How far the sidebar is from its place when it is off the leading
+    /// edge, and the list when it has gone that way with it.
+    func leadingTravel(_ column: CGFloat) -> CGFloat {
+        tier == .narrow ? PaneTier.sidebarWidth + column : PaneTier.sidebarWidth
+    }
+
+    /// How far the list goes off the leading edge: with the sidebar in the
+    /// narrow tier; by its own width (nil), the whole window, in the
+    /// narrowest.
+    func listLeadingTravel(_ column: CGFloat) -> CGFloat? {
+        tier == .narrowest ? nil : leadingTravel(column)
+    }
+
+    /// How far the columns that come in over the reader move to be all the
+    /// way in; nil for the window's width.
+    func coverTravel(_ column: CGFloat) -> CGFloat? {
         switch tier {
         case .wide, .medium: PaneTier.sidebarWidth
         case .narrow: PaneTier.sidebarWidth + column
         case .narrowest: nil
         }
     }
+
+    /// The list has sunk behind the sidebar: in the narrowest tier, where
+    /// the sidebar comes in over its place.
+    var listSunk: Bool { tier == .narrowest && place == .sidebar }
 
     /// The list's leading edge with nothing moved: beside the sidebar in the
     /// narrow tier, where the two come and go together.

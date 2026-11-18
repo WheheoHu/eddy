@@ -51,6 +51,8 @@ struct ThreePaneView: View {
     /// A swipe between the columns in progress. Only the columns that move
     /// read it; this view's body doesn't.
     @State private var drag = PaneDrag()
+    /// The window's width has been measured once.
+    @State private var fitted = false
 
     enum Smart: String, CaseIterable {
         case all = "All Articles", unread = "Unread", starred = "Starred", continueReading = "Continue Reading"
@@ -96,8 +98,10 @@ struct ThreePaneView: View {
         .onGeometryChange(for: PaneTier.self) { PaneTier.at($0.size.width, from: tier) } action: { fit($0) }
         .onAppear {
             showCurrentEntry()
-            place = canRead ? .reader : .list
+            // Coming from another mode with its sidebar in: it stays in.
+            place = model.sidebarPulled ? .sidebar : (canRead ? .reader : .list)
         }
+        .onChange(of: sidebarPulled) { _, pulled in model.sidebarPulled = pulled }
         .onChange(of: model.revealed) { _, revealed in
             guard let revealed else { return }
             model.revealed = nil
@@ -148,19 +152,32 @@ struct ThreePaneView: View {
         PaneArrangement(tier: tier, place: place == .reader && !canRead ? .list : place, sidebarOpen: showSidebar)
     }
 
+    /// The sidebar is in over the other columns, not beside them.
+    private var sidebarPulled: Bool { tier != .wide && arrangement.sidebarShown }
+
     /// The window is in another tier. Narrowing past the list leaves the
     /// reader, if something is open; the columns don't come in over it
-    /// unasked.
+    /// unasked. The columns glide to where the new tier puts them, which
+    /// shows where the one that left went.
     private func fit(_ new: PaneTier) {
-        guard new != tier else { return }
-        if tier >= .medium, new <= .narrow {
-            place = canRead ? .reader : .list
-        } else if new == .medium, place == .sidebar {
-            place = .list
+        guard fitted else {
+            // The first measure: the window opens as it is, with no glide.
+            fitted = true
+            tier = new
+            if new == .wide { model.sidebarPulled = false }
+            return
         }
-        tier = new
-        drag.end()
-        contentsDrawer = false
+        guard new != tier else { return }
+        withAnimation(.easeOut(duration: 0.28)) {
+            if tier >= .medium, new <= .narrow {
+                place = canRead ? .reader : .list
+            } else if new == .medium, place == .sidebar {
+                place = .list
+            }
+            tier = new
+            drag.end()
+            contentsDrawer = false
+        }
     }
 
     /// Moves to a column, and keyboard focus with it. In the wide tier,
@@ -191,18 +208,15 @@ struct ThreePaneView: View {
     private func leadButton(in column: PanePlace) -> some View {
         if arrangement.leading == column {
             let shown = arrangement.sidebarShown
-            if tier == .narrowest {
-                Button { go(arrangement.place == .reader ? .list : .sidebar) } label: {
-                    Label("Back", systemImage: "chevron.left")
-                }
-                .help(arrangement.place == .reader ? "Back to the list" : "Back to the sidebar")
-                .disabled(arrangement.place == .sidebar)
+            if tier == .narrowest, arrangement.place == .reader {
+                Button { go(.list) } label: { Label("Back", systemImage: "chevron.left") }
+                    .help("Back to the list")
             } else {
                 Button {
                     switch tier {
                     case .wide: withAnimation(.easeOut(duration: 0.24)) { showSidebar.toggle() }
-                    case .medium: go(shown ? .list : .sidebar)
-                    default: go(shown ? .reader : .list)
+                    case .medium, .narrowest: go(shown ? .list : .sidebar)
+                    case .narrow: go(shown ? .reader : .list)
                     }
                 } label: {
                     Label(shown ? "Hide Sidebar" : "Show Sidebar", systemImage: "sidebar.left")
@@ -316,8 +330,18 @@ struct ThreePaneView: View {
             }
         }
         .flatList()
-        .pane($focus, .sidebar, onReturn: { go(.list) }, onEscape: tier == .narrow && canRead ? { go(.reader) } : nil)
+        .pane($focus, .sidebar, onReturn: { go(.list) }, onEscape: sidebarEscape)
         .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in folderKey(press.key) }
+    }
+
+    /// Esc in the sidebar sends it away again, where it is in over the
+    /// other columns.
+    private var sidebarEscape: (() -> Void)? {
+        switch tier {
+        case .wide: nil
+        case .narrow: canRead ? { go(.reader) } : nil
+        case .medium, .narrowest: { go(.list) }
+        }
     }
 
     /// Left folds the selected folder, or goes up to it from a subscription
