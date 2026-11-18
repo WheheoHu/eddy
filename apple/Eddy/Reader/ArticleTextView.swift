@@ -776,23 +776,26 @@ final class ReaderTextView: NSTextView {
             return
         }
         let page = max(scroll.contentView.bounds.height - lineStep, lineStep)
-        if modifiers == .command, key == .leftArrow || key == .rightArrow, let onStep {
+        // Shift with Left or Right turns to the chapter or article before or
+        // after, the way a swipe that way does in a book; Command does too.
+        if modifiers == .shift || modifiers == .command, key == .leftArrow || key == .rightArrow, let onStep {
             tracker?.cancel()
             onStep(key == .leftArrow ? .previous : .next)
         } else if modifiers.isEmpty, key == .leftArrow, let onLeft {
             tracker?.cancel()
             onLeft()
         } else if modifiers.isEmpty, key == .downArrow || key == .rightArrow {
+            // A page at a time, not a line: the trackpad is for less.
             if scroll.atBottom {
                 tracker?.hold(.next, key: event.keyCode)
             } else {
-                scrollBy(key == .downArrow ? lineStep : page, animated: key == .rightArrow)
+                scrollBy(page, animated: true)
             }
         } else if modifiers.isEmpty, key == .upArrow || key == .leftArrow {
             if scroll.atTop {
                 tracker?.hold(.previous, key: event.keyCode)
             } else {
-                scrollBy(key == .upArrow ? -lineStep : -page, animated: key == .leftArrow)
+                scrollBy(-page, animated: true)
             }
         } else {
             super.keyDown(with: event)

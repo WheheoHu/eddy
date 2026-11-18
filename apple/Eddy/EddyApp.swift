@@ -37,6 +37,9 @@ struct EddyApp: App {
     @State private var model = AppModel()
     @AppStorage("app.mode") private var mode: AppMode = .threePane
     @AppStorage(GalleryDensity.key) private var galleryRowHeight = GalleryDensity.standard
+    /// The contents beside the text, as each mode last left them.
+    @AppStorage("threePane.contents") private var threePaneContents = false
+    @AppStorage("library.contents") private var libraryContents = true
 
     init() {
         ReaderFonts.migrate()
@@ -76,6 +79,22 @@ struct EddyApp: App {
                 ForEach(Array(AppMode.allCases.enumerated()), id: \.element) { index, m in
                     Button(m.rawValue) { mode = m }.keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
                 }
+                Divider()
+                // A book's chapters or a subscription's articles, beside
+                // the text; in Three-Pane a subscription's are the list.
+                let contents = mode == .threePane ? threePaneContents : libraryContents
+                let hasContents = switch mode {
+                case .threePane: model.entry(containing: model.currentItemID) != nil
+                case .library: model.currentItemID != nil
+                case .gallery: false
+                }
+                Button(contents ? "Hide Contents" : "Show Contents") {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        if mode == .threePane { threePaneContents.toggle() } else { libraryContents.toggle() }
+                    }
+                }
+                .keyboardShortcut("b", modifiers: .command)
+                .disabled(!hasContents)
                 Divider()
                 // The size of the Gallery's thumbnails.
                 Button("Zoom In") { GalleryDensity.larger(than: galleryRowHeight).map { galleryRowHeight = $0 } }

@@ -22,6 +22,8 @@ struct ThreePaneView: View {
     @State private var collapsed = ThreePaneView.storedFolds()
     /// The sidebar's table, to slide its rows when a folder folds.
     @State private var sidebarTable = TableHandle()
+    /// The article list's table, to bring the row opened into view.
+    @State private var listTable = TableHandle()
     /// The collection entry picked in the middle column.
     @State private var entryID: String?
     /// Articles read while the unread-only list has been on screen. They
@@ -343,8 +345,14 @@ struct ThreePaneView: View {
             if let first { openEntry(first.id) }
         } else {
             let rows = rowsForSelection
-            if let current = model.currentItemID, rows.contains(where: { $0.id == current }) { return }
-            if let first = rows.first { open(first.id) }
+            // The row the keys arrive at shows, if the list had been
+            // scrolled away from it.
+            if let current = model.currentItemID, let at = rows.firstIndex(where: { $0.id == current }) {
+                listTable.reveal(row: at)
+            } else if let first = rows.first {
+                open(first.id)
+                listTable.reveal(row: 0)
+            }
         }
     }
 
@@ -433,13 +441,13 @@ struct ThreePaneView: View {
             if let kinds {
                 CollectionList(
                     kinds: kinds, sort: collectionSort, selection: Binding(get: { entryID }, set: openEntry),
-                    active: focus == .list || readerFocused,
+                    active: focus == .list || readerFocused, reading: readerFocused,
                     focus: $focus, onReturn: read, onEscape: leaveList
                 )
             } else {
                 ThreePaneArticles(
                     rows: rows, marksFinished: selection == .smart(.continueReading),
-                    active: focus == .list || readerFocused,
+                    active: focus == .list || readerFocused, reading: readerFocused, table: listTable,
                     focus: $focus, read: read, leave: leaveList
                 )
                     .equatable()
@@ -850,12 +858,21 @@ private struct ThreePaneSidebar: View, Equatable {
 
     /// Right goes on to the middle column, as Return does. Left goes back a
     /// level: from a subscription to its folder, else where Esc leads.
-    /// Space folds the folder chosen, or unfolds it.
+    /// Space folds the folder chosen, or unfolds it; on a subscription it
+    /// folds the folder it is in, which is then the one chosen.
     private func key(_ key: KeyEquivalent) -> KeyPress.Result {
         switch key {
         case .space:
-            guard case let .folder(name) = selection else { return .ignored }
-            toggle(name)
+            switch selection {
+            case let .folder(name):
+                toggle(name)
+            case let .feed(id):
+                guard let folder = model.feeds.first(where: { $0.id == id })?.category else { return .ignored }
+                toggle(folder)
+                choose(.folder(folder))
+            default:
+                return .ignored
+            }
             return .handled
         case .rightArrow:
             enter()
@@ -910,19 +927,25 @@ private struct ThreePaneArticles: View, Equatable {
     /// The keys are with the articles, in this column or in the one being
     /// read: its row carries the mark.
     let active: Bool
+    /// They are in the article: the mark is on the side it lies.
+    let reading: Bool
+    /// Given the list's table, for the owner to scroll a row into view.
+    let table: TableHandle
     var focus: FocusState<PaneFocus?>.Binding
     /// Return, or a double click: on to the reader.
     let read: () -> Void
     /// Esc: back a column.
     let leave: () -> Void
 
-    static func == (a: Self, b: Self) -> Bool { a.rows == b.rows && a.marksFinished == b.marksFinished && a.active == b.active }
+    static func == (a: Self, b: Self) -> Bool {
+        a.rows == b.rows && a.marksFinished == b.marksFinished && a.active == b.active && a.reading == b.reading
+    }
 
     var body: some View {
         @Bindable var model = model
         return List(rows, selection: $model.currentItemID) { item in
             ArticleRow(item: item, marksFinished: marksFinished)
-                .flatRow(chosen: item.id == model.currentItemID, active: active, inset: 6)
+                .flatRow(chosen: item.id == model.currentItemID, active: active, activeEdge: reading ? .trailing : .leading, inset: 6)
                 .tag(item.id)
         }
         .contextMenu(forSelectionType: String.self) { ids in
@@ -955,6 +978,7 @@ private struct ThreePaneArticles: View, Equatable {
             }
         } primaryAction: { _ in read() }
         .flatList()
+        .tableHandle(table)
         .pane(focus, .list, onReturn: read, onEscape: leave)
         // Right goes on to the article, Left back a column.
         .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in
@@ -1001,8 +1025,10 @@ struct CollectionList: View {
     let kinds: [CollectionKindView]
     let sort: CollectionSort
     @Binding var selection: String?
-    /// The keys are with the entries: the one selected carries the mark.
+    /// The keys are with the entries: the one selected carries the mark,
+    /// on the side of the text while they are in it.
     var active = false
+    var reading = false
     var focus: FocusState<PaneFocus?>.Binding?
     /// Return or Right: read the entry selected.
     var onReturn: (() -> Void)?
@@ -1089,7 +1115,9 @@ struct CollectionList: View {
 
     private func rows(_ entries: [CollectionEntryView]) -> some View {
         ForEach(entries) { entry in
-            CollectionRow(entry: entry).flatRow(chosen: entry.id == selection, active: active, inset: 6).tag(entry.id)
+            CollectionRow(entry: entry)
+                .flatRow(chosen: entry.id == selection, active: active, activeEdge: reading ? .trailing : .leading, inset: 6)
+                .tag(entry.id)
         }
     }
 

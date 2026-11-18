@@ -12,6 +12,7 @@ enum SettingsTab: CaseIterable, Identifiable, RawRepresentable {
     case translation
     case summaries
     case video
+    case shortcuts
     case about
 
     init?(rawValue: String) {
@@ -23,6 +24,7 @@ enum SettingsTab: CaseIterable, Identifiable, RawRepresentable {
         case "Translation", "AI": self = .translation
         case "Summaries": self = .summaries
         case "Video": self = .video
+        case "Shortcuts": self = .shortcuts
         case "About": self = .about
         default: return nil
         }
@@ -37,6 +39,7 @@ enum SettingsTab: CaseIterable, Identifiable, RawRepresentable {
         case .translation: "Translation"
         case .summaries: "Summaries"
         case .video: "Video"
+        case .shortcuts: "Shortcuts"
         case .about: "About"
         }
     }
@@ -52,13 +55,14 @@ enum SettingsTab: CaseIterable, Identifiable, RawRepresentable {
         case .translation: "translate"
         case .summaries: "sparkles"
         case .video: "film.stack"
+        case .shortcuts: "keyboard"
         case .about: "info.circle"
         }
     }
 
     var group: SettingsGroup {
         switch self {
-        case .accounts, .reading, .saving, .storage, .about: .general
+        case .accounts, .reading, .saving, .storage, .shortcuts, .about: .general
         case .translation, .summaries, .video: .intelligence
         }
     }
@@ -165,6 +169,7 @@ struct SettingsPanel: View {
         case .reading: ReadingSettings()
         case .saving: SavingSettings()
         case .storage: StorageSettings()
+        case .shortcuts: ShortcutsSettings()
         case .about: AboutSettings()
         }
     }
@@ -584,6 +589,129 @@ private struct AboutSettings: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Shortcuts
+
+/// The keys the app answers to, to look up. They can't be changed yet.
+/// Kept by hand: a key added or changed anywhere is added or changed here.
+private struct ShortcutsSettings: View {
+    private struct Shortcut: Identifiable {
+        let action: LocalizedStringKey
+        /// Each a way of asking for it: the keys pressed together.
+        let keys: [[String]]
+        let id = UUID()
+
+        init(_ action: LocalizedStringKey, _ keys: [String]...) {
+            self.action = action
+            self.keys = keys
+        }
+    }
+
+    private static let everywhere = [
+        Shortcut("Go to or search", ["⌘", "K"]),
+        Shortcut("Three-Pane, Library, Gallery", ["⌘", "1"], ["⌘", "2"], ["⌘", "3"]),
+        Shortcut("Refresh", ["⌘", "R"]),
+        Shortcut("Save a page", ["⌘", "L"]),
+        Shortcut("Convert a video to a book", ["⇧", "⌘", "L"]),
+        Shortcut("Import an EPUB, PDF or video", ["⌘", "O"]),
+        Shortcut("Settings", ["⌘", ","]),
+    ]
+
+    private static let threePane = [
+        Shortcut("On to the next column", ["→"], ["Return"]),
+        Shortcut("Back a column", ["←"], ["Esc"]),
+        Shortcut("Up and down a list", ["↑"], ["↓"]),
+        Shortcut("Fold or unfold a folder", ["Space"]),
+        Shortcut("Next and previous article", ["J"], ["K"]),
+        Shortcut("Star", ["S"]),
+        Shortcut("Mark as read or unread", ["M"]),
+        Shortcut("Delete from the collection", ["⌘", "⌫"]),
+    ]
+
+    private static let reading = [
+        Shortcut("A page down or up", ["↓"], ["↑"]),
+        Shortcut("Next chapter or article", ["⇧", "→"], ["⌘", "→"], ["⌘", "]"]),
+        Shortcut("Previous chapter or article", ["⇧", "←"], ["⌘", "←"], ["⌘", "["]),
+        Shortcut("On to the next, at the end of the text", ["Hold ↓"]),
+        Shortcut("Show or hide the contents", ["⌘", "B"]),
+        Shortcut("Translate", ["⌥", "A"]),
+        Shortcut("Mark as read or unread", ["⇧", "⌘", "U"]),
+        Shortcut("Mark all as read", ["⇧", "⌘", "K"]),
+    ]
+
+    private static let library = [
+        Shortcut("Open a book, or read from the contents", ["Return"]),
+        Shortcut("Back to the contents, or the shelf", ["Esc"]),
+        Shortcut("Along the shelf", ["←"], ["→"], ["↑"], ["↓"]),
+    ]
+
+    private static let gallery = [
+        Shortcut("On to the pictures", ["→"], ["Return"]),
+        Shortcut("Among the pictures", ["←"], ["→"], ["↑"], ["↓"]),
+        Shortcut("Open the one framed", ["Space"], ["Return"]),
+        Shortcut("Next and previous, in the viewer", ["↓"], ["↑"]),
+        Shortcut("Through an item’s pictures, or a video", ["←"], ["→"]),
+        Shortcut("Play or pause", ["Space"]),
+        Shortcut("Mute", ["M"]),
+        Shortcut("Star", ["S"]),
+        Shortcut("Close the viewer, back to the sidebar", ["Esc"]),
+        Shortcut("Larger and smaller thumbnails", ["⌘", "+"], ["⌘", "−"]),
+    ]
+
+    var body: some View {
+        Form {
+            section("Everywhere", Self.everywhere)
+            section("Three-Pane", Self.threePane)
+            section("Reading", Self.reading)
+            section("Library", Self.library)
+            Section {
+                rows(Self.gallery)
+            } header: {
+                Text("Gallery")
+            } footer: {
+                Text("Shortcuts can’t be changed yet.")
+                    .foregroundStyle(Theme.text2)
+            }
+        }
+    }
+
+    private func section(_ title: LocalizedStringKey, _ shortcuts: [Shortcut]) -> some View {
+        Section(title) { rows(shortcuts) }
+    }
+
+    private func rows(_ shortcuts: [Shortcut]) -> some View {
+        ForEach(shortcuts) { shortcut in
+            LabeledContent {
+                HStack(spacing: 10) {
+                    ForEach(Array(shortcut.keys.enumerated()), id: \.offset) { _, combination in
+                        HStack(spacing: 3) {
+                            ForEach(Array(combination.enumerated()), id: \.offset) { _, key in KeyCap(key) }
+                        }
+                    }
+                }
+            } label: {
+                Text(shortcut.action)
+            }
+        }
+    }
+}
+
+/// One key of a shortcut, as on a keyboard.
+private struct KeyCap: View {
+    let key: String
+
+    init(_ key: String) { self.key = key }
+
+    var body: some View {
+        Text(verbatim: key)
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(Theme.text1)
+            .padding(.horizontal, 6)
+            .frame(minWidth: 22, minHeight: 22)
+            .background(Theme.track, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .accessibilityLabel(Text(verbatim: key))
     }
 }
 

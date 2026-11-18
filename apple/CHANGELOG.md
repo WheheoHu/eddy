@@ -25,6 +25,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Three-Pane by keyboard: Right goes on a column and Left back one, as Return and Esc do. Return or Right in the sidebar goes to the list and opens its first row, unless one of its rows is open already. Left on a subscription goes to its folder. Space folds the folder chosen, and unfolds it.
 - Gallery by keyboard: Up and Down choose in the sidebar, Return or Right goes to the pictures, the arrows move among them, Space or Return opens the one framed and Esc closes it; Esc again, or Left from the start of a row, goes back to the sidebar.
 - Switching between Three-Pane, Library and Gallery puts the keys in the first column, at what is chosen there; in the Library with a book carried over from another mode, in its contents.
+- Settings → Shortcuts lists the keys the app answers to. They can’t be changed yet.
+- View → Show Contents / Hide Contents (⌘B) shows or hides a book’s contents beside the text.
+- Shift with Left or Right turns to the previous or next chapter or article while reading, as a swipe that way does in a book. ⌘← and ⌘→ still do.
+- Three-Pane: Space on a subscription folds the folder it is in. Going from the sidebar to the list with Return or Right scrolls the list to the article open, if it had been scrolled away.
 
 ### Changed
 
@@ -59,6 +63,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Going back to the Library's shelf closes the book: switching mode after that no longer brings its last article back.
 - Three-Pane: a folder’s arrow stands in its row beside the folder icon, not at the sidebar’s edge, and a folder folds with the same slide whether its arrow is clicked or Space pressed. Left and Right no longer fold folders.
 - Three-Pane: Left in an article goes back to the list instead of up a page; Up still scrolls. The Library’s reader keeps Left and Right for paging.
+- While reading, Up and Down move a page at a time, not a line.
+- Three-Pane: while the keys are in the article, the bar that marks its row in the list is at the row’s end, on the article’s side.
+- The media viewer: Up and Down slide the next item in from below or above, as a swipe does, instead of swapping it in place.
 
 ### Removed
 
@@ -67,6 +74,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- The media viewer: after a few items, a swipe up or down on the trackpad slid towards the next item and then came back to the one it started from.
+- Three-Pane: rows of the sidebar could stand at two different distances from its edge.
 - Switching from the Library to Three-Pane closed the article or chapter being read.
 - Three-Pane: a subscription folder in the sidebar didn’t fold or unfold when its arrow was clicked or Left or Right pressed, until something else was chosen.
 - An article without pictures opened at its top instead of where it was left, and the top was then saved as its position, so the place was lost; it also dropped out of Continue Reading.

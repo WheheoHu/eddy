@@ -243,21 +243,26 @@ extension View {
     /// where the keys go: the sidebar's folder or subscription, or the
     /// list's article.
     ///
+    /// `activeEdge`: the side the bar is on. At the end of the row when
+    /// the keys have gone on from this column to the one after it (the
+    /// article being read), so the bar is on the side they went.
+    ///
     /// `lead`: from the shade's edge to the row's content.
-    func flatRow(chosen: Bool, active: Bool = false, inset: CGFloat = 10, lead: CGFloat = 8) -> some View {
-        listRowSeparator(.hidden)
-            .listRowInsets(EdgeInsets(top: 0, leading: inset + lead, bottom: 0, trailing: inset + 4))
+    func flatRow(chosen: Bool, active: Bool = false, activeEdge: HorizontalEdge = .leading, inset: CGFloat = 10, lead: CGFloat = 8) -> some View {
+        let edge: Edge.Set = activeEdge == .leading ? .leading : .trailing
+        return listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 0, leading: FlatList.gutter + inset + lead, bottom: 0, trailing: inset + 4))
             .listRowBackground(
                 RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
                     .fill(chosen ? Theme.track : Color.clear)
-                    .overlay(alignment: .leading) {
+                    .overlay(alignment: activeEdge == .leading ? .leading : .trailing) {
                         // Always there, shown or not: a row's views don't
                         // change kind with its state.
                         RoundedRectangle(cornerRadius: 1.5, style: .continuous)
                             .fill(Theme.accent)
                             .frame(width: 3)
                             .padding(.vertical, 7)
-                            .padding(.leading, 2)
+                            .padding(edge, 2)
                             .opacity(chosen && active ? 1 : 0)
                     }
                     .padding(.horizontal, inset)
@@ -272,6 +277,16 @@ extension View {
             .environment(\.defaultMinListRowHeight, 30)
             .background(TableTuner())
     }
+}
+
+enum FlatList {
+    /// Room left at the start of every row. The table behind a list puts a
+    /// row's content 8 points in; with an indentation set for an outline's
+    /// levels it puts it 26 in, and the rows were drawn for that. Nothing
+    /// sets one any more (no list here has levels, and setting one against
+    /// the list's own 0 left rows at either place, by when they were last
+    /// laid out), so the difference is made up here.
+    static let gutter: CGFloat = 18
 }
 
 /// The arrow at the start of a row that folds: it points down while the rows
@@ -338,7 +353,6 @@ private struct TableTuner: NSViewRepresentable {
             if table.selectionHighlightStyle != .none { table.selectionHighlightStyle = .none }
             if table.floatsGroupRows { table.floatsGroupRows = false }
             table.backgroundColor = .clear
-            if let outline = table as? NSOutlineView, outline.indentationPerLevel != 14 { outline.indentationPerLevel = 14 }
             table.enclosingScrollView?.drawsBackground = false
         }
     }
@@ -363,6 +377,36 @@ final class TableHandle {
         guard count > 0, let table, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
         let before = table.numberOfRows
         play(table, row: row, count: count, opening: opening, before: before, tries: 4)
+    }
+
+    /// Scrolls a row into view if it isn't all there, by the least it
+    /// takes, with a move. Called right after the row is chosen.
+    func reveal(row: Int) {
+        DispatchQueue.main.async { [weak self] in
+            guard let table = self?.table, row >= 0, row < table.numberOfRows,
+                  let scroll = table.enclosingScrollView
+            else { return }
+            let clip = scroll.contentView
+            let rect = table.rect(ofRow: row), visible = clip.documentVisibleRect
+            guard rect.minY < visible.minY || rect.maxY > visible.maxY else { return }
+            let wanted = rect.minY < visible.minY ? rect.minY : rect.maxY - visible.height
+            let y = max(0, min(wanted, table.frame.height - visible.height)) - scroll.contentInsets.top
+            let origin = NSPoint(x: clip.bounds.minX, y: y)
+            guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+                clip.scroll(to: origin)
+                scroll.reflectScrolledClipView(clip)
+                return
+            }
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.25
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                clip.animator().setBoundsOrigin(origin)
+            } completionHandler: { [weak scroll, weak clip] in
+                MainActor.assumeIsolated {
+                    if let scroll, let clip { scroll.reflectScrolledClipView(clip) }
+                }
+            }
+        }
     }
 
     private func play(_ table: NSTableView, row: Int, count: Int, opening: Bool, before: Int, tries: Int) {
