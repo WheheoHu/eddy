@@ -1880,6 +1880,56 @@ async fn mark_unread_resets_reading_but_the_top_of_the_text_is_still_read() {
 }
 
 #[tokio::test]
+async fn mark_read_finishes_and_continue_reading_keeps_what_is_asked() {
+    let pages = mock_pages().await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let row = engine
+        .save_url(&format!("{}/essay", pages.uri()))
+        .await
+        .unwrap();
+    let id = row.item.id.clone();
+    let doc = engine.document(&id).await.unwrap().unwrap().document;
+    let paras = para_ids(&doc);
+    let continue_reading = |e: &Engine, keep: &[String]| {
+        e.items(&ItemQuery {
+            filter: ItemFilter::ContinueReading,
+            keep: keep.to_vec(),
+            ..Default::default()
+        })
+        .unwrap()
+        .len()
+    };
+
+    let mid = &paras[paras.len() / 2];
+    engine.record_progress(&id, mid, 0, false, true).unwrap();
+    assert_eq!(continue_reading(&engine, &[]), 1);
+
+    engine.mark_read(std::slice::from_ref(&id)).unwrap();
+    let item = engine.item(&id).unwrap().unwrap().item;
+    assert!(item.read);
+    assert!(item.finished);
+    assert_eq!(continue_reading(&engine, &[]), 0);
+    // The list on screen holds on to the one being read.
+    assert_eq!(continue_reading(&engine, std::slice::from_ref(&id)), 1);
+    // The position is where it was.
+    let resume = engine.resume_point(&id).unwrap().unwrap();
+    assert_eq!(resume.block_id.as_deref(), Some(mid.as_str()));
+
+    // A second time records nothing.
+    let ops = engine.inner.store.unuploaded_ops(10_000).unwrap().len();
+    engine.mark_read(std::slice::from_ref(&id)).unwrap();
+    assert_eq!(
+        engine.inner.store.unuploaded_ops(10_000).unwrap().len(),
+        ops
+    );
+
+    engine.mark_unread(std::slice::from_ref(&id)).unwrap();
+    let item = engine.item(&id).unwrap().unwrap().item;
+    assert!(!item.read && !item.finished);
+}
+
+#[tokio::test]
 async fn resume_point_follows_the_switch_to_full_text() {
     let pages = MockServer::start().await;
     // Feed excerpt and full page share the second paragraph.

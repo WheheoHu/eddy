@@ -26,6 +26,8 @@ struct Book: Identifiable, Equatable {
     let added: Int64
     let unread: Int
     let progress: Double
+    /// Articles of a subscription that are part read.
+    var reading = 0
 
     var entry: CollectionEntryView? {
         if case let .entry(entry) = kind { entry } else { nil }
@@ -101,6 +103,7 @@ enum LibraryFilter: Hashable, RawRepresentable {
         switch (self, book.kind) {
         case (.all, _), (.saved, .entry), (.subscriptions, .feed): true
         case let (.continueReading, .entry(entry)): entry.inProgress
+        case (.continueReading, .feed): book.reading > 0
         case let (.kind(kind), .entry(entry)): entry.kind == kind
         case let (.category(name), .feed): book.category == name
         default: false
@@ -116,6 +119,8 @@ struct LibraryView: View {
     @AppStorage("library.sort") private var sort: ShelfSort = .updated
     @AppStorage("library.filter") private var filter: LibraryFilter = .all
     @AppStorage("library.sidebar") private var showSidebar = true
+    /// Which of the books being read Continue Reading shelves.
+    @AppStorage(ReadingScope.key) private var readingScope: ReadingScope = .all
     /// Whether the window has room for the sidebar beside the shelf.
     @State private var dock = ColumnDock()
     /// Covers or list, per filter.
@@ -217,6 +222,11 @@ struct LibraryView: View {
                     table(books)
                 } else {
                     covers(books)
+                }
+                if filter == .continueReading {
+                    Hairline()
+                    SwitchBar(selection: $readingScope, options: ReadingScope.options, segment: 52)
+                        .frame(height: 56)
                 }
             }
             .overlay {
@@ -369,7 +379,13 @@ struct LibraryView: View {
 
     @ViewBuilder
     private func menu(for book: Book) -> some View {
+        if case let .feed(sourceID) = book.kind {
+            Button("Mark All as Read…") { model.requestMarkAllRead(ArticleList(filter: .source(id: sourceID), title: book.title)) }
+        }
         if let entry = book.entry {
+            if !entry.isDone {
+                Button("Mark as Read") { model.markRead(entry: entry) }
+            }
             if entry.hasBeenRead {
                 Button("Mark as Unread") { model.markUnread(entry: entry) }
             }
@@ -467,6 +483,7 @@ struct LibraryView: View {
     private var allBooks: [Book] {
         _ = model.revision
         var books: [Book] = []
+        let reading = model.readingArticles
         for feed in model.feeds {
             let s = model.stats[feed.id]
             let total = Int(s?.total ?? 0)
@@ -477,7 +494,8 @@ struct LibraryView: View {
                 detail: feed.unread > 0 ? String(localized: "\(feed.unread) unread") : String(localized: "\(total) articles"),
                 symbol: "dot.radiowaves.up.forward",
                 updated: s?.latestPublishedAt ?? 0, lastRead: s?.lastReadAt ?? 0, added: 0, unread: Int(feed.unread),
-                progress: total > 0 ? 1 - Double(feed.unread) / Double(total) : 0
+                progress: total > 0 ? 1 - Double(feed.unread) / Double(total) : 0,
+                reading: reading[feed.id] ?? 0
             ))
         }
         for entry in model.collection {
@@ -497,6 +515,9 @@ struct LibraryView: View {
 
     private var shelfBooks: [Book] {
         var books = allBooks.filter(filter.contains)
+        if filter == .continueReading, readingScope != .all {
+            books = books.filter { ($0.entry == nil) == (readingScope == .subscriptions) }
+        }
         if !query.isEmpty {
             books = books.filter { $0.title.localizedCaseInsensitiveContains(query) }
         }
@@ -524,7 +545,7 @@ private struct LibrarySidebar: View {
         List(selection: Binding(get: { selection }, set: { if let new = $0 { selection = new } })) {
             SideHeading(title: "Library", first: true)
             row(.all, "books.vertical", Text("All"))
-            row(.continueReading, "book", Text("Continue Reading"), model.collection.filter(\.inProgress).count)
+            row(.continueReading, "book", Text("Continue Reading"), model.collection.filter(\.inProgress).count + model.readingArticles.count)
             row(.saved, "bookmark", Text("Saved"), model.collection.count)
             let kinds = CollectionKindView.all.filter { kind in model.collection.contains { $0.kind == kind } }
             if !kinds.isEmpty {
@@ -535,10 +556,18 @@ private struct LibrarySidebar: View {
             }
             if !model.feeds.isEmpty {
                 SideHeading(title: "Subscriptions")
-                row(.subscriptions, "dot.radiowaves.up.forward", Text("All Subscriptions"), model.unreadTotal)
+                row(
+                    .subscriptions, "dot.radiowaves.up.forward", Text("All Subscriptions"), model.unreadTotal,
+                    markAll: ArticleList(filter: .all, title: String(localized: "All Subscriptions"))
+                )
                 if categories.count > 1 {
                     ForEach(categories, id: \.self) { category in
-                        row(.category(category), "folder", Text(verbatim: category), unread(in: category))
+                        // "Subscriptions" stands for the ones in no folder,
+                        // which no list of articles covers.
+                        row(
+                            .category(category), "folder", Text(verbatim: category), unread(in: category),
+                            markAll: model.folders.contains(category) ? ArticleList(filter: .category(name: category), title: category) : nil
+                        )
                     }
                 }
             }
@@ -547,10 +576,16 @@ private struct LibrarySidebar: View {
         .pane(focus, .sidebar, onReturn: onReturn)
     }
 
-    private func row(_ filter: LibraryFilter, _ symbol: String, _ title: Text, _ count: Int = 0) -> some View {
+    /// `markAll`: the articles the row stands for, for "Mark All as Read".
+    private func row(_ filter: LibraryFilter, _ symbol: String, _ title: Text, _ count: Int = 0, markAll: ArticleList? = nil) -> some View {
         SideRow(symbol: symbol, title: title, count: count, chosen: selection == filter)
             .flatRow(chosen: selection == filter)
             .tag(filter)
+            .contextMenu {
+                if let markAll {
+                    Button("Mark All as Read…") { model.requestMarkAllRead(markAll) }
+                }
+            }
     }
 
     private var categories: [String] {

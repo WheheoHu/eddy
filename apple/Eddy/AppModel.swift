@@ -334,6 +334,14 @@ final class AppModel {
         return entry(containing: item)
     }
 
+    /// How many articles of each subscription are part read: the ones
+    /// Continue Reading lists.
+    var readingArticles: [String: Int] {
+        items(.continueReading).reduce(into: [:]) { counts, item in
+            if item.kind == .feed, let source = item.sourceId { counts[source, default: 0] += 1 }
+        }
+    }
+
     func chapters(_ seriesID: String) -> [ItemView] {
         items(.series(id: seriesID), limit: 2000)
     }
@@ -483,6 +491,34 @@ final class AppModel {
     /// Bumped when an unread-only list should start over (after "Mark All
     /// as Read"); articles read in the meantime stay listed until then.
     var listsReset = 0
+
+    /// Read and done with, by hand, on every device (and FreshRSS): read
+    /// and finished, so out of Continue Reading. Opening an item only marks
+    /// it read (`markOpened`).
+    func markRead(_ itemIDs: [String]) {
+        guard !itemIDs.isEmpty else { return }
+        do {
+            try engine?.markRead(itemIds: itemIDs)
+        } catch {
+            report(error)
+        }
+        reload()
+    }
+
+    /// A book or series, all its chapters; a page or PDF itself.
+    func markRead(entry: CollectionEntryView) {
+        markRead(entry.seriesId.map { chapters($0).map(\.id) } ?? [entry.id])
+    }
+
+    /// The one command that goes both ways (a key, the reader's button):
+    /// done with, or back to unread once it is.
+    func toggleRead(_ item: ItemView) {
+        if item.isDone { markUnread([item.id]) } else { markRead([item.id]) }
+    }
+
+    /// The item the media viewer is showing, while it is up: what "Mark as
+    /// Read" in the menu bar marks there.
+    var viewedItemID: String?
 
     /// Back to unread and never started, on every device (and FreshRSS).
     func markUnread(_ itemIDs: [String]) {

@@ -49,6 +49,10 @@ struct ArticleTextView: NSViewRepresentable {
     /// A language picked for a code block from the label in its corner;
     /// nil goes back to the declared or guessed one.
     var onCodeLanguage: ((CodeBlockMark, String?) -> Void)?
+    /// The side the item's text comes in from, the first time it is shown.
+    var arrival: ArrivalSide = .below
+    /// Whether that first time is still to come; nil never plays it.
+    var arriving: Arriving?
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -70,6 +74,8 @@ struct ArticleTextView: NSViewRepresentable {
         textView.linkTextAttributes = [.foregroundColor: NSColor.linkColor, .cursor: NSCursor.pointingHand]
         textView.textLayoutManager?.delegate = context.coordinator
         textView.delegate = context.coordinator
+        // A layer of its own, for the arrival to play on.
+        textView.wantsLayer = true
 
         let scroll = ReaderScrollView()
         scroll.hasVerticalScroller = true
@@ -113,6 +119,9 @@ struct ArticleTextView: NSViewRepresentable {
             textView.updateInsets()
         }
         if c.version != version {
+            // The item's first text: it arrives. Text rebuilt after (a
+            // translation, a style, the full text) replaces it in place.
+            if c.version == nil, arriving?.claim() == true { textView.arrive(from: arrival) }
             c.show(article, version: version, keepPosition: c.version.map { Self.sameDocument($0, version) } ?? false)
         }
         if let target = scrollTarget, target != c.lastTarget {
@@ -644,8 +653,25 @@ final class ReaderTextView: NSTextView {
         onCodeLanguage?(pick.mark, pick.language)
     }
 
+    /// The side to arrive from, kept until the view is in a window.
+    private var arrivingFrom: ArrivalSide?
+
+    /// The text is about to be shown for the first time: it comes in from
+    /// `side`, now or once the view is in a window.
+    func arrive(from side: ArrivalSide) {
+        if window != nil {
+            ReaderMotion.float(self, from: side)
+        } else {
+            arrivingFrom = side
+        }
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        if window != nil, let side = arrivingFrom {
+            arrivingFrom = nil
+            ReaderMotion.float(self, from: side)
+        }
         if wantsFocus { claimFocus(self) }
         // An article is given its text before the view is in a window, and
         // text laid out then gets no views for its attachments: a table on

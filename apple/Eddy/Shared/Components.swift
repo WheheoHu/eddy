@@ -29,6 +29,9 @@ extension ItemView {
 
     /// Read, started or finished: "Mark as Unread" has something to reset.
     var hasBeenRead: Bool { read || finished || progress > 0 || lastReadAt != nil }
+
+    /// Read and finished: "Mark as Read" has nothing left to mark.
+    var isDone: Bool { read && finished }
 }
 
 struct ProgressRing: View {

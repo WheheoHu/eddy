@@ -71,7 +71,7 @@ struct MediaPane: View {
 
     private func go(_ direction: Direction) -> KeyPress.Result {
         guard let neighbors else { return .ignored }
-        neighbors.go(direction, .vertical)
+        neighbors.go(direction)
         return .handled
     }
 

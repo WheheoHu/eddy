@@ -25,10 +25,18 @@ struct ThreePaneView: View {
     @State private var pageTarget: PageTarget?
     /// Back and forward through the articles of the middle column.
     @State private var history = ReadingHistory()
-    /// Where the reader slides in from when moving to a neighbor.
-    @State private var arrival: Edge = .bottom
+    /// The side the text of the item being opened comes in from.
+    @State private var arrival: Arrival?
     /// A previous chapter, opened at its end.
     @State private var landAtEnd: String?
+    /// Where the rows of Continue Reading stood when the list came on
+    /// screen. Reading moves an item to the top of that list and, at its
+    /// end, out of it; the rows stay as they were until the list starts
+    /// over, so the ones above and below the article being read are still
+    /// there to move to.
+    @State private var continueOrder: [String: Int] = [:]
+    /// Which of the items being read Continue Reading lists.
+    @AppStorage(ReadingScope.key) private var readingScope: ReadingScope = .all
     @FocusState private var focus: PaneFocus?
     /// Keyboard focus is in the reader, which keeps it from one item to the
     /// next; a list taking focus clears it.
@@ -109,21 +117,29 @@ struct ThreePaneView: View {
         .onChange(of: model.revision) {
             if let entryID, model.entry(entryID) == nil { self.entryID = nil }
         }
-        .onChange(of: model.currentItemID) { _, new in
+        .onChange(of: model.currentItemID) { old, new in
             pageTarget = nil
             history.opened(new)
             if new != landAtEnd { landAtEnd = nil }
             // Nothing to read: back at the list, and still there when its
             // selection moves to another article.
             if new == nil, place == .reader { place = .list }
-            if let new, showsUnreadOnly { readHere.insert(new) }
+            // Moving to a neighbor has said which side it lies on; any
+            // other way of opening goes by where the two stand.
+            if let new {
+                if arrival?.item != new { arrival = Arrival(item: new, side: .from(old, to: new, in: order(old, new))) }
+            } else {
+                arrival = nil
+            }
+            if let new, holdsRows(new) { readHere.insert(new) }
         }
         .onChange(of: selection) {
             history.reset(model.currentItemID)
-            readHere = []
+            startOver()
         }
-        .onChange(of: filter) { readHere = [] }
-        .onChange(of: model.listsReset) { readHere = [] }
+        .onChange(of: filter) { startOver() }
+        .onChange(of: readingScope) { startOver() }
+        .onChange(of: model.listsReset) { startOver() }
         .onChange(of: focus) { _, new in if new != nil { readerFocused = false } }
         .onChange(of: articleList, initial: true) { _, list in model.currentList = list }
         .onDisappear { model.currentList = nil }
@@ -330,6 +346,8 @@ struct ThreePaneView: View {
                         Label("Mark All as Read", systemImage: "checkmark.circle")
                     }
                     .help("Mark every unread article here as read")
+                    // It marks subscription articles, which aren't listed.
+                    .disabled(selection == .smart(.continueReading) && readingScope == .collection)
                 }
                 Button { model.paletteVisible = true } label: { Label("Search", systemImage: "magnifyingglass") }
                     .help("Go to or search (⌘K)")
@@ -355,6 +373,10 @@ struct ThreePaneView: View {
                         segment: 52
                     )
                     .frame(height: 56)
+                } else if selection == .smart(.continueReading) {
+                    Hairline()
+                    SwitchBar(selection: $readingScope, options: ReadingScope.options, segment: 52)
+                        .frame(height: 56)
                 }
             }
         }
@@ -412,19 +434,54 @@ struct ThreePaneView: View {
     /// Opening an article marks it read; it stays in an unread-only list,
     /// with the others read here, until the list starts over.
     private var rowsForSelection: [ItemView] {
+        if selection == .smart(.continueReading) { return continuing }
         var kept = readHere
         if let current = model.currentItemID { kept.insert(current) }
         let keep = Array(kept)
         let rows: [ItemView] = switch selection {
         case .smart(.unread): model.items(.all, unreadOnly: true, keep: keep)
         case .smart(.starred): model.items(.starred, unreadOnly: unreadOnly, keep: keep)
-        case .smart(.continueReading): model.items(.continueReading)
         case let .folder(name): model.items(.category(name: name), unreadOnly: unreadOnly, keep: keep)
         case let .feed(id): model.items(.source(id: id), unreadOnly: unreadOnly, keep: keep)
         case let .tag(id): model.items(.tag(id: id), unreadOnly: unreadOnly, keep: keep)
         default: model.items(.all, unreadOnly: unreadOnly, keep: keep)
         }
         return filter == .starred && showsFilter ? rows.filter(\.starred) : rows
+    }
+
+    /// Continue Reading: what is being read, with the items opened from
+    /// this list kept in it, in the order the list had when it started.
+    /// Ones that have joined since come first.
+    private var continuing: [ItemView] {
+        let rows = model.items(.continueReading, keep: readHere.sorted()).filter(readingScope.contains)
+        let new = rows.filter { continueOrder[$0.id] == nil }
+        let known = rows.compactMap { row in continueOrder[row.id].map { (row, $0) } }.sorted { $0.1 < $1.1 }.map(\.0)
+        return new + known
+    }
+
+    /// Opening `id` keeps its row where it is: in an unread-only list, and
+    /// in Continue Reading for the rows it lists (not a chapter reached
+    /// from one of them).
+    private func holdsRows(_ id: String) -> Bool {
+        if selection == .smart(.continueReading) { return continuing.contains { $0.id == id } }
+        return showsUnreadOnly
+    }
+
+    /// The middle column's list starts over: rows kept in place are let go.
+    private func startOver() {
+        readHere = []
+        continueOrder = selection == .smart(.continueReading)
+            ? Dictionary(uniqueKeysWithValues: model.items(.continueReading).enumerated().map { ($1.id, $0) })
+            : [:]
+    }
+
+    /// The list `old` and `new` are both in, to tell which side `new`
+    /// comes in from: a book's chapters, else the middle column's articles.
+    private func order(_ old: String?, _ new: String) -> [ItemView] {
+        if let old, let series = model.item(new)?.seriesId, model.item(old)?.seriesId == series {
+            return model.chapters(series)
+        }
+        return selection?.kinds == nil ? rowsForSelection : []
     }
 
     /// Opens an entry where reading stopped; the reader restores the position.
@@ -487,12 +544,12 @@ struct ThreePaneView: View {
                         itemID: id, scrollTarget: $scrollTarget, pageTarget: pageTarget, openItem: open,
                         showContents: entry == nil ? nil : (tier == .narrowest ? $contentsDrawer : $showContents),
                         neighbors: neighbors(of: item, in: entry), startAtEnd: landAtEnd == id,
+                        arrival: Arrival.side(arrival, for: id),
                         onEscape: { leaveReader(contentsShown: entry != nil && beside) },
                         focused: readerFocused, onFocus: { readerFocused = true },
                         onBack: readerBack, stripLeads: arrangement.leading == .reader, stripLeading: readerLead
                     )
-                    .id(id)
-                    .transition(.push(from: arrival))
+                    .readerSlot(id)
                     if let seriesID = item.seriesId, let info = model.series.first(where: { $0.id == seriesID }) {
                         Hairline()
                         SequenceBar(title: info.title, items: model.chapters(seriesID), current: id) { open($0) }
@@ -542,23 +599,21 @@ struct ThreePaneView: View {
     }
 
     /// A chapter's book, or the articles of the middle column; nothing to
-    /// move to from a page or PDF saved on its own.
+    /// move to from a page or PDF saved on its own, unless it is one of the
+    /// rows of Continue Reading.
     private func neighbors(of item: ItemView, in entry: CollectionEntryView?) -> Neighbors? {
         if let seriesID = item.seriesId {
             return .chapters({ model.chapters(seriesID) }, current: item.id, open: travel)
         }
-        guard entry == nil else { return nil }
+        guard entry == nil || selection == .smart(.continueReading) else { return nil }
         return .articles({ rowsForSelection }, current: item.id, history: history, item: { model.item($0) }, open: travel)
     }
 
-    /// Opens a neighbor, sliding it in from the side it lies on. The edge
-    /// is set first so the outgoing reader leaves the same way.
-    private func travel(to id: String, _ direction: Direction, _ axis: Axis, _ atEnd: Bool) {
-        arrival = .arriving(direction, along: axis)
+    /// Opens a neighbor; its text comes in from the side it lies on.
+    private func travel(to id: String, _ direction: Direction, _ atEnd: Bool) {
+        arrival = Arrival(item: id, side: ArrivalSide(direction))
         landAtEnd = atEnd ? id : nil
-        DispatchQueue.main.async {
-            withAnimation(.easeInOut(duration: 0.2)) { open(id) }
-        }
+        open(id)
     }
 }
 
@@ -617,6 +672,7 @@ private struct ThreePaneSidebar: View, Equatable {
                         }
                         .tag(tag)
                         .contextMenu {
+                            Button("Mark All as Read…") { model.requestMarkAllRead(ArticleList(filter: .category(name: folder), title: folder)) }
                             let shown = model.inGallery(folder: folder)
                             Button(shown ? "Remove from Gallery" : "Show in Gallery") { model.setGallery(folder: folder, !shown) }
                         }
@@ -685,6 +741,7 @@ private struct ThreePaneSidebar: View, Equatable {
             .flatRow(chosen: selection == tag, lead: lead)
             .tag(tag)
             .contextMenu {
+                Button("Mark All as Read…") { model.requestMarkAllRead(ArticleList(filter: .source(id: feed.id), title: feed.title)) }
                 if let folder = feed.category, model.inGallery(folder: folder) {
                     Button("Shown in Gallery with “\(folder)”") {}.disabled(true)
                 } else {
@@ -733,10 +790,11 @@ private struct ThreePaneArticles: View, Equatable {
         .contextMenu(forSelectionType: String.self) { ids in
             if let id = ids.first, let item = rows.first(where: { $0.id == id }) {
                 Button(item.starred ? "Unstar" : "Star") { model.setStarred(item, !item.starred) }
+                if !item.isDone {
+                    Button("Mark as Read") { model.markRead([item.id]) }
+                }
                 if item.hasBeenRead {
                     Button("Mark as Unread") { model.markUnread([item.id]) }
-                } else {
-                    Button("Mark as Read") { model.setRead(item, true) }
                 }
                 if model.canExport(item.id, fromReader: false) {
                     Menu("Export") {
@@ -774,7 +832,7 @@ private struct ThreePaneArticles: View, Equatable {
             Button("Next") { move(rows, 1) }.keyboardShortcut("j", modifiers: [])
             Button("Previous") { move(rows, -1) }.keyboardShortcut("k", modifiers: [])
             Button("Star") { if let item = current(rows) { model.setStarred(item, !item.starred) } }.keyboardShortcut("s", modifiers: [])
-            Button("Read") { if let item = current(rows) { model.setRead(item, !item.read) } }.keyboardShortcut("m", modifiers: [])
+            Button("Read") { if let item = current(rows) { model.toggleRead(item) } }.keyboardShortcut("m", modifiers: [])
         }
         .disabled(model.overlayVisible)
         .opacity(0)
@@ -827,6 +885,9 @@ struct CollectionList: View {
         .flatList()
         .contextMenu(forSelectionType: String.self) { ids in
             if let id = ids.first, let entry = model.entry(id) {
+                if !entry.isDone {
+                    Button("Mark as Read") { model.markRead(entry: entry) }
+                }
                 if entry.hasBeenRead {
                     Button("Mark as Unread") { model.markUnread(entry: entry) }
                 }

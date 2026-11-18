@@ -245,6 +245,11 @@ impl EddyEngine {
         Ok(self.engine.set_finished(&item_id, finished)?)
     }
 
+    /// Read and finished, by hand; the reading position is left alone.
+    pub fn mark_read(&self, item_ids: Vec<String>) -> R<()> {
+        Ok(self.engine.mark_read(&item_ids)?)
+    }
+
     /// Back to unread and never started: read, finished and the reading
     /// position are all reset.
     pub fn mark_unread(&self, item_ids: Vec<String>) -> R<()> {

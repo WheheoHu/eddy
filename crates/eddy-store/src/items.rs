@@ -36,6 +36,7 @@ pub struct ItemQuery {
     pub unread_only: bool,
     /// Listed by `unread_only` even when read: the article being read, and
     /// the ones read since the list was last reset, so rows stay in place.
+    /// Continue Reading lists them too, even once they are read to the end.
     pub keep: Vec<String>,
     pub limit: u32,
     pub offset: u32,
@@ -359,7 +360,16 @@ fn conditions(q: &ItemQuery) -> Option<Conditions> {
         ItemFilter::Starred => clauses.push("i.starred=1".into()),
         ItemFilter::Saved => clauses.push("i.kind='saved'".into()),
         ItemFilter::ContinueReading => {
-            clauses.push("i.progress>=0.05 AND i.progress<0.95 AND i.finished=0".into());
+            let started = "i.progress>=0.05 AND i.progress<0.95 AND i.finished=0";
+            if q.keep.is_empty() {
+                clauses.push(started.into());
+            } else {
+                clauses.push(format!(
+                    "(({started}) OR i.id IN ({}))",
+                    vec!["?"; q.keep.len()].join(",")
+                ));
+                values.extend(q.keep.iter().map(|k| Value::Text(k.clone())));
+            }
             order = "i.last_read_at DESC, i.id";
         }
         ItemFilter::Source(id) => {
