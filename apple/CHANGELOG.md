@@ -20,6 +20,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Settings open as a panel in the main window (⌘, or the command palette), with the window dimmed behind it; Esc or a click outside closes it. In a narrow window its categories become a row of icons down the side.
+- Settings pages have a new look: a large title, bold section headings over ruled rows, square switches, and a segmented switch wherever there are only a few choices (Open in, Content appearance, Protocol, Keep up to, a full-text rule's mode).
 - Articles and the Gallery glide further after a flick on the trackpad, and spring back when the glide reaches an end. Touching the trackpad stops it.
 - Disconnect from Server also removes this Mac from the server's devices.
 - Pairing with a sync server finishes as soon as this Mac is connected. The first sync runs in the background while the app stays usable, and articles appear as they arrive.

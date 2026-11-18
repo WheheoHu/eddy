@@ -131,7 +131,7 @@ struct ThreePaneView: View {
         } detail: {
             PaneContainer(
                 arrangement: arrangement, title: listTitle, canRead: canRead,
-                gesturesEnabled: !model.paletteVisible && model.mediaRequest == nil, drag: drag, go: go
+                gesturesEnabled: !model.overlayVisible && model.mediaRequest == nil, drag: drag, go: go
             ) {
                 sidebar(onstage: true, scale: tier == .narrowest ? .large : .roomy)
             } list: {
@@ -669,7 +669,7 @@ struct ThreePaneView: View {
             Button("Star") { if let item = current(rows) { model.setStarred(item, !item.starred) } }.keyboardShortcut("s", modifiers: [])
             Button("Read") { if let item = current(rows) { model.setRead(item, !item.read) } }.keyboardShortcut("m", modifiers: [])
         }
-        .disabled(model.paletteVisible)
+        .disabled(model.overlayVisible)
         .opacity(0)
         .frame(width: 0, height: 0)
         .accessibilityHidden(true)

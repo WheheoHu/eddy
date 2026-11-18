@@ -145,6 +145,20 @@ final class AppModel {
 
     var paletteVisible = false
 
+    /// Settings are a panel over the window.
+    var settingsVisible = false
+
+    /// Something lies over the window's content and takes its keys.
+    var overlayVisible: Bool { paletteVisible || settingsVisible }
+
+    /// Opens Settings, on a page if one is named.
+    func showSettings(_ tab: SettingsTab? = nil) {
+        if let tab { UserDefaults.standard.set(tab.rawValue, forKey: "settings.tab") }
+        paletteVisible = false
+        mediaRequest = nil
+        settingsVisible = true
+    }
+
     /// Translation on or off for the item being read (⌥A).
     func toggleTranslation() {
         guard let id = currentItemID else { return }

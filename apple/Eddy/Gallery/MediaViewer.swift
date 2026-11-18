@@ -256,8 +256,6 @@ final class MediaPlayback {
 /// item's media when it isn't known yet.
 struct MediaStage: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.openSettings) private var openSettings
-    @AppStorage("settings.tab") private var settingsTab: SettingsTab = .accounts
     let entry: GalleryEntryView
     let media: GalleryMedia
     let playback: MediaPlayback
@@ -281,8 +279,7 @@ struct MediaStage: View {
             } else if mediaSet?.status == .needsSignIn {
                 message("lock", "This post is only shown to signed-in visitors.") {
                     Button("Sign In…") {
-                        settingsTab = .accounts
-                        openSettings()
+                        model.showSettings(.accounts)
                     }
                     Button("Try Again") { Task { await retry() } }
                 }

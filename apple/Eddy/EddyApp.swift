@@ -55,6 +55,11 @@ struct EddyApp: App {
         // One toolbar height whether or not a screen shows a title.
         .windowToolbarStyle(.unifiedCompact)
         .commands {
+            // Settings are a panel in the window, not a window of their own.
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") { model.settingsVisible ? (model.settingsVisible = false) : model.showSettings() }
+                    .keyboardShortcut(",", modifiers: .command)
+            }
             CommandGroup(after: .newItem) {
                 Button("Save Page…") { model.savingURL = true }.keyboardShortcut("l", modifiers: .command)
                 Button("Convert Video to Book…") { model.requestVideoConvert() }.keyboardShortcut("L", modifiers: [.command, .shift])
@@ -88,9 +93,6 @@ struct EddyApp: App {
                 Button("Translate") { model.toggleTranslation() }
                     .keyboardShortcut("a", modifiers: .option)
             }
-        }
-        Settings {
-            SettingsView().environment(model)
         }
     }
 }
@@ -129,6 +131,10 @@ struct RootView: View {
                 .id(request.id)
             }
         }
+        .overlay {
+            if model.settingsVisible { SettingsPanel().transition(.opacity) }
+        }
+        .animation(.easeOut(duration: 0.16), value: model.settingsVisible)
         .overlay {
             if model.paletteVisible { CommandPalette() }
         }

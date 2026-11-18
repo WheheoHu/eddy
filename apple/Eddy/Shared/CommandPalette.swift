@@ -41,12 +41,10 @@ struct PaletteItem: Identifiable {
 /// finds here. Esc closes it.
 struct CommandPalette: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.openSettings) private var openSettings
     @AppStorage("app.mode") private var mode: AppMode = .threePane
     @AppStorage("reader.appearance") private var appearance: ReaderAppearance = .app
     @AppStorage(ReaderFonts.latinKey) private var latinFont = ReaderFonts.systemSans
     @AppStorage(ReaderFonts.cjkKey) private var cjkFont = ReaderFonts.systemSans
-    @AppStorage("settings.tab") private var settingsTab: SettingsTab = .accounts
     @AppStorage("threePane.contents") private var threePaneContents = false
     @AppStorage("library.contents") private var libraryContents = true
 
@@ -93,7 +91,7 @@ struct CommandPalette: View {
                 list(items)
             }
             .frame(maxWidth: 580)
-            .background(WindowReader(memory: focusMemory))
+            .background(FocusRecorder(memory: focusMemory))
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator))
             .shadow(color: .black.opacity(0.25), radius: 24, y: 10)
@@ -361,8 +359,7 @@ struct CommandPalette: View {
     private var settingsItems: [PaletteItem] {
         var items = SettingsTab.allCases.map { tab in
             PaletteItem(id: "settings:\(tab.rawValue)", group: .settings, title: String(localized: "Settings: \(String(localized: String.LocalizationValue(tab.rawValue)))"), icon: tab.icon) {
-                settingsTab = tab
-                openSettings()
+                model.showSettings(tab)
             }
         }
         for option in ReaderAppearance.allCases {
@@ -488,9 +485,9 @@ final class FocusMemory {
     weak var responder: NSResponder?
 }
 
-/// Records the window as the palette arrives in it, before its field is
-/// focused.
-private struct WindowReader: NSViewRepresentable {
+/// Records the window as the palette (or a panel) arrives in it, before
+/// anything of its own is focused.
+struct FocusRecorder: NSViewRepresentable {
     let memory: FocusMemory
 
     func makeNSView(context: Context) -> NSView {

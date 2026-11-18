@@ -31,28 +31,19 @@ struct TranslationSettingsPage: View {
         Form {
             Section {
                 aiProtocolPicker($proto) { save() }
-                TextField(
-                    "API URL",
-                    text: $baseURL,
-                    prompt: Text(proto == .gemini ? "https://generativelanguage.googleapis.com/v1beta" : "https://api.openai.com/v1")
-                )
-                .focused($focus, equals: .baseURL)
-                TextField(
-                    "Model",
-                    text: $modelID,
-                    prompt: Text(proto == .gemini ? "gemini-2.5-flash" : "gpt-4.1-mini")
-                )
-                .focused($focus, equals: .model)
+                SettingsField("API URL", text: $baseURL, prompt: Text(proto == .gemini ? "https://generativelanguage.googleapis.com/v1beta" : "https://api.openai.com/v1"), width: 320)
+                    .focused($focus, equals: .baseURL)
+                SettingsField("Model", text: $modelID, prompt: Text(proto == .gemini ? "gemini-2.5-flash" : "gpt-4.1-mini"))
+                    .focused($focus, equals: .model)
                 HStack {
-                    SecureField(hasSavedKey ? "API key (saved in keychain)" : "API key", text: $key)
+                    SettingsField("API key", text: $key, prompt: hasSavedKey ? Text("Saved in keychain") : nil, secure: true)
                         .focused($focus, equals: .key)
                         .onSubmit(saveKey)
                     if hasSavedKey {
                         Button("Remove Key", role: .destructive, action: removeKey)
-                            .controlSize(.small)
                     }
                 }
-                Stepper("Concurrent requests: \(concurrency)", value: $concurrency, in: 1...Int(model.engine?.maxAiConcurrency() ?? 8))
+                SettingsStepper("Concurrent requests", value: $concurrency, in: 1...Int(model.engine?.maxAiConcurrency() ?? 8))
                     .onChange(of: concurrency) { _, _ in save() }
                 HStack {
                     Button("Test") { Task { await test() } }
@@ -69,10 +60,9 @@ struct TranslationSettingsPage: View {
             }
 
             Section {
-                TextField("Translate into", text: $target)
+                SettingsField("Translate into", text: $target)
                     .focused($focus, equals: .target)
-                TextField("Glossary (term = translation, one per line)", text: $glossary, axis: .vertical)
-                    .lineLimit(2...4)
+                SettingsField("Glossary", text: $glossary, prompt: Text("term = translation, one per line"), lines: 2...4, width: 320)
                     .focused($focus, equals: .glossary)
                 Toggle("Sync translations across devices", isOn: $syncTranslations)
                     .onChange(of: syncTranslations) { _, _ in save() }
@@ -98,7 +88,7 @@ struct TranslationSettingsPage: View {
             }
 
             Section {
-                Stepper("Automatic requests per day: \(dailyLimit)", value: $dailyLimit, in: 0...2000, step: 25)
+                SettingsStepper("Automatic requests per day", value: $dailyLimit, in: 0...2000, step: 25)
                     .onChange(of: dailyLimit) { _, _ in save() }
             } header: {
                 Text("Automatic Work")
@@ -111,7 +101,6 @@ struct TranslationSettingsPage: View {
                 Text(note).foregroundStyle(.secondary).font(.callout)
             }
         }
-        .formStyle(.grouped)
         .onSubmit {
             commitPendingKey()
             save()
@@ -289,28 +278,19 @@ struct SummariesSettingsPage: View {
         Form {
             Section {
                 aiProtocolPicker($proto) { save() }
-                TextField(
-                    "API URL",
-                    text: $baseURL,
-                    prompt: Text(proto == .gemini ? "https://generativelanguage.googleapis.com/v1beta" : "https://api.openai.com/v1")
-                )
-                .focused($focus, equals: .baseURL)
-                TextField(
-                    "Model",
-                    text: $modelID,
-                    prompt: Text(proto == .gemini ? "gemini-2.5-pro" : "gpt-4.1")
-                )
-                .focused($focus, equals: .model)
+                SettingsField("API URL", text: $baseURL, prompt: Text(proto == .gemini ? "https://generativelanguage.googleapis.com/v1beta" : "https://api.openai.com/v1"), width: 320)
+                    .focused($focus, equals: .baseURL)
+                SettingsField("Model", text: $modelID, prompt: Text(proto == .gemini ? "gemini-2.5-pro" : "gpt-4.1"))
+                    .focused($focus, equals: .model)
                 HStack {
-                    SecureField(hasSavedKey ? "API key (saved in keychain)" : "API key", text: $key)
+                    SettingsField("API key", text: $key, prompt: hasSavedKey ? Text("Saved in keychain") : nil, secure: true)
                         .focused($focus, equals: .key)
                         .onSubmit(saveKey)
                     if hasSavedKey {
                         Button("Remove Key", role: .destructive, action: removeKey)
-                            .controlSize(.small)
                     }
                 }
-                Stepper("Concurrent requests: \(concurrency)", value: $concurrency, in: 1...Int(model.engine?.maxAiConcurrency() ?? 8))
+                SettingsStepper("Concurrent requests", value: $concurrency, in: 1...Int(model.engine?.maxAiConcurrency() ?? 8))
                     .onChange(of: concurrency) { _, _ in save() }
                 HStack {
                     Button("Test") { Task { await test() } }
@@ -327,7 +307,7 @@ struct SummariesSettingsPage: View {
             }
 
             Section {
-                TextField("Summary language", text: $summaryLanguage)
+                SettingsField("Summary language", text: $summaryLanguage)
                     .focused($focus, equals: .summaryLanguage)
                 Toggle("Sync summaries across devices", isOn: $syncSummaries)
                     .onChange(of: syncSummaries) { _, _ in save() }
@@ -349,7 +329,7 @@ struct SummariesSettingsPage: View {
             }
 
             Section {
-                Stepper("Automatic requests per day: \(dailyLimit)", value: $dailyLimit, in: 0...2000, step: 25)
+                SettingsStepper("Automatic requests per day", value: $dailyLimit, in: 0...2000, step: 25)
                     .onChange(of: dailyLimit) { _, _ in save() }
             } header: {
                 Text("Automatic Work")
@@ -362,7 +342,6 @@ struct SummariesSettingsPage: View {
                 Text(note).foregroundStyle(.secondary).font(.callout)
             }
         }
-        .formStyle(.grouped)
         .onSubmit {
             commitPendingKey()
             save()
@@ -533,11 +512,11 @@ struct SummariesSettingsPage: View {
 
 @ViewBuilder
 private func aiProtocolPicker(_ selection: Binding<AiProtocolView>, onChange: @escaping () -> Void) -> some View {
-    Picker("Protocol", selection: selection) {
-        Text("Automatic").tag(AiProtocolView.auto)
-        Text("OpenAI Compatible (/v1)").tag(AiProtocolView.openAi)
-        Text("Gemini Native (/v1beta)").tag(AiProtocolView.gemini)
-    }
+    SettingsChoice("Protocol", selection: selection, options: [
+        (AiProtocolView.auto, String(localized: "Automatic")),
+        (.openAi, String(localized: "OpenAI Compatible (/v1)")),
+        (.gemini, String(localized: "Gemini Native (/v1beta)")),
+    ])
     .onChange(of: selection.wrappedValue) { _, _ in onChange() }
 }
 
@@ -564,10 +543,16 @@ struct AIRuleRow: View {
                 }
             }
             .labelsHidden()
+            .flatPopup()
+            Spacer(minLength: 8)
             if rule.action == .translate {
                 Toggle("Foreign only", isOn: Binding(get: { rule.onlyForeign }, set: { rule = AutoRuleView(scope: rule.scope, action: rule.action, minChars: rule.minChars, onlyForeign: $0) }))
+                    .toggleStyle(FlatToggleStyle(compact: true))
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.text2)
             }
-            Button(role: .destructive, action: remove) { Image(systemName: "minus.circle") }.buttonStyle(.borderless)
+            Button(role: .destructive, action: remove) { Image(systemName: "minus") }
+                .buttonStyle(FlatButtonStyle(size: 26)).help("Remove")
         }
     }
 
