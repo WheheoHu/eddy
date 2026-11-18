@@ -262,33 +262,35 @@ struct ThreePaneView: View {
     }
 
     private var sidebarList: some View {
-        List(selection: Binding(get: { selection }, set: choose)) {
-            SideHeading(title: "Library", first: true)
+        // Folders fold, and the list leaves room at its start for their arrows.
+        let lead: CGFloat = model.folders.isEmpty ? 8 : 0
+        return List(selection: Binding(get: { selection }, set: choose)) {
+            SideHeading(title: "Library", first: true, lead: lead)
             ForEach(Smart.allCases, id: \.self) { smart in
                 let tag = Selection.smart(smart)
                 SideRow(symbol: smart.icon, title: Text(LocalizedStringKey(smart.rawValue)), count: badge(smart), chosen: selection == tag)
-                    .flatRow(chosen: selection == tag)
+                    .flatRow(chosen: selection == tag, lead: lead)
                     .tag(tag)
             }
             SideRow(symbol: "bookmark", title: Text("Saved"), count: model.collection.count, chosen: selection == .saved)
-                .flatRow(chosen: selection == .saved)
+                .flatRow(chosen: selection == .saved, lead: lead)
                 .tag(Selection.saved)
             let kinds = CollectionKindView.all.filter { kind in model.collection.contains { $0.kind == kind } }
             if !kinds.isEmpty {
-                SideHeading(title: "Collection")
+                SideHeading(title: "Collection", lead: lead)
                 ForEach(kinds) { kind in
                     let tag = Selection.kind(kind)
                     SideRow(symbol: kind.icon, title: Text(kind.title), count: model.collection.filter { $0.kind == kind }.count, chosen: selection == tag)
-                        .flatRow(chosen: selection == tag)
+                        .flatRow(chosen: selection == tag, lead: lead)
                         .tag(tag)
                 }
             }
             if !model.feeds.isEmpty {
-                SideHeading(title: "Subscriptions")
+                SideHeading(title: "Subscriptions", lead: lead)
                 ForEach(model.folders, id: \.self) { folder in
                     let tag = Selection.folder(folder)
                     DisclosureGroup(isExpanded: expanded(folder)) {
-                        feedRows(model.feeds(inFolder: folder))
+                        feedRows(model.feeds(inFolder: folder), lead)
                     } label: {
                         SideRow(symbol: "folder", title: Text(verbatim: folder), count: model.unread(inFolder: folder), chosen: selection == tag) {
                             if model.inGallery(folder: folder) { GalleryMark() }
@@ -299,16 +301,16 @@ struct ThreePaneView: View {
                             Button(shown ? "Remove from Gallery" : "Show in Gallery") { model.setGallery(folder: folder, !shown) }
                         }
                     }
-                    .flatRow(chosen: selection == tag)
+                    .flatRow(chosen: selection == tag, lead: lead)
                 }
-                feedRows(model.feeds(inFolder: nil))
+                feedRows(model.feeds(inFolder: nil), lead)
             }
             if !model.tags.isEmpty {
-                SideHeading(title: "Tags")
+                SideHeading(title: "Tags", lead: lead)
                 ForEach(model.tags) { t in
                     let tag = Selection.tag(t.id)
                     SideRow(symbol: "number", title: Text(verbatim: t.name), count: Int(t.count), chosen: selection == tag)
-                        .flatRow(chosen: selection == tag)
+                        .flatRow(chosen: selection == tag, lead: lead)
                         .tag(tag)
                 }
             }
@@ -344,13 +346,13 @@ struct ThreePaneView: View {
         }
     }
 
-    private func feedRows(_ feeds: [SourceView]) -> some View {
+    private func feedRows(_ feeds: [SourceView], _ lead: CGFloat) -> some View {
         ForEach(feeds) { feed in
             let tag = Selection.feed(feed.id)
             SideRow(symbol: "dot.radiowaves.up.forward", title: Text(verbatim: feed.title), count: Int(feed.unread), chosen: selection == tag) {
                 if let reason = model.galleryReason(feed) { GalleryMark(throughFolder: reason.isEmpty ? nil : reason) }
             }
-            .flatRow(chosen: selection == tag)
+            .flatRow(chosen: selection == tag, lead: lead)
             .tag(tag)
             .contextMenu {
                 if let folder = feed.category, model.inGallery(folder: folder) {

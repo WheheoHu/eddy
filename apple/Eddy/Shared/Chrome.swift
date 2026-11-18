@@ -215,7 +215,7 @@ struct SideRow<Mark: View>: View {
                 .font(.system(size: 14, weight: chosen ? .semibold : .regular))
                 .lineLimit(1)
             mark
-            Spacer(minLength: 4)
+            Spacer(minLength: 2)
             Text(count > 0 ? "\(count)" : "")
                 .font(.system(size: 13))
                 .monospacedDigit()
@@ -236,9 +236,12 @@ extension SideRow where Mark == EmptyView {
 extension View {
     /// A row of a flat list: no rule of the system's, and a shade behind it
     /// while it is the one chosen.
-    func flatRow(chosen: Bool, inset: CGFloat = 10) -> some View {
+    ///
+    /// `lead`: from the shade's edge to the row's content. A list with rows
+    /// that fold leaves room for their arrows itself, so its rows pass 0.
+    func flatRow(chosen: Bool, inset: CGFloat = 10, lead: CGFloat = 8) -> some View {
         listRowSeparator(.hidden)
-            .listRowInsets(EdgeInsets(top: 0, leading: inset + 8, bottom: 0, trailing: inset + 8))
+            .listRowInsets(EdgeInsets(top: 0, leading: inset + lead, bottom: 0, trailing: inset + 4))
             .listRowBackground(
                 RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
                     .fill(chosen ? Theme.track : Color.clear)
@@ -262,6 +265,7 @@ extension View {
 struct SideHeading: View {
     let title: LocalizedStringKey
     var first = false
+    var lead: CGFloat = 8
 
     var body: some View {
         Text(title)
@@ -270,7 +274,7 @@ struct SideHeading: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.top, first ? 2 : 16)
             .padding(.bottom, 4)
-            .flatRow(chosen: false, inset: 2)
+            .flatRow(chosen: false, lead: lead)
             .selectionDisabled()
             .accessibilityAddTraits(.isHeader)
     }
@@ -301,6 +305,7 @@ private struct TableTuner: NSViewRepresentable {
                     if table.selectionHighlightStyle != .none { table.selectionHighlightStyle = .none }
                     if table.floatsGroupRows { table.floatsGroupRows = false }
                     table.backgroundColor = .clear
+                    if let outline = table as? NSOutlineView, outline.indentationPerLevel != 14 { outline.indentationPerLevel = 14 }
                     table.enclosingScrollView?.drawsBackground = false
                     return
                 }
