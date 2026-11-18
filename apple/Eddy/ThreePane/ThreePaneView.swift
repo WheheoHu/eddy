@@ -121,8 +121,10 @@ struct ThreePaneView: View {
             if case let .feed(id) = selection, let folder = model.feeds.first(where: { $0.id == id })?.category, collapsed.contains(folder) {
                 toggleFolder(folder)
             }
-            // Once the columns are there to take the keys.
-            DispatchQueue.main.async { focusFirstColumn() }
+            // Once the columns are there to take the keys, and it is known
+            // which of them the window has room for (`fit` does it if the
+            // window hasn't been measured yet).
+            DispatchQueue.main.async { if fitted { focusFirstColumn() } }
             // Coming from another mode with its sidebar in: it stays in.
             place = model.sidebarPulled ? .sidebar : (canRead ? .reader : .list)
         }
@@ -198,6 +200,9 @@ struct ThreePaneView: View {
             fitted = true
             tier = new
             if new == .wide { model.sidebarPulled = false }
+            // Now that it is known which columns show: the keys start in
+            // the first of them, not in a sidebar that is out of sight.
+            DispatchQueue.main.async { focusFirstColumn() }
             return
         }
         guard new != tier else { return }
@@ -335,7 +340,15 @@ struct ThreePaneView: View {
     /// Return or Right in the sidebar: on to the middle column, at its
     /// first row unless one of its rows is open already.
     private func enterList() {
-        go(.list)
+        if tier == .medium, arrangement.sidebarShown {
+            // The sidebar lies beside the list here, over the article:
+            // the keys go on to the list and it stays, as Left from the
+            // list comes back to it. Going to the list would send it away.
+            readerFocused = false
+            focus = .list
+        } else {
+            go(.list)
+        }
         if let kinds = selection?.kinds {
             guard entryID == nil else { return }
             // In the order the list shows them: Saved by kind.
@@ -354,6 +367,12 @@ struct ThreePaneView: View {
                 listTable.reveal(row: 0)
             }
         }
+    }
+
+    /// A book's contents show beside the text: the chapter open there, not
+    /// the book in the middle column, is the row the text is read from.
+    private var contentsBeside: Bool {
+        showContents && tier != .narrowest && model.entry(containing: model.currentItemID) != nil
     }
 
     /// The keys start in the first column that shows: the sidebar's chosen
@@ -441,13 +460,13 @@ struct ThreePaneView: View {
             if let kinds {
                 CollectionList(
                     kinds: kinds, sort: collectionSort, selection: Binding(get: { entryID }, set: openEntry),
-                    active: focus == .list || readerFocused, reading: readerFocused,
+                    active: focus == .list || (readerFocused && !contentsBeside), reading: readerFocused,
                     focus: $focus, onReturn: read, onEscape: leaveList
                 )
             } else {
                 ThreePaneArticles(
                     rows: rows, marksFinished: selection == .smart(.continueReading),
-                    active: focus == .list || readerFocused, reading: readerFocused, table: listTable,
+                    active: focus == .list || (readerFocused && !contentsBeside), reading: readerFocused, table: listTable,
                     focus: $focus, read: read, leave: leaveList
                 )
                     .equatable()
@@ -622,7 +641,8 @@ struct ThreePaneView: View {
             HStack(spacing: 0) {
                 if let entry, beside {
                     EntryContents(
-                        entry: entry, currentItemID: id, open: open, jump: jump, active: focus == .contents,
+                        entry: entry, currentItemID: id, open: open, jump: jump,
+                        active: focus == .contents || readerFocused, reading: readerFocused,
                         focus: $focus, onReturn: read, onEscape: { go(.list) }
                     )
                         .frame(width: 260)
@@ -660,6 +680,7 @@ struct ThreePaneView: View {
                     EntryContents(
                         entry: entry, currentItemID: id,
                         open: { open($0); closeContents() }, jump: { jump($0); closeContents() },
+                        active: focus == .contents,
                         focus: $focus, onReturn: { closeContents(); read() }, onEscape: closeContents
                     )
                         .frame(width: 280)
@@ -857,7 +878,7 @@ private struct ThreePaneSidebar: View, Equatable {
     }
 
     /// Right goes on to the middle column, as Return does. Left goes back a
-    /// level: from a subscription to its folder, else where Esc leads.
+    /// level, from a subscription to its folder; there is none before that.
     /// Space folds the folder chosen, or unfolds it; on a subscription it
     /// folds the folder it is in, which is then the one chosen.
     private func key(_ key: KeyEquivalent) -> KeyPress.Result {
@@ -882,9 +903,9 @@ private struct ThreePaneSidebar: View, Equatable {
                 choose(.folder(folder))
                 return .handled
             }
-            guard let sidebarEscape else { return .ignored }
-            sidebarEscape()
-            return .handled
+            // The sidebar is the first level: nothing lies before it. Esc,
+            // not Left, sends it away where it lies over the columns.
+            return .ignored
         }
     }
 

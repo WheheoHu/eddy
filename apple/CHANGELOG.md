@@ -66,6 +66,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - While reading, Up and Down move a page at a time, not a line.
 - Three-Pane: while the keys are in the article, the bar that marks its row in the list is at the row’s end, on the article’s side.
 - The media viewer: Up and Down slide the next item in from below or above, as a swipe does, instead of swapping it in place.
+- A page turned with Up or Down keeps a fifth of what was showing in view, to go on reading from.
+- A book’s contents, and a subscription’s articles beside the text in the Library, mark the row open the way Three-Pane’s list does: the bar at the row’s start while the keys are in the contents, at its end while they are in the text. In Three-Pane with a book’s contents showing, the chapter carries the bar while reading, not the book in the list.
+- Three-Pane: Left in the sidebar no longer sends it away where it lies over the other columns; Esc does.
 
 ### Removed
 
@@ -74,6 +77,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Three-Pane, in a window with room for the list and the article: Right from the sidebar and Left from the list only showed and hid the sidebar. The keys now go to the list with the sidebar left in place, and back to it.
+- Three-Pane, in a window too narrow to show the sidebar beside the other columns: the keys could start in the sidebar while it was out of sight.
 - The media viewer: after a few items, a swipe up or down on the trackpad slid towards the next item and then came back to the one it started from.
 - Three-Pane: rows of the sidebar could stand at two different distances from its edge.
 - Switching from the Library to Three-Pane closed the article or chapter being read.

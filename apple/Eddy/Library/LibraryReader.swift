@@ -111,13 +111,14 @@ struct LibraryReader: View {
     private var contents: some View {
         if let entry {
             EntryContents(
-                entry: entry, currentItemID: currentID, open: pick, jump: jump, active: focus == .contents || readerFocused,
+                entry: entry, currentItemID: currentID, open: pick, jump: jump,
+                active: focus == .contents || readerFocused, reading: readerFocused,
                 focus: $focus, onReturn: { readerFocused = true }, onEscape: close
             )
         } else {
             FeedContents(
                 title: book.title, items: entries, currentID: currentID, select: pick,
-                active: focus == .contents || readerFocused,
+                active: focus == .contents || readerFocused, reading: readerFocused,
                 focus: $focus, onReturn: { readerFocused = true }, onEscape: close,
                 onMarkAllRead: articleList.map { list in { model.requestMarkAllRead(list) } }
             )
@@ -231,8 +232,10 @@ private struct FeedContents: View {
     let items: [ItemView]
     let currentID: String?
     let select: (String) -> Void
-    /// The keys are with the articles: the one open carries the mark.
+    /// The keys are with the articles, or in the one being read: the one
+    /// open carries the mark, on the text's side while the keys are in it.
     var active = false
+    var reading = false
     var focus: FocusState<PaneFocus?>.Binding?
     var onReturn: (() -> Void)?
     var onEscape: (() -> Void)?
@@ -272,7 +275,7 @@ private struct FeedContents: View {
                             Text(item.title).font(.system(size: 13.5, weight: item.read ? .regular : .semibold)).foregroundStyle(item.read ? Theme.text2 : Theme.text1).lineLimit(3)
                         }
                         .padding(.vertical, 6)
-                        .flatRow(chosen: item.id == currentID, active: active)
+                        .flatRow(chosen: item.id == currentID, active: active, activeEdge: reading ? .trailing : .leading)
                         .tag(item.id)
                         .contextMenu {
                             if !item.isDone {

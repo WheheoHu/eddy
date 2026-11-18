@@ -775,7 +775,11 @@ final class ReaderTextView: NSTextView {
             if event.keyCode == 53 { cancelOperation(nil) } else { super.keyDown(with: event) }
             return
         }
-        let page = max(scroll.contentView.bounds.height - lineStep, lineStep)
+        // A page leaves a fifth of what was showing in view, or three
+        // lines if that is more: where the eye was is still there to go on
+        // from.
+        let height = scroll.contentView.bounds.height
+        let page = max(height - max(height * 0.2, lineStep * 3), lineStep)
         // Shift with Left or Right turns to the chapter or article before or
         // after, the way a swipe that way does in a book; Command does too.
         if modifiers == .shift || modifiers == .command, key == .leftArrow || key == .rightArrow, let onStep {
