@@ -74,7 +74,11 @@ struct MediaViewer: View {
             focused = true
             scroll.start()
         }
-        .onDisappear { scroll.stop() }
+        .onDisappear {
+            scroll.stop()
+            model.viewedItemID = nil
+        }
+        .onChange(of: entry.item.id, initial: true) { _, id in model.viewedItemID = id }
         .onKeyPress(.escape) { close(); return .handled }
         .onKeyPress(.upArrow) { step(-1) }
         .onKeyPress(.downArrow) { step(1) }

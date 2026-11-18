@@ -170,6 +170,31 @@ final class AppModel {
         readerCommand = PaletteRequest(value: ReaderCommand(itemID: id, action: .toggleTranslation))
     }
 
+    /// What Three-Pane's sidebar has chosen. Kept here, not in the view: it
+    /// outlives a switch of mode, and the Library sets it. The sidebars of
+    /// the two modes follow each other, each choice made in one setting
+    /// what the other shows next (`chose`).
+    var threePaneSelection: ThreePaneView.Selection? = .smart(.all)
+
+    /// Chosen in Three-Pane's sidebar: the Library's shelf follows, where
+    /// it has one for it (not for unread, starred or a tag).
+    func chose(_ selection: ThreePaneView.Selection?) {
+        threePaneSelection = selection
+        if let selection, let filter = LibraryFilter(selection, feeds: feeds) {
+            UserDefaults.standard.set(filter.rawValue, forKey: LibraryFilter.key)
+        }
+    }
+
+    /// Chosen in the Library's sidebar: Three-Pane's follows.
+    func chose(_ filter: LibraryFilter) {
+        threePaneSelection = ThreePaneView.Selection(filter, folders: folders)
+    }
+
+    /// A subscription opened from the Library's shelf: Three-Pane lists it.
+    func opened(feed sourceID: String) {
+        threePaneSelection = .feed(sourceID)
+    }
+
     /// Picked in the palette, for the current mode: a sidebar entry, an item
     /// to open, a command for the reader.
     var navigation: PaletteRequest<Destination>?
@@ -334,6 +359,14 @@ final class AppModel {
         return entry(containing: item)
     }
 
+    /// How many articles of each subscription are part read: the ones
+    /// Continue Reading lists.
+    var readingArticles: [String: Int] {
+        items(.continueReading).reduce(into: [:]) { counts, item in
+            if item.kind == .feed, let source = item.sourceId { counts[source, default: 0] += 1 }
+        }
+    }
+
     func chapters(_ seriesID: String) -> [ItemView] {
         items(.series(id: seriesID), limit: 2000)
     }
@@ -484,6 +517,34 @@ final class AppModel {
     /// as Read"); articles read in the meantime stay listed until then.
     var listsReset = 0
 
+    /// Read and done with, by hand, on every device (and FreshRSS): read
+    /// and finished, so out of Continue Reading. Opening an item only marks
+    /// it read (`markOpened`).
+    func markRead(_ itemIDs: [String]) {
+        guard !itemIDs.isEmpty else { return }
+        do {
+            try engine?.markRead(itemIds: itemIDs)
+        } catch {
+            report(error)
+        }
+        reload()
+    }
+
+    /// A book or series, all its chapters; a page or PDF itself.
+    func markRead(entry: CollectionEntryView) {
+        markRead(entry.seriesId.map { chapters($0).map(\.id) } ?? [entry.id])
+    }
+
+    /// The one command that goes both ways (a key, the reader's button):
+    /// done with, or back to unread once it is.
+    func toggleRead(_ item: ItemView) {
+        if item.isDone { markUnread([item.id]) } else { markRead([item.id]) }
+    }
+
+    /// The item the media viewer is showing, while it is up: what "Mark as
+    /// Read" in the menu bar marks there.
+    var viewedItemID: String?
+
     /// Back to unread and never started, on every device (and FreshRSS).
     func markUnread(_ itemIDs: [String]) {
         guard !itemIDs.isEmpty else { return }
@@ -492,8 +553,18 @@ final class AppModel {
         } catch {
             report(error)
         }
+        unreadMark = UnreadMark(items: Set(itemIDs))
         reload()
     }
+
+    /// The items marked unread last. A reader showing one of them forgets
+    /// where it had been read to, so leaving doesn't save that place again.
+    struct UnreadMark: Equatable {
+        let items: Set<String>
+        var token = UUID()
+    }
+
+    var unreadMark: UnreadMark?
 
     /// A book or series resets all its chapters; a page or PDF itself.
     func markUnread(entry: CollectionEntryView) {
@@ -506,12 +577,15 @@ final class AppModel {
     }
 
     /// `atEnd`: the end of the text is on screen, which finishes the item.
-    /// Lists refresh when that happens so it leaves Continue Reading at once.
+    /// Lists refresh when that happens, and whenever the position saved has
+    /// moved on (the engine saves one every few seconds of reading), so the
+    /// row being read shows how far it is.
     func recordProgress(_ itemID: String, blockID: String, offset: Int, atEnd: Bool) {
-        let finishing = atEnd && item(itemID)?.finished == false
+        let before = item(itemID)
         _ = try? engine?.recordProgress(itemId: itemID, blockId: blockID, offset: UInt32(max(0, offset)), atEnd: atEnd, force: false)
         itemsCache.removeAll()
-        if finishing { reloadSoon() }
+        guard let before, let now = try? engine?.item(id: itemID) else { return }
+        if now.finished != before.finished || abs(now.progress - before.progress) >= 0.01 { reloadSoon() }
     }
 
     func flushProgress(_ itemID: String, blockID: String, offset: Int, atEnd: Bool) {

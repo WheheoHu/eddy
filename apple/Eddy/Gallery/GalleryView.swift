@@ -404,7 +404,7 @@ struct GalleryView: View {
         if item.read {
             Button("Mark as Unread") { model.markUnread([item.id]) }
         } else {
-            Button("Mark as Read") { model.setRead(item, true) }
+            Button("Mark as Read") { model.markRead([item.id]) }
         }
         if let url = item.url.flatMap(URL.init(string:)) {
             Button("Open in Browser") { NSWorkspace.shared.open(url) }

@@ -15,13 +15,13 @@ struct Neighbors {
         case chapter, article
     }
 
-    typealias Open = @MainActor (_ id: String, _ direction: Direction, _ axis: Axis, _ atEnd: Bool) -> Void
+    typealias Open = @MainActor (_ id: String, _ direction: Direction, _ atEnd: Bool) -> Void
 
     let kind: Kind
     /// What a move would open; looked up when asked, since the lists change.
     let peek: @MainActor (Direction) -> ItemView?
-    /// Opens it; `axis` is the gesture's, for the transition.
-    let go: @MainActor (Direction, Axis) -> Void
+    /// Opens it.
+    let go: @MainActor (Direction) -> Void
 
     /// What a gesture towards `direction` would open, worded for the capsule.
     func target(_ direction: Direction) -> EdgeTarget {
@@ -52,9 +52,9 @@ struct Neighbors {
             let target = index + (direction == .next ? 1 : -1)
             return all.indices.contains(target) ? all[target] : nil
         }
-        return Neighbors(kind: .chapter, peek: peek) { direction, axis in
+        return Neighbors(kind: .chapter, peek: peek) { direction in
             guard let target = peek(direction) else { return }
-            open(target.id, direction, axis, direction == .previous)
+            open(target.id, direction, direction == .previous)
         }
     }
 
@@ -78,12 +78,12 @@ struct Neighbors {
             if let id = history.peek(direction), let found = item(id) { return found }
             return row(direction)
         }
-        return Neighbors(kind: .article, peek: peek) { direction, axis in
+        return Neighbors(kind: .article, peek: peek) { direction in
             history.prune { item($0) != nil }
             if let id = history.move(direction) {
-                open(id, direction, axis, false)
+                open(id, direction, false)
             } else if let target = row(direction) {
-                open(target.id, direction, axis, false)
+                open(target.id, direction, false)
             }
         }
     }
@@ -151,17 +151,5 @@ final class ReadingHistory {
     func prune(_ keep: (String) -> Bool) {
         back.removeAll { !keep($0) }
         forward.removeAll { !keep($0) }
-    }
-}
-
-extension Edge {
-    /// Where the next item comes in from, moving `direction` along `axis`.
-    static func arriving(_ direction: Direction, along axis: Axis) -> Edge {
-        switch (axis, direction) {
-        case (.vertical, .next): .bottom
-        case (.vertical, .previous): .top
-        case (.horizontal, .next): .trailing
-        case (.horizontal, .previous): .leading
-        }
     }
 }

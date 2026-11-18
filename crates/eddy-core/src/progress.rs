@@ -269,6 +269,29 @@ impl Engine {
         )
     }
 
+    /// Read and done with, by hand: read (on FreshRSS too) and finished, so
+    /// out of Continue Reading. The reading position stays where it was.
+    /// Opening an item only marks it read (`set_read`).
+    pub fn mark_read(&self, item_ids: &[String]) -> Result<()> {
+        let inner = &self.inner;
+        let mut upstream = false;
+        for id in item_ids {
+            let row = inner.store.item(id)?.ok_or(EngineError::NotFound)?;
+            if !row.item.read {
+                let pending = row.item.upstream_id.is_some();
+                upstream |= pending;
+                inner.record(Entity::Item, id, fields::READ, true.into(), pending)?;
+            }
+            if !row.item.finished {
+                inner.record(Entity::Item, id, fields::FINISHED, true.into(), false)?;
+            }
+        }
+        if upstream {
+            inner.push_in_background();
+        }
+        Ok(())
+    }
+
     /// Back to unread and never started: not read (on FreshRSS too), not
     /// finished, no reading position, out of Continue Reading and recently
     /// read lists.

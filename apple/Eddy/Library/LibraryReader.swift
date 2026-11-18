@@ -17,8 +17,8 @@ struct LibraryReader: View {
     @State private var pageTarget: PageTarget?
     /// Back and forward through a subscription's articles; one per book.
     @State private var history = ReadingHistory()
-    /// Where the reader slides in from when moving to a neighbor.
-    @State private var arrival: Edge = .bottom
+    /// The side the text of the item being opened comes in from.
+    @State private var arrival: Arrival?
     /// A previous chapter, opened at its end.
     @State private var landAtEnd: String?
     @FocusState private var focus: PaneFocus?
@@ -139,15 +139,15 @@ struct LibraryReader: View {
         if let id = currentID {
             VStack(spacing: 0) {
                 ReaderPane(
-                    itemID: id, scrollTarget: $scrollTarget, pageTarget: pageTarget, openItem: select,
+                    itemID: id, scrollTarget: $scrollTarget, pageTarget: pageTarget, openItem: { select($0) },
                     showContents: contentsShown,
                     neighbors: neighbors(of: id), startAtEnd: landAtEnd == id,
+                    arrival: Arrival.side(arrival, for: id),
                     onEscape: leaveReader, focused: readerFocused, onFocus: { readerFocused = true },
                     onBack: readerBack,
                     stripLeads: !contentsShown.wrappedValue, stripLeading: contentsShown.wrappedValue ? nil : AnyView(home)
                 )
-                    .id(id)
-                    .transition(.push(from: arrival))
+                    .readerSlot(id)
                 if entries.count > 1 {
                     Hairline()
                     SequenceBar(title: book.title, items: entries, current: id) { select($0) }
@@ -179,8 +179,11 @@ struct LibraryReader: View {
         model.currentItemID = currentID
     }
 
-    private func select(_ id: String) {
+    /// Opens an item of the book. Its text comes in from `side`: the one a
+    /// move to a neighbor names, else by where it stands from the one open.
+    private func select(_ id: String, from side: ArrivalSide? = nil) {
         guard id != currentID else { return }
+        arrival = Arrival(item: id, side: side ?? .from(currentID, to: id, in: entries))
         scrollTarget = nil
         pageTarget = nil
         currentID = id
@@ -205,14 +208,10 @@ struct LibraryReader: View {
         }
     }
 
-    /// Opens a neighbor, sliding it in from the side it lies on. The edge
-    /// is set first so the outgoing reader leaves the same way.
-    private func travel(to id: String, _ direction: Direction, _ axis: Axis, _ atEnd: Bool) {
-        arrival = .arriving(direction, along: axis)
+    /// Opens a neighbor; its text comes in from the side it lies on.
+    private func travel(to id: String, _ direction: Direction, _ atEnd: Bool) {
         landAtEnd = atEnd ? id : nil
-        DispatchQueue.main.async {
-            withAnimation(.easeInOut(duration: 0.2)) { select(id) }
-        }
+        select(id, from: ArrivalSide(direction))
     }
 }
 
@@ -265,10 +264,11 @@ private struct FeedContents: View {
                         .flatRow(chosen: item.id == currentID)
                         .tag(item.id)
                         .contextMenu {
+                            if !item.isDone {
+                                Button("Mark as Read") { model.markRead([item.id]) }
+                            }
                             if item.hasBeenRead {
                                 Button("Mark as Unread") { model.markUnread([item.id]) }
-                            } else {
-                                Button("Mark as Read") { model.setRead(item, true) }
                             }
                             if model.canExport(item.id, fromReader: false) {
                                 Menu("Export") {

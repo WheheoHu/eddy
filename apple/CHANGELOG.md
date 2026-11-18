@@ -17,6 +17,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Gallery: View → Zoom In (⌘+) and Zoom Out (⌘−) change the size of the thumbnails.
 - Three-Pane fits the window's width, and the window can be as narrow as 480 points. As it narrows, the sidebar goes first: the back button over the list, or a swipe to the right on the list, shows it in the list's place. Narrower, the article has the whole window, and a swipe to the right on it slides the sidebar and list in over it; a click on the article, Esc or a swipe to the left sends them away. The narrowest window shows one column at a time, and a swipe to the right goes back: article, list, sidebar. The columns move with the fingers and settle where the swipe was heading once it has gone far enough, or go back where they were. The first button of the toolbar does the same without a trackpad. Where the sidebar takes the list's place or the whole window, it is set in larger type under bolder section titles.
 - In the narrowest Three-Pane window, a book's contents open over the text from the Contents button and close when a chapter is picked.
+- Opening an article or chapter brings its text in with a short rise and fade. Going on to another, the text comes up from below when the new one lies after the one before (lower in the list, or a later chapter) and settles from above when it lies before it. With Reduce Motion on it only fades.
+- Continue Reading can show everything, only subscription articles, or only what is in the collection, with a switch under the list in Three-Pane and under the shelf in the Library. The Library's Continue Reading also shelves the subscriptions that have part-read articles.
+- Mark as Read in more places: a button beside the star over the article, Reader → Mark as Read (⇧⌘U) and Mark All as Read… (⇧⌘K) in the menu bar, Mark All as Read… on a subscription or folder in the sidebar and on a subscription on the Library's shelf, and Mark as Read on books, chapters, saved pages and PDFs.
+- Continue Reading: an article read to its end shows a check where its progress was, and stays listed until the list is opened again.
 
 ### Changed
 
@@ -43,6 +47,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Open in Browser, in the reader's toolbar and the media viewer, shows the mark of your default browser: Chrome, Safari, Firefox, Edge, Arc, Opera or Vivaldi, and a globe for any other.
 - Three-Pane's list buttons (Unread Only, Mark All as Read, Refresh, Sort By) sit at the start of the toolbar, over the list. The list keeps a width of its own, 360 points until the line beside it is dragged; the width it had before isn't carried over.
 - In a Three-Pane window too narrow for the list, a swipe to the right on a book's chapter shows the list instead of the previous chapter. Pull down past the top of the chapter or press ⌘← for the previous one.
+- Mark as Read, chosen by hand, also finishes the item, so it leaves Continue Reading. An item that is part read offers both Mark as Read and Mark as Unread. Opening an article still only marks it read.
+- Moving to the next or previous article or chapter fades the text in from the side it lies on, like every other way of opening one, instead of sliding the whole reader.
+- The row of the article being read shows its progress as reading goes on, not only after leaving it.
+- The sidebars of Three-Pane and the Library follow each other. A folder, a kind of the collection, Saved or Continue Reading chosen in one is what the other shows when switched to; a subscription chosen in Three-Pane is the one picked on the Library's shelf, and a subscription opened in the Library is the list Three-Pane shows. Unread, Starred and tags, which the Library has no shelf for, leave its shelf as it was.
+- Three-Pane keeps what its sidebar had chosen when coming back from another mode, instead of starting at All Articles, and scrolls the sidebar to it.
+- Going back to the Library's shelf closes the book: switching mode after that no longer brings its last article back.
 
 ### Removed
 
@@ -51,6 +61,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Switching from the Library to Three-Pane closed the article or chapter being read.
+- Three-Pane: a subscription folder in the sidebar didn’t fold or unfold when its arrow was clicked or Left or Right pressed, until something else was chosen.
+- An article without pictures opened at its top instead of where it was left, and the top was then saved as its position, so the place was lost; it also dropped out of Continue Reading.
+- Opening an article again saved a position a paragraph further back each time.
+- After Mark as Unread on the article being read, reading on is saved again when leaving it. Leaving without reading on still leaves it unread and unstarted.
+- Continue Reading in Three-Pane: pulling past the end or the top of an article said “This is the last article” or “This is the first article” instead of moving on. Reading an article moved it to the top of the list, and reaching its end took it out; the rows now stay where they were while the list is on screen.
 - A sideways swipe over the sidebar or a list is picked up when the fingers don't travel perfectly level, and no longer nudges the list up or down before the columns move.
 - Swiping columns in and back is smooth: they no longer stutter while following the fingers, or hitch as the swipe ends.
 - Scrolling an article no longer stops when the pointer reaches a table. A table wider than the text still scrolls sideways.

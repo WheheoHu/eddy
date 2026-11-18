@@ -62,8 +62,36 @@ extension CollectionKindView: @retroactive Identifiable {
     }
 }
 
+/// Which of the items being read Continue Reading lists: all of them, the
+/// subscription articles, or what is in the collection.
+enum ReadingScope: String, Hashable {
+    case all, subscriptions, collection
+
+    /// Where the choice is kept; Three-Pane and the Library share it.
+    static let key = "continueReading.scope"
+
+    func contains(_ item: ItemView) -> Bool {
+        switch self {
+        case .all: true
+        case .subscriptions: item.kind == .feed
+        case .collection: item.kind != .feed
+        }
+    }
+
+    static var options: [SwitchBar<ReadingScope>.Option] {
+        [
+            .symbol(.all, "line.3.horizontal", help: String(localized: "All")),
+            .symbol(.subscriptions, "dot.radiowaves.up.forward", help: String(localized: "Subscriptions")),
+            .symbol(.collection, "books.vertical", help: String(localized: "Collection")),
+        ]
+    }
+}
+
 extension CollectionEntryView {
     var isSeries: Bool { seriesId != nil }
+
+    /// Read to the end, all of it: "Mark as Read" has nothing left to mark.
+    var isDone: Bool { finished >= chapters }
 
     var host: String? {
         url.flatMap { URL(string: $0)?.host() }.map { $0.replacingOccurrences(of: "www.", with: "") }
@@ -125,8 +153,8 @@ struct CollectionRow: View {
                 .frame(width: 20)
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.title)
-                    .font(.system(size: 15, weight: entry.lastReadAt == nil ? .semibold : .regular))
-                    .foregroundStyle(entry.lastReadAt == nil ? Theme.text1 : Theme.text2)
+                    .font(.system(size: 15, weight: entry.hasBeenRead ? .regular : .semibold))
+                    .foregroundStyle(entry.hasBeenRead ? Theme.text2 : Theme.text1)
                     .lineLimit(2)
                 if let byline = entry.byline {
                     Text(byline).font(.system(size: 12)).foregroundStyle(Theme.text2).lineLimit(1)

@@ -218,10 +218,13 @@ struct CommandPalette: View {
             PaletteItem(id: "star", group: .reader, title: item.starred ? String(localized: "Unstar") : String(localized: "Star"), icon: item.starred ? "star.slash" : "star") {
                 model.setStarred(item, !item.starred)
             },
-            PaletteItem(id: "read", group: .reader, title: item.hasBeenRead ? String(localized: "Mark as Unread") : String(localized: "Mark as Read"), icon: item.hasBeenRead ? "circle.inset.filled" : "circle") {
-                if item.hasBeenRead { model.markUnread([item.id]) } else { model.setRead(item, true) }
-            },
         ]
+        if !item.isDone {
+            items.append(PaletteItem(id: "read", group: .reader, title: String(localized: "Mark as Read (⇧⌘U)"), icon: "checkmark.circle") { model.markRead([item.id]) })
+        }
+        if item.hasBeenRead {
+            items.append(PaletteItem(id: "unread", group: .reader, title: String(localized: "Mark as Unread"), icon: "circle.inset.filled") { model.markUnread([item.id]) })
+        }
         if model.canExport(id, fromReader: true) {
             items.append(PaletteItem(id: "exportPDF", group: .reader, title: String(localized: "Export as PDF…"), icon: "doc.richtext") { command(.export(.pdf)) })
             items.append(PaletteItem(id: "exportEPUB", group: .reader, title: String(localized: "Export as EPUB…"), icon: "book.closed") { command(.export(.epub)) })

@@ -26,6 +26,8 @@ struct Book: Identifiable, Equatable {
     let added: Int64
     let unread: Int
     let progress: Double
+    /// Articles of a subscription that are part read.
+    var reading = 0
 
     var entry: CollectionEntryView? {
         if case let .entry(entry) = kind { entry } else { nil }
@@ -48,6 +50,32 @@ enum ShelfLayout: String {
 /// What the library sidebar shows.
 enum LibraryFilter: Hashable, RawRepresentable {
     case all, continueReading, saved, kind(CollectionKindView), subscriptions, category(String)
+
+    /// Where the filter chosen is kept.
+    static let key = "library.filter"
+    /// The shelf category of subscriptions that are in no folder.
+    static let unfiled = "Subscriptions"
+
+    /// The shelf for what Three-Pane's sidebar has chosen; nil where the
+    /// Library has none (unread, starred, a tag). A folder, and the folder
+    /// of a subscription, are shelves only when there is more than one.
+    init?(_ selection: ThreePaneView.Selection, feeds: [SourceView]) {
+        let categories = Set(feeds.map { $0.category ?? Self.unfiled })
+        func shelf(_ category: String?) -> LibraryFilter {
+            categories.count > 1 ? .category(category ?? Self.unfiled) : .subscriptions
+        }
+        switch selection {
+        case .smart(.all): self = .all
+        case .smart(.continueReading): self = .continueReading
+        case .smart, .tag: return nil
+        case .saved: self = .saved
+        case let .kind(kind): self = .kind(kind)
+        case let .folder(name): self = shelf(name)
+        case let .feed(id):
+            guard let feed = feeds.first(where: { $0.id == id }) else { return nil }
+            self = shelf(feed.category)
+        }
+    }
 
     init?(rawValue: String) {
         switch rawValue {
@@ -101,6 +129,7 @@ enum LibraryFilter: Hashable, RawRepresentable {
         switch (self, book.kind) {
         case (.all, _), (.saved, .entry), (.subscriptions, .feed): true
         case let (.continueReading, .entry(entry)): entry.inProgress
+        case (.continueReading, .feed): book.reading > 0
         case let (.kind(kind), .entry(entry)): entry.kind == kind
         case let (.category(name), .feed): book.category == name
         default: false
@@ -114,8 +143,10 @@ struct LibraryView: View {
     @Environment(AppModel.self) private var model
     @AppStorage("app.mode") private var mode: AppMode = .threePane
     @AppStorage("library.sort") private var sort: ShelfSort = .updated
-    @AppStorage("library.filter") private var filter: LibraryFilter = .all
+    @AppStorage(LibraryFilter.key) private var filter: LibraryFilter = .all
     @AppStorage("library.sidebar") private var showSidebar = true
+    /// Which of the books being read Continue Reading shelves.
+    @AppStorage(ReadingScope.key) private var readingScope: ReadingScope = .all
     /// Whether the window has room for the sidebar beside the shelf.
     @State private var dock = ColumnDock()
     /// Covers or list, per filter.
@@ -146,7 +177,10 @@ struct LibraryView: View {
             }
         }
         .docks(dock, model: model)
-        .onAppear(perform: openCurrent)
+        .onAppear {
+            pickChosenFeed()
+            openCurrent()
+        }
         .onChange(of: model.revealed) { _, revealed in
             guard let revealed else { return }
             model.revealed = nil
@@ -162,6 +196,7 @@ struct LibraryView: View {
                 open = nil
                 query = ""
                 filter = destination
+                model.chose(destination)
                 focusShelf = true
                 DispatchQueue.main.async { claimShelfFocus() }
             case let .libraryFeed(sourceID):
@@ -183,7 +218,7 @@ struct LibraryView: View {
     private var shelf: some View {
         LeadingColumn(dock: dock, beside: $showSidebar, width: PaneTier.sidebarWidth, gesturesEnabled: !model.overlayVisible) {
             SidebarColumn(dock: dock, beside: $showSidebar) {
-                LibrarySidebar(selection: $filter, focus: $focus, onReturn: enterShelf)
+                LibrarySidebar(selection: chosen, focus: $focus, onReturn: enterShelf)
             }
         } content: {
             let books = shelfBooks
@@ -217,6 +252,11 @@ struct LibraryView: View {
                     table(books)
                 } else {
                     covers(books)
+                }
+                if filter == .continueReading {
+                    Hairline()
+                    SwitchBar(selection: $readingScope, options: ReadingScope.options, segment: 52)
+                        .frame(height: 56)
                 }
             }
             .overlay {
@@ -369,7 +409,13 @@ struct LibraryView: View {
 
     @ViewBuilder
     private func menu(for book: Book) -> some View {
+        if case let .feed(sourceID) = book.kind {
+            Button("Mark All as Read…") { model.requestMarkAllRead(ArticleList(filter: .source(id: sourceID), title: book.title)) }
+        }
         if let entry = book.entry {
+            if !entry.isDone {
+                Button("Mark as Read") { model.markRead(entry: entry) }
+            }
             if entry.hasBeenRead {
                 Button("Mark as Unread") { model.markUnread(entry: entry) }
             }
@@ -411,13 +457,44 @@ struct LibraryView: View {
 
     // MARK: Navigation
 
-    private func show(_ book: Book) {
+    /// Opens a book. `mirrored`: Three-Pane follows to a subscription opened
+    /// here; not when it is only this mode catching up with what was being
+    /// read there.
+    private func show(_ book: Book, mirrored: Bool = true) {
         lastOpened = book.id
         open = book
+        if mirrored, case let .feed(sourceID) = book.kind { model.opened(feed: sourceID) }
     }
 
-    /// Back to the shelf, with the book just read selected.
+    /// The sidebar's filter; choosing one here sets what Three-Pane's
+    /// sidebar shows too. The list also reports the filter it is given when
+    /// it appears, which is no choice.
+    private var chosen: Binding<LibraryFilter> {
+        Binding {
+            filter
+        } set: { new in
+            guard new != filter else { return }
+            filter = new
+            model.chose(new)
+        }
+    }
+
+    /// Coming from Three-Pane with a subscription chosen there and nothing
+    /// open: its book is the one picked on the shelf.
+    private func pickChosenFeed() {
+        guard open == nil, model.currentItemID == nil, case let .feed(sourceID) = model.threePaneSelection,
+              let book = allBooks.first(where: { $0.kind == .feed(sourceID: sourceID) })
+        else { return }
+        lastOpened = book.id
+        selectedBook = book.id
+        tableSelection = [book.id]
+        focusShelf = true
+    }
+
+    /// Back to the shelf, with the book just read selected. Nothing is
+    /// being read any more, here or in the mode switched to next.
     private func close() {
+        model.currentItemID = nil
         open = nil
         selectedBook = lastOpened
         tableSelection = lastOpened.map { [$0] } ?? []
@@ -443,12 +520,12 @@ struct LibraryView: View {
     /// Switching from three-pane mode keeps reading the same item.
     private func openCurrent() {
         guard open == nil, let id = model.currentItemID else { return }
-        reveal(id)
+        reveal(id, mirrored: false)
     }
 
     /// Opens the book an item belongs to, at that item: its entry, or its
     /// subscription. A book already open moves to the item itself.
-    private func reveal(_ id: String) {
+    private func reveal(_ id: String, mirrored: Bool = true) {
         guard let item = model.item(id) else { return }
         let target: Book? = if let entry = model.entry(containing: item) {
             allBooks.first { $0.entry?.id == entry.id }
@@ -459,7 +536,7 @@ struct LibraryView: View {
         }
         guard let target else { return }
         model.currentItemID = id
-        if open?.id != target.id { show(target) }
+        if open?.id != target.id { show(target, mirrored: mirrored) }
     }
 
     // MARK: Books
@@ -467,6 +544,7 @@ struct LibraryView: View {
     private var allBooks: [Book] {
         _ = model.revision
         var books: [Book] = []
+        let reading = model.readingArticles
         for feed in model.feeds {
             let s = model.stats[feed.id]
             let total = Int(s?.total ?? 0)
@@ -477,7 +555,8 @@ struct LibraryView: View {
                 detail: feed.unread > 0 ? String(localized: "\(feed.unread) unread") : String(localized: "\(total) articles"),
                 symbol: "dot.radiowaves.up.forward",
                 updated: s?.latestPublishedAt ?? 0, lastRead: s?.lastReadAt ?? 0, added: 0, unread: Int(feed.unread),
-                progress: total > 0 ? 1 - Double(feed.unread) / Double(total) : 0
+                progress: total > 0 ? 1 - Double(feed.unread) / Double(total) : 0,
+                reading: reading[feed.id] ?? 0
             ))
         }
         for entry in model.collection {
@@ -497,6 +576,9 @@ struct LibraryView: View {
 
     private var shelfBooks: [Book] {
         var books = allBooks.filter(filter.contains)
+        if filter == .continueReading, readingScope != .all {
+            books = books.filter { ($0.entry == nil) == (readingScope == .subscriptions) }
+        }
         if !query.isEmpty {
             books = books.filter { $0.title.localizedCaseInsensitiveContains(query) }
         }
@@ -524,7 +606,7 @@ private struct LibrarySidebar: View {
         List(selection: Binding(get: { selection }, set: { if let new = $0 { selection = new } })) {
             SideHeading(title: "Library", first: true)
             row(.all, "books.vertical", Text("All"))
-            row(.continueReading, "book", Text("Continue Reading"), model.collection.filter(\.inProgress).count)
+            row(.continueReading, "book", Text("Continue Reading"), model.collection.filter(\.inProgress).count + model.readingArticles.count)
             row(.saved, "bookmark", Text("Saved"), model.collection.count)
             let kinds = CollectionKindView.all.filter { kind in model.collection.contains { $0.kind == kind } }
             if !kinds.isEmpty {
@@ -535,10 +617,18 @@ private struct LibrarySidebar: View {
             }
             if !model.feeds.isEmpty {
                 SideHeading(title: "Subscriptions")
-                row(.subscriptions, "dot.radiowaves.up.forward", Text("All Subscriptions"), model.unreadTotal)
+                row(
+                    .subscriptions, "dot.radiowaves.up.forward", Text("All Subscriptions"), model.unreadTotal,
+                    markAll: ArticleList(filter: .all, title: String(localized: "All Subscriptions"))
+                )
                 if categories.count > 1 {
                     ForEach(categories, id: \.self) { category in
-                        row(.category(category), "folder", Text(verbatim: category), unread(in: category))
+                        // "Subscriptions" stands for the ones in no folder,
+                        // which no list of articles covers.
+                        row(
+                            .category(category), "folder", Text(verbatim: category), unread(in: category),
+                            markAll: model.folders.contains(category) ? ArticleList(filter: .category(name: category), title: category) : nil
+                        )
                     }
                 }
             }
@@ -547,10 +637,16 @@ private struct LibrarySidebar: View {
         .pane(focus, .sidebar, onReturn: onReturn)
     }
 
-    private func row(_ filter: LibraryFilter, _ symbol: String, _ title: Text, _ count: Int = 0) -> some View {
+    /// `markAll`: the articles the row stands for, for "Mark All as Read".
+    private func row(_ filter: LibraryFilter, _ symbol: String, _ title: Text, _ count: Int = 0, markAll: ArticleList? = nil) -> some View {
         SideRow(symbol: symbol, title: title, count: count, chosen: selection == filter)
             .flatRow(chosen: selection == filter)
             .tag(filter)
+            .contextMenu {
+                if let markAll {
+                    Button("Mark All as Read…") { model.requestMarkAllRead(markAll) }
+                }
+            }
     }
 
     private var categories: [String] {

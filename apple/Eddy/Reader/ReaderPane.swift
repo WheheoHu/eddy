@@ -30,6 +30,9 @@ struct ReaderPane: View {
     /// Open at the end of the text instead of the resume point: a previous
     /// chapter, reached by reading backwards.
     var startAtEnd = false
+    /// The side the text comes in from: where this item lies from the one
+    /// read before it.
+    var arrival: ArrivalSide = .below
     /// Esc in the text: focus goes back a column.
     var onEscape: (() -> Void)?
     /// Keyboard focus belongs in the reader; its view takes it.
@@ -82,6 +85,8 @@ struct ReaderPane: View {
     @State private var resumeNote: ResumePointView?
     @State private var lastPosition: (block: String, offset: Int, atEnd: Bool)?
     @State private var cache = ArticleCache()
+    /// The item's text has yet to arrive (`ReaderMotion`).
+    @State private var arriving = Arriving()
     /// Bumped when a code block's language is changed, so the text is
     /// rebuilt from the re-highlighted document.
     @State private var codeEdits = 0
@@ -128,6 +133,14 @@ struct ReaderPane: View {
         }
         .task(id: itemID) { await load() }
         .onDisappear(perform: flush)
+        // Marked unread while open: where it was read to until then is
+        // forgotten, so leaving doesn't put that position back. Reading on
+        // from here is a position again.
+        .onChange(of: model.unreadMark) { _, mark in
+            guard mark?.items.contains(itemID) == true else { return }
+            lastPosition = nil
+            lastPage = nil
+        }
         .onChange(of: model.readerCommand) { _, request in
             guard let command = request?.value, command.itemID == itemID else { return }
             model.readerCommand = nil
@@ -226,7 +239,7 @@ struct ReaderPane: View {
                     }, focused: focused, onFocus: onFocus, onEscape: escape, appearance: appearance.nsAppearance)
                     .accessibilityLabel(Text("PDF: \(item.title)"))
                 } else if loading {
-                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                    LateProgress()
                 } else {
                     ContentUnavailableView("PDF Unavailable", systemImage: "doc.richtext", description: Text("The file isn’t on this Mac and couldn’t be downloaded."))
                 }
@@ -264,20 +277,22 @@ struct ReaderPane: View {
                     onMediaLink: { url in model.play(link: url, in: item) },
                     onWebLink: openLinksInApp ? openLink : nil,
                     gestures: covered ? EdgeGestures() : gestures,
-                    onStep: neighbors.map { neighbors in { neighbors.go($0, .vertical) } },
+                    onStep: neighbors.map { neighbors in { neighbors.go($0) } },
                     onEscape: escape,
                     focused: focused && !covered,
                     onFocus: onFocus,
                     appearance: appearance.nsAppearance,
                     codeLanguages: model.codeLanguages,
-                    onCodeLanguage: setCodeLanguage
+                    onCodeLanguage: setCodeLanguage,
+                    arrival: arrival,
+                    arriving: arriving
                 )
                 .id(itemID)
                 .transition(.push(from: rendererArrival))
                 .background(Color(nsColor: .textBackgroundColor))
                 .accessibilityLabel(Text("Article: \(item.title)"))
             } else {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                LateProgress()
             }
         } else {
             ContentUnavailableView("Not Found", systemImage: "doc")
@@ -554,6 +569,10 @@ struct ReaderPane: View {
                     .foregroundStyle(item.starred ? Theme.star : Theme.text1)
             }
             .help(item.starred ? "Unstar (S)" : "Star (S)")
+            Button { model.toggleRead(item) } label: {
+                Label(item.isDone ? "Mark as Unread" : "Mark as Read", systemImage: item.isDone ? "checkmark.circle.fill" : "checkmark.circle")
+            }
+            .help(item.isDone ? "Mark as unread and start over (⇧⌘U)" : "Mark as read and finished (⇧⌘U)")
             let exports = !showingMedia && model.canExport(item.id, fromReader: true)
             if !compact, exports {
                 FlatMenu("Export", symbol: "arrow.down.doc", help: "Export as PDF or EPUB") { exportItems(item) }
@@ -726,8 +745,6 @@ struct ReaderPane: View {
     private func flush() {
         webTranslator?.cancel()
         links.forEach { $0.translator.cancel() }
-        // Marked unread while open: leaving doesn't put the position back.
-        guard model.item(itemID)?.read != false else { return }
         if let lastPosition { model.flushProgress(itemID, blockID: lastPosition.block, offset: lastPosition.offset, atEnd: lastPosition.atEnd) }
         if let lastPage { model.recordPage(itemID, page: lastPage.page, of: lastPage.count, force: true) }
     }
@@ -763,7 +780,7 @@ struct ReaderPane: View {
         case .toggleFullText:
             setFullText(!showingFullText)
         case let .step(direction):
-            neighbors?.go(direction, .vertical)
+            neighbors?.go(direction)
         case let .export(format):
             guard !showingMedia else { return }
             model.beginExport(targetID: itemID, format: format, fromReader: true, preferredMode: mode)
@@ -793,6 +810,8 @@ struct ReaderPane: View {
     /// right, and the reader comes back from the left. The edge is set first
     /// so the outgoing view leaves the same way.
     private func slide(to renderer: String) {
+        // From here on text comes in with the slide, not as an arrival.
+        _ = arriving.claim()
         rendererArrival = renderer == RendererRegistry.web.id ? .trailing : .leading
         DispatchQueue.main.async {
             withAnimation(.easeInOut(duration: 0.25)) { rendererID = renderer }
@@ -828,7 +847,7 @@ struct ReaderPane: View {
             commit: { kind in
                 switch kind {
                 case let .pull(direction):
-                    neighbors?.go(direction, .vertical)
+                    neighbors?.go(direction)
                 case let .swipe(fingers):
                     if rendererID == RendererRegistry.web.id {
                         if hasText { slide(to: RendererRegistry.article.id) } else { onBack?.go() }
@@ -837,7 +856,7 @@ struct ReaderPane: View {
                     } else if hasPage {
                         slide(to: RendererRegistry.web.id)
                     } else {
-                        neighbors?.go(fingers == .left ? .next : .previous, .horizontal)
+                        neighbors?.go(fingers == .left ? .next : .previous)
                     }
                 }
             }

@@ -13,7 +13,12 @@ struct ThreePaneView: View {
     @AppStorage("app.mode") private var mode: AppMode = .threePane
     @AppStorage("threePane.contents") private var showContents = false
     @AppStorage("threePane.collectionSort") private var collectionSort: CollectionSort = .added
-    @State private var selection: Selection? = .smart(.all)
+    /// What the sidebar has chosen; the model keeps it (`threePaneSelection`).
+    private var selection: Selection? { model.threePaneSelection }
+    /// Names of the subscription folders folded up; new folders start open.
+    /// Read here and handed to the sidebar, which only draws again when
+    /// what it is handed changes.
+    @AppStorage("threePane.collapsedFolders") private var collapsedFoldersJSON = "[]"
     /// The collection entry picked in the middle column.
     @State private var entryID: String?
     /// Articles read while the unread-only list has been on screen. They
@@ -25,10 +30,18 @@ struct ThreePaneView: View {
     @State private var pageTarget: PageTarget?
     /// Back and forward through the articles of the middle column.
     @State private var history = ReadingHistory()
-    /// Where the reader slides in from when moving to a neighbor.
-    @State private var arrival: Edge = .bottom
+    /// The side the text of the item being opened comes in from.
+    @State private var arrival: Arrival?
     /// A previous chapter, opened at its end.
     @State private var landAtEnd: String?
+    /// Where the rows of Continue Reading stood when the list came on
+    /// screen. Reading moves an item to the top of that list and, at its
+    /// end, out of it; the rows stay as they were until the list starts
+    /// over, so the ones above and below the article being read are still
+    /// there to move to.
+    @State private var continueOrder: [String: Int] = [:]
+    /// Which of the items being read Continue Reading lists.
+    @AppStorage(ReadingScope.key) private var readingScope: ReadingScope = .all
     @FocusState private var focus: PaneFocus?
     /// Keyboard focus is in the reader, which keeps it from one item to the
     /// next; a list taking focus clears it.
@@ -96,6 +109,9 @@ struct ThreePaneView: View {
         .onGeometryChange(for: PaneTier.self) { PaneTier.at($0.size.width, from: tier) } action: { fit($0) }
         .onAppear {
             showCurrentEntry()
+            // The sidebar's choice was made before this view was: its list
+            // starts here.
+            startOver()
             // Coming from another mode with its sidebar in: it stays in.
             place = model.sidebarPulled ? .sidebar : (canRead ? .reader : .list)
         }
@@ -109,21 +125,29 @@ struct ThreePaneView: View {
         .onChange(of: model.revision) {
             if let entryID, model.entry(entryID) == nil { self.entryID = nil }
         }
-        .onChange(of: model.currentItemID) { _, new in
+        .onChange(of: model.currentItemID) { old, new in
             pageTarget = nil
             history.opened(new)
             if new != landAtEnd { landAtEnd = nil }
             // Nothing to read: back at the list, and still there when its
             // selection moves to another article.
             if new == nil, place == .reader { place = .list }
-            if let new, showsUnreadOnly { readHere.insert(new) }
+            // Moving to a neighbor has said which side it lies on; any
+            // other way of opening goes by where the two stand.
+            if let new {
+                if arrival?.item != new { arrival = Arrival(item: new, side: .from(old, to: new, in: order(old, new))) }
+            } else {
+                arrival = nil
+            }
+            if let new, holdsRows(new) { readHere.insert(new) }
         }
         .onChange(of: selection) {
             history.reset(model.currentItemID)
-            readHere = []
+            startOver()
         }
-        .onChange(of: filter) { readHere = [] }
-        .onChange(of: model.listsReset) { readHere = [] }
+        .onChange(of: filter) { startOver() }
+        .onChange(of: readingScope) { startOver() }
+        .onChange(of: model.listsReset) { startOver() }
         .onChange(of: focus) { _, new in if new != nil { readerFocused = false } }
         .onChange(of: articleList, initial: true) { _, list in model.currentList = list }
         .onDisappear { model.currentList = nil }
@@ -267,7 +291,10 @@ struct ThreePaneView: View {
                     .disabled(model.busy)
                 AddMenu()
             }
-            ThreePaneSidebar(selection: selection, tier: tier, canRead: canRead, focus: $focus, choose: choose, go: go)
+            ThreePaneSidebar(
+                selection: selection, tier: tier, canRead: canRead, collapsedFoldersJSON: $collapsedFoldersJSON,
+                focus: $focus, choose: choose, go: go
+            )
                 .equatable()
             StatusFooter()
             ModeBar()
@@ -275,9 +302,12 @@ struct ThreePaneView: View {
     }
 
     /// A click in the sidebar starts over: nothing is open until something
-    /// is picked in the middle column.
+    /// is picked in the middle column. The list also reports the choice it
+    /// is given when it appears, which is no click: coming from another
+    /// mode, what is being read there stays open.
     private func choose(_ new: Selection?) {
-        selection = new
+        guard new != selection else { return }
+        model.chose(new)
         entryID = nil
         model.currentItemID = nil
     }
@@ -294,16 +324,18 @@ struct ThreePaneView: View {
         if let entry = model.entry(containing: item) {
             show(entryID: entry.id)
         } else if let sourceID = item.sourceId {
-            selection = .feed(sourceID)
+            model.chose(.feed(sourceID))
             entryID = nil
         }
         open(id)
         go(.reader)
     }
 
+    /// Picks an entry in the middle column, in the list of its kind unless
+    /// the one showing (Saved) has it already.
     private func show(entryID id: String) {
         guard let entry = model.entry(id) else { return }
-        selection = .kind(entry.kind)
+        if selection?.kinds?.contains(entry.kind) != true { model.chose(.kind(entry.kind)) }
         entryID = entry.id
     }
 
@@ -330,6 +362,8 @@ struct ThreePaneView: View {
                         Label("Mark All as Read", systemImage: "checkmark.circle")
                     }
                     .help("Mark every unread article here as read")
+                    // It marks subscription articles, which aren't listed.
+                    .disabled(selection == .smart(.continueReading) && readingScope == .collection)
                 }
                 Button { model.paletteVisible = true } label: { Label("Search", systemImage: "magnifyingglass") }
                     .help("Go to or search (⌘K)")
@@ -341,7 +375,10 @@ struct ThreePaneView: View {
                     focus: $focus, onReturn: read, onEscape: leaveList
                 )
             } else {
-                ThreePaneArticles(rows: rows, focus: $focus, read: read, leave: leaveList)
+                ThreePaneArticles(
+                    rows: rows, marksFinished: selection == .smart(.continueReading),
+                    focus: $focus, read: read, leave: leaveList
+                )
                     .equatable()
                 if showsFilter {
                     Hairline()
@@ -355,6 +392,10 @@ struct ThreePaneView: View {
                         segment: 52
                     )
                     .frame(height: 56)
+                } else if selection == .smart(.continueReading) {
+                    Hairline()
+                    SwitchBar(selection: $readingScope, options: ReadingScope.options, segment: 52)
+                        .frame(height: 56)
                 }
             }
         }
@@ -412,19 +453,54 @@ struct ThreePaneView: View {
     /// Opening an article marks it read; it stays in an unread-only list,
     /// with the others read here, until the list starts over.
     private var rowsForSelection: [ItemView] {
+        if selection == .smart(.continueReading) { return continuing }
         var kept = readHere
         if let current = model.currentItemID { kept.insert(current) }
         let keep = Array(kept)
         let rows: [ItemView] = switch selection {
         case .smart(.unread): model.items(.all, unreadOnly: true, keep: keep)
         case .smart(.starred): model.items(.starred, unreadOnly: unreadOnly, keep: keep)
-        case .smart(.continueReading): model.items(.continueReading)
         case let .folder(name): model.items(.category(name: name), unreadOnly: unreadOnly, keep: keep)
         case let .feed(id): model.items(.source(id: id), unreadOnly: unreadOnly, keep: keep)
         case let .tag(id): model.items(.tag(id: id), unreadOnly: unreadOnly, keep: keep)
         default: model.items(.all, unreadOnly: unreadOnly, keep: keep)
         }
         return filter == .starred && showsFilter ? rows.filter(\.starred) : rows
+    }
+
+    /// Continue Reading: what is being read, with the items opened from
+    /// this list kept in it, in the order the list had when it started.
+    /// Ones that have joined since come first.
+    private var continuing: [ItemView] {
+        let rows = model.items(.continueReading, keep: readHere.sorted()).filter(readingScope.contains)
+        let new = rows.filter { continueOrder[$0.id] == nil }
+        let known = rows.compactMap { row in continueOrder[row.id].map { (row, $0) } }.sorted { $0.1 < $1.1 }.map(\.0)
+        return new + known
+    }
+
+    /// Opening `id` keeps its row where it is: in an unread-only list, and
+    /// in Continue Reading for the rows it lists (not a chapter reached
+    /// from one of them).
+    private func holdsRows(_ id: String) -> Bool {
+        if selection == .smart(.continueReading) { return continuing.contains { $0.id == id } }
+        return showsUnreadOnly
+    }
+
+    /// The middle column's list starts over: rows kept in place are let go.
+    private func startOver() {
+        readHere = []
+        continueOrder = selection == .smart(.continueReading)
+            ? Dictionary(uniqueKeysWithValues: model.items(.continueReading).enumerated().map { ($1.id, $0) })
+            : [:]
+    }
+
+    /// The list `old` and `new` are both in, to tell which side `new`
+    /// comes in from: a book's chapters, else the middle column's articles.
+    private func order(_ old: String?, _ new: String) -> [ItemView] {
+        if let old, let series = model.item(new)?.seriesId, model.item(old)?.seriesId == series {
+            return model.chapters(series)
+        }
+        return selection?.kinds == nil ? rowsForSelection : []
     }
 
     /// Opens an entry where reading stopped; the reader restores the position.
@@ -487,12 +563,12 @@ struct ThreePaneView: View {
                         itemID: id, scrollTarget: $scrollTarget, pageTarget: pageTarget, openItem: open,
                         showContents: entry == nil ? nil : (tier == .narrowest ? $contentsDrawer : $showContents),
                         neighbors: neighbors(of: item, in: entry), startAtEnd: landAtEnd == id,
+                        arrival: Arrival.side(arrival, for: id),
                         onEscape: { leaveReader(contentsShown: entry != nil && beside) },
                         focused: readerFocused, onFocus: { readerFocused = true },
                         onBack: readerBack, stripLeads: arrangement.leading == .reader, stripLeading: readerLead
                     )
-                    .id(id)
-                    .transition(.push(from: arrival))
+                    .readerSlot(id)
                     if let seriesID = item.seriesId, let info = model.series.first(where: { $0.id == seriesID }) {
                         Hairline()
                         SequenceBar(title: info.title, items: model.chapters(seriesID), current: id) { open($0) }
@@ -542,23 +618,21 @@ struct ThreePaneView: View {
     }
 
     /// A chapter's book, or the articles of the middle column; nothing to
-    /// move to from a page or PDF saved on its own.
+    /// move to from a page or PDF saved on its own, unless it is one of the
+    /// rows of Continue Reading.
     private func neighbors(of item: ItemView, in entry: CollectionEntryView?) -> Neighbors? {
         if let seriesID = item.seriesId {
             return .chapters({ model.chapters(seriesID) }, current: item.id, open: travel)
         }
-        guard entry == nil else { return nil }
+        guard entry == nil || selection == .smart(.continueReading) else { return nil }
         return .articles({ rowsForSelection }, current: item.id, history: history, item: { model.item($0) }, open: travel)
     }
 
-    /// Opens a neighbor, sliding it in from the side it lies on. The edge
-    /// is set first so the outgoing reader leaves the same way.
-    private func travel(to id: String, _ direction: Direction, _ axis: Axis, _ atEnd: Bool) {
-        arrival = .arriving(direction, along: axis)
+    /// Opens a neighbor; its text comes in from the side it lies on.
+    private func travel(to id: String, _ direction: Direction, _ atEnd: Bool) {
+        arrival = Arrival(item: id, side: ArrivalSide(direction))
         landAtEnd = atEnd ? id : nil
-        DispatchQueue.main.async {
-            withAnimation(.easeInOut(duration: 0.2)) { open(id) }
-        }
+        open(id)
     }
 }
 
@@ -568,23 +642,46 @@ struct ThreePaneView: View {
 /// run would otherwise bring every row here up to date again.
 private struct ThreePaneSidebar: View, Equatable {
     @Environment(AppModel.self) private var model
-    /// Names of the subscription folders folded up; new folders start open.
-    @AppStorage("threePane.collapsedFolders") private var collapsedFoldersJSON = "[]"
     let selection: ThreePaneView.Selection?
     let tier: PaneTier
     let canRead: Bool
+    /// Names of the subscription folders folded up, as JSON. The view that
+    /// owns it hands it over: a folder folding has to count as a change
+    /// here, or the rows wouldn't follow until something else changed.
+    @Binding var collapsedFoldersJSON: String
     var focus: FocusState<PaneFocus?>.Binding
     let choose: (ThreePaneView.Selection?) -> Void
     let go: (PanePlace) -> Void
 
     static func == (a: Self, b: Self) -> Bool {
         a.selection == b.selection && a.tier == b.tier && a.canRead == b.canRead
+            && a.collapsedFoldersJSON == b.collapsedFoldersJSON
     }
 
     var body: some View {
         // Folders fold, and the list leaves room at its start for their arrows.
         let lead: CGFloat = model.folders.isEmpty ? 8 : 0
-        return List(selection: Binding(get: { selection }, set: choose)) {
+        return ScrollViewReader { proxy in
+            rows(lead: lead)
+                // Coming from another mode with a subscription or folder
+                // chosen there: it may lie further down than shows.
+                // Once the list has its rows.
+                .onAppear { DispatchQueue.main.async { reveal(selection, in: proxy) } }
+        }
+    }
+
+    /// Brings the row chosen into view, where it is one of the many.
+    private func reveal(_ selection: ThreePaneView.Selection?, in proxy: ScrollViewProxy) {
+        switch selection {
+        case let .feed(id): proxy.scrollTo(id, anchor: .center)
+        case let .folder(name): proxy.scrollTo(name, anchor: .center)
+        case let .tag(id): proxy.scrollTo(id, anchor: .center)
+        default: break
+        }
+    }
+
+    private func rows(lead: CGFloat) -> some View {
+        List(selection: Binding(get: { selection }, set: choose)) {
             SideHeading(title: "Library", first: true, lead: lead)
             ForEach(ThreePaneView.Smart.allCases, id: \.self) { smart in
                 let tag = ThreePaneView.Selection.smart(smart)
@@ -617,6 +714,7 @@ private struct ThreePaneSidebar: View, Equatable {
                         }
                         .tag(tag)
                         .contextMenu {
+                            Button("Mark All as Read…") { model.requestMarkAllRead(ArticleList(filter: .category(name: folder), title: folder)) }
                             let shown = model.inGallery(folder: folder)
                             Button(shown ? "Remove from Gallery" : "Show in Gallery") { model.setGallery(folder: folder, !shown) }
                         }
@@ -685,6 +783,7 @@ private struct ThreePaneSidebar: View, Equatable {
             .flatRow(chosen: selection == tag, lead: lead)
             .tag(tag)
             .contextMenu {
+                Button("Mark All as Read…") { model.requestMarkAllRead(ArticleList(filter: .source(id: feed.id), title: feed.title)) }
                 if let folder = feed.category, model.inGallery(folder: folder) {
                     Button("Shown in Gallery with “\(folder)”") {}.disabled(true)
                 } else {
@@ -715,28 +814,31 @@ private struct ThreePaneSidebar: View, Equatable {
 private struct ThreePaneArticles: View, Equatable {
     @Environment(AppModel.self) private var model
     let rows: [ItemView]
+    /// Finished articles show a check: Continue Reading keeps them listed.
+    let marksFinished: Bool
     var focus: FocusState<PaneFocus?>.Binding
     /// Return, or a double click: on to the reader.
     let read: () -> Void
     /// Esc: back a column.
     let leave: () -> Void
 
-    static func == (a: Self, b: Self) -> Bool { a.rows == b.rows }
+    static func == (a: Self, b: Self) -> Bool { a.rows == b.rows && a.marksFinished == b.marksFinished }
 
     var body: some View {
         @Bindable var model = model
         return List(rows, selection: $model.currentItemID) { item in
-            ArticleRow(item: item)
+            ArticleRow(item: item, marksFinished: marksFinished)
                 .flatRow(chosen: item.id == model.currentItemID, inset: 6)
                 .tag(item.id)
         }
         .contextMenu(forSelectionType: String.self) { ids in
             if let id = ids.first, let item = rows.first(where: { $0.id == id }) {
                 Button(item.starred ? "Unstar" : "Star") { model.setStarred(item, !item.starred) }
+                if !item.isDone {
+                    Button("Mark as Read") { model.markRead([item.id]) }
+                }
                 if item.hasBeenRead {
                     Button("Mark as Unread") { model.markUnread([item.id]) }
-                } else {
-                    Button("Mark as Read") { model.setRead(item, true) }
                 }
                 if model.canExport(item.id, fromReader: false) {
                     Menu("Export") {
@@ -774,7 +876,7 @@ private struct ThreePaneArticles: View, Equatable {
             Button("Next") { move(rows, 1) }.keyboardShortcut("j", modifiers: [])
             Button("Previous") { move(rows, -1) }.keyboardShortcut("k", modifiers: [])
             Button("Star") { if let item = current(rows) { model.setStarred(item, !item.starred) } }.keyboardShortcut("s", modifiers: [])
-            Button("Read") { if let item = current(rows) { model.setRead(item, !item.read) } }.keyboardShortcut("m", modifiers: [])
+            Button("Read") { if let item = current(rows) { model.toggleRead(item) } }.keyboardShortcut("m", modifiers: [])
         }
         .disabled(model.overlayVisible)
         .opacity(0)
@@ -827,6 +929,9 @@ struct CollectionList: View {
         .flatList()
         .contextMenu(forSelectionType: String.self) { ids in
             if let id = ids.first, let entry = model.entry(id) {
+                if !entry.isDone {
+                    Button("Mark as Read") { model.markRead(entry: entry) }
+                }
                 if entry.hasBeenRead {
                     Button("Mark as Unread") { model.markUnread(entry: entry) }
                 }
@@ -952,6 +1057,21 @@ private struct FullTextMenu: View {
             Divider()
             Button("Use Rules") { model.setFullText(source: feed, nil) }.disabled(feed.sourceRule == nil)
             Text("Now: \(Text(feed.fullText.title))")
+        }
+    }
+}
+
+extension ThreePaneView.Selection {
+    /// What Three-Pane's sidebar shows for a shelf of the Library. All
+    /// subscriptions are All Articles here; the shelf of subscriptions in
+    /// no folder has no counterpart.
+    init(_ filter: LibraryFilter, folders: [String]) {
+        switch filter {
+        case .all, .subscriptions: self = .smart(.all)
+        case .continueReading: self = .smart(.continueReading)
+        case .saved: self = .saved
+        case let .kind(kind): self = .kind(kind)
+        case let .category(name): self = folders.contains(name) ? .folder(name) : .smart(.all)
         }
     }
 }

@@ -238,6 +238,9 @@ struct EntryContents: View {
                     .flatRow(chosen: chapter.id == currentItemID)
                     .tag(chapter.id)
                     .contextMenu {
+                        if !chapter.isDone {
+                            Button("Mark as Read") { model.markRead([chapter.id]) }
+                        }
                         if chapter.hasBeenRead {
                             Button("Mark as Unread") { model.markUnread([chapter.id]) }
                         }

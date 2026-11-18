@@ -92,6 +92,16 @@ struct EddyApp: App {
             CommandMenu("Reader") {
                 Button("Translate") { model.toggleTranslation() }
                     .keyboardShortcut("a", modifiers: .option)
+                Divider()
+                // The media viewer's item while it is up, else the one open
+                // in the reader.
+                let target = (model.viewedItemID ?? (mode == .gallery ? nil : model.currentItemID)).flatMap { model.item($0) }
+                Button(target?.isDone == true ? "Mark as Unread" : "Mark as Read") { if let target { model.toggleRead(target) } }
+                    .keyboardShortcut("u", modifiers: [.command, .shift])
+                    .disabled(target == nil)
+                Button("Mark All as Read…") { if let list = model.currentList { model.requestMarkAllRead(list) } }
+                    .keyboardShortcut("k", modifiers: [.command, .shift])
+                    .disabled(model.currentList == nil)
             }
         }
     }
