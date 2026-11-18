@@ -11,24 +11,29 @@ import SwiftUI
 /// content or Esc sends it away again. It stays mounted either way, so it
 /// keeps its scroll position, and going from one arrangement to the other
 /// is a move.
+///
+/// Whether the column shows is read here, not by the screen that uses this:
+/// the column coming in or going away then runs only this body, not the
+/// screen's, which would lay its whole shelf or grid out again as each
+/// swipe ends.
 struct LeadingColumn<Column: View, Content: View>: View {
-    @Binding var shown: Bool
-    let over: Bool
+    @Environment(AppModel.self) private var model
+    let dock: ColumnDock
+    /// The column shows beside the content, where there is room for both.
+    @Binding var beside: Bool
     let width: CGFloat
-    /// The swipe that brings the column in or sends it away.
-    let drag: PaneDrag
     /// Swipes and Esc are off: something lies over the window.
     var gesturesEnabled = true
     @ViewBuilder var column: Column
     @ViewBuilder var content: Content
 
     var body: some View {
-        // Where the swipe in progress leads: the column in, or not.
-        let heading = drag.destination.map { $0 == .sidebar }
+        let over = dock.over, drag = dock.drag
+        let shown = dock.shown($beside, model: model).wrappedValue
         let covered = over && shown
         ZStack(alignment: .topLeading) {
             Theme.well
-            Sinking(sunk: covered, becoming: over ? heading : nil, travel: width, drag: drag) {
+            Sinking(sunk: covered, becoming: over ? { $0 == .sidebar } : nil, travel: width, drag: drag) {
                 content
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(Theme.list)
@@ -41,7 +46,7 @@ struct LeadingColumn<Column: View, Content: View>: View {
                 .onTapGesture { set(false) }
                 .allowsHitTesting(covered)
                 .accessibilityHidden(true)
-            Sliding(slot: shown ? 0 : -1, heading: heading.map { $0 ? 0 : -1 }, travel: width, drag: drag) {
+            Sliding(slot: shown ? 0 : -1, heading: { $0 == .sidebar ? 0 : -1 }, travel: width, drag: drag) {
                 column
                     .frame(width: width)
                     .frame(maxHeight: .infinity)
@@ -83,8 +88,27 @@ struct LeadingColumn<Column: View, Content: View>: View {
 
     private func set(_ new: Bool) {
         withAnimation(.easeOut(duration: 0.24)) {
-            shown = new
-            drag.end()
+            dock.shown($beside, model: model).wrappedValue = new
+            dock.drag.end()
+        }
+    }
+}
+
+/// The strip over the content beside a `LeadingColumn`: it leads the
+/// window, with the toggle first, while the column doesn't show. A view of
+/// its own for the reason `LeadingColumn` reads the column's state itself.
+struct ContentStrip<Trailing: View>: View {
+    @Environment(AppModel.self) private var model
+    let dock: ColumnDock
+    @Binding var beside: Bool
+    @ViewBuilder var trailing: Trailing
+
+    var body: some View {
+        let shown = dock.shown($beside, model: model)
+        ColumnStrip(leads: !shown.wrappedValue) {
+            if !shown.wrappedValue { SidebarToggle(visible: shown) }
+        } trailing: {
+            trailing
         }
     }
 }
@@ -154,13 +178,14 @@ struct SidebarToggle: View {
 /// what the Library's and the Gallery's leading columns share.
 struct SidebarColumn<Rows: View>: View {
     @Environment(AppModel.self) private var model
-    @Binding var visible: Bool
+    let dock: ColumnDock
+    @Binding var beside: Bool
     @ViewBuilder var rows: Rows
 
     var body: some View {
         VStack(spacing: 0) {
             ColumnStrip(leads: true) {
-                SidebarToggle(visible: $visible)
+                SidebarToggle(visible: dock.shown($beside, model: model))
             } trailing: {
                 Button { Task { await model.refresh() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                     .help("Refresh (⌘R)")

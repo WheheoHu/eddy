@@ -240,19 +240,16 @@ struct GalleryView: View {
     private var media: GalleryMedia { model.media }
 
     var body: some View {
-        let sidebar = dock.shown($showSidebar, model: model)
-        return LeadingColumn(
-            shown: sidebar, over: dock.over, width: PaneTier.sidebarWidth, drag: dock.drag,
+        LeadingColumn(
+            dock: dock, beside: $showSidebar, width: PaneTier.sidebarWidth,
             gesturesEnabled: !model.overlayVisible && viewing == nil && model.mediaRequest == nil
         ) {
-            SidebarColumn(visible: sidebar) {
+            SidebarColumn(dock: dock, beside: $showSidebar) {
                 GallerySidebar(scopeKey: $scopeKey)
             }
         } content: {
             VStack(spacing: 0) {
-                ColumnStrip(leads: !sidebar.wrappedValue) {
-                    if !sidebar.wrappedValue { SidebarToggle(visible: sidebar) }
-                } trailing: {
+                ContentStrip(dock: dock, beside: $showSidebar) {
                     Button { unreadOnly.toggle() } label: { Label("Unread Only", systemImage: "circle.inset.filled") }
                         .buttonStyle(FlatButtonStyle(on: unreadOnly))
                         .help("Show only media you haven’t opened")

@@ -51,6 +51,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Swiping columns in and back is smooth: they no longer stutter while following the fingers, or hitch as the swipe ends.
 - Scrolling an article no longer stops when the pointer reaches a table. A table wider than the text still scrolls sideways.
 - A table on the first screen of an article shows when the article opens, not only after scrolling away and back.
 - The Gallery scrolls without hitching: its list no longer reloads while the grid is moving, and thumbnails are decoded at the size they are shown.

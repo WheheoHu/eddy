@@ -181,17 +181,14 @@ struct LibraryView: View {
     // MARK: Shelf
 
     private var shelf: some View {
-        let sidebar = dock.shown($showSidebar, model: model)
-        return LeadingColumn(shown: sidebar, over: dock.over, width: PaneTier.sidebarWidth, drag: dock.drag, gesturesEnabled: !model.overlayVisible) {
-            SidebarColumn(visible: sidebar) {
+        LeadingColumn(dock: dock, beside: $showSidebar, width: PaneTier.sidebarWidth, gesturesEnabled: !model.overlayVisible) {
+            SidebarColumn(dock: dock, beside: $showSidebar) {
                 LibrarySidebar(selection: $filter, focus: $focus, onReturn: enterShelf)
             }
         } content: {
             let books = shelfBooks
             VStack(spacing: 0) {
-                ColumnStrip(leads: !sidebar.wrappedValue) {
-                    if !sidebar.wrappedValue { SidebarToggle(visible: sidebar) }
-                } trailing: {
+                ContentStrip(dock: dock, beside: $showSidebar) {
                     HStack(spacing: 6) {
                         Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(Theme.text3)
                         TextField("Filter", text: $query).textFieldStyle(.plain).font(.system(size: 13))

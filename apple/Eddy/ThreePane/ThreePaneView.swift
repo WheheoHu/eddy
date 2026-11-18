@@ -13,8 +13,6 @@ struct ThreePaneView: View {
     @AppStorage("app.mode") private var mode: AppMode = .threePane
     @AppStorage("threePane.contents") private var showContents = false
     @AppStorage("threePane.collectionSort") private var collectionSort: CollectionSort = .added
-    /// Names of the subscription folders folded up; new folders start open.
-    @AppStorage("threePane.collapsedFolders") private var collapsedFoldersJSON = "[]"
     @State private var selection: Selection? = .smart(.all)
     /// The collection entry picked in the middle column.
     @State private var entryID: String?
@@ -269,137 +267,10 @@ struct ThreePaneView: View {
                     .disabled(model.busy)
                 AddMenu()
             }
-            sidebarList
+            ThreePaneSidebar(selection: selection, tier: tier, canRead: canRead, focus: $focus, choose: choose, go: go)
+                .equatable()
             StatusFooter()
             ModeBar()
-        }
-    }
-
-    private var sidebarList: some View {
-        // Folders fold, and the list leaves room at its start for their arrows.
-        let lead: CGFloat = model.folders.isEmpty ? 8 : 0
-        return List(selection: Binding(get: { selection }, set: choose)) {
-            SideHeading(title: "Library", first: true, lead: lead)
-            ForEach(Smart.allCases, id: \.self) { smart in
-                let tag = Selection.smart(smart)
-                SideRow(symbol: smart.icon, title: Text(LocalizedStringKey(smart.rawValue)), count: badge(smart), chosen: selection == tag)
-                    .flatRow(chosen: selection == tag, lead: lead)
-                    .tag(tag)
-            }
-            SideRow(symbol: "bookmark", title: Text("Saved"), count: model.collection.count, chosen: selection == .saved)
-                .flatRow(chosen: selection == .saved, lead: lead)
-                .tag(Selection.saved)
-            let kinds = CollectionKindView.all.filter { kind in model.collection.contains { $0.kind == kind } }
-            if !kinds.isEmpty {
-                SideHeading(title: "Collection", lead: lead)
-                ForEach(kinds) { kind in
-                    let tag = Selection.kind(kind)
-                    SideRow(symbol: kind.icon, title: Text(kind.title), count: model.collection.filter { $0.kind == kind }.count, chosen: selection == tag)
-                        .flatRow(chosen: selection == tag, lead: lead)
-                        .tag(tag)
-                }
-            }
-            if !model.feeds.isEmpty {
-                SideHeading(title: "Subscriptions", lead: lead)
-                ForEach(model.folders, id: \.self) { folder in
-                    let tag = Selection.folder(folder)
-                    DisclosureGroup(isExpanded: expanded(folder)) {
-                        feedRows(model.feeds(inFolder: folder), lead)
-                    } label: {
-                        SideRow(symbol: "folder", title: Text(verbatim: folder), count: model.unread(inFolder: folder), chosen: selection == tag) {
-                            if model.inGallery(folder: folder) { GalleryMark() }
-                        }
-                        .tag(tag)
-                        .contextMenu {
-                            let shown = model.inGallery(folder: folder)
-                            Button(shown ? "Remove from Gallery" : "Show in Gallery") { model.setGallery(folder: folder, !shown) }
-                        }
-                    }
-                    .flatRow(chosen: selection == tag, lead: lead)
-                }
-                feedRows(model.feeds(inFolder: nil), lead)
-            }
-            if !model.tags.isEmpty {
-                SideHeading(title: "Tags", lead: lead)
-                ForEach(model.tags) { t in
-                    let tag = Selection.tag(t.id)
-                    SideRow(symbol: "number", title: Text(verbatim: t.name), count: Int(t.count), chosen: selection == tag)
-                        .flatRow(chosen: selection == tag, lead: lead)
-                        .tag(tag)
-                }
-            }
-        }
-        .flatList()
-        .pane($focus, .sidebar, onReturn: { go(.list) }, onEscape: sidebarEscape)
-        .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in folderKey(press.key) }
-    }
-
-    /// Esc in the sidebar sends it away again, where it is in over the
-    /// other columns.
-    private var sidebarEscape: (() -> Void)? {
-        switch tier {
-        case .wide: nil
-        case .narrow: canRead ? { go(.reader) } : nil
-        case .medium, .narrowest: { go(.list) }
-        }
-    }
-
-    /// Left folds the selected folder, or goes up to it from a subscription
-    /// inside it; Right unfolds it.
-    private func folderKey(_ key: KeyEquivalent) -> KeyPress.Result {
-        switch selection {
-        case let .folder(name):
-            let open = !collapsedFolders.contains(name)
-            guard key == .leftArrow ? open : !open else { return .ignored }
-            withAnimation(.easeInOut(duration: 0.15)) { expanded(name).wrappedValue = !open }
-            return .handled
-        case let .feed(id):
-            guard key == .leftArrow, let folder = model.feeds.first(where: { $0.id == id })?.category else { return .ignored }
-            choose(.folder(folder))
-            return .handled
-        default:
-            return .ignored
-        }
-    }
-
-    private func badge(_ smart: Smart) -> Int {
-        switch smart {
-        case .unread: model.unreadTotal
-        case .continueReading: model.continueReadingCount
-        default: 0
-        }
-    }
-
-    private func feedRows(_ feeds: [SourceView], _ lead: CGFloat) -> some View {
-        ForEach(feeds) { feed in
-            let tag = Selection.feed(feed.id)
-            SideRow(symbol: "dot.radiowaves.up.forward", title: Text(verbatim: feed.title), count: Int(feed.unread), chosen: selection == tag) {
-                if let reason = model.galleryReason(feed) { GalleryMark(throughFolder: reason.isEmpty ? nil : reason) }
-            }
-            .flatRow(chosen: selection == tag, lead: lead)
-            .tag(tag)
-            .contextMenu {
-                if let folder = feed.category, model.inGallery(folder: folder) {
-                    Button("Shown in Gallery with “\(folder)”") {}.disabled(true)
-                } else {
-                    Button(feed.gallery ? "Remove from Gallery" : "Show in Gallery") { model.setGallery(source: feed, !feed.gallery) }
-                }
-                FullTextMenu(feed: feed)
-            }
-        }
-    }
-
-    private var collapsedFolders: Set<String> {
-        (try? JSONDecoder().decode(Set<String>.self, from: Data(collapsedFoldersJSON.utf8))) ?? []
-    }
-
-    private func expanded(_ folder: String) -> Binding<Bool> {
-        Binding {
-            !collapsedFolders.contains(folder)
-        } set: { open in
-            var collapsed = collapsedFolders
-            if open { collapsed.remove(folder) } else { collapsed.insert(folder) }
-            collapsedFoldersJSON = (try? String(data: JSONEncoder().encode(collapsed.sorted()), encoding: .utf8)) ?? collapsedFoldersJSON
         }
     }
 
@@ -470,7 +341,8 @@ struct ThreePaneView: View {
                     focus: $focus, onReturn: read, onEscape: leaveList
                 )
             } else {
-                articles(rows)
+                ThreePaneArticles(rows: rows, focus: $focus, read: read, leave: leaveList)
+                    .equatable()
                 if showsFilter {
                     Hairline()
                     SwitchBar(
@@ -503,51 +375,6 @@ struct ThreePaneView: View {
         case .smart(.unread), .smart(.continueReading), .saved, .kind, nil: false
         default: true
         }
-    }
-
-    private func articles(_ rows: [ItemView]) -> some View {
-        @Bindable var model = model
-        return List(rows, selection: $model.currentItemID) { item in
-            ArticleRow(item: item)
-                .flatRow(chosen: item.id == model.currentItemID, inset: 6)
-                .tag(item.id)
-        }
-        .contextMenu(forSelectionType: String.self) { ids in
-            if let id = ids.first, let item = rows.first(where: { $0.id == id }) {
-                Button(item.starred ? "Unstar" : "Star") { model.setStarred(item, !item.starred) }
-                if item.hasBeenRead {
-                    Button("Mark as Unread") { model.markUnread([item.id]) }
-                } else {
-                    Button("Mark as Read") { model.setRead(item, true) }
-                }
-                if model.canExport(item.id, fromReader: false) {
-                    Menu("Export") {
-                        Button("Export as PDF…") { model.beginExport(targetID: item.id, format: .pdf, fromReader: false) }
-                        Button("Export as EPUB…") { model.beginExport(targetID: item.id, format: .epub, fromReader: false) }
-                    }
-                }
-                if let url = item.url.flatMap(URL.init(string:)) {
-                    if isVideoUrl(url: url.absoluteString) {
-                        Button("Convert Video to Book…") {
-                            model.requestVideoConvert(source: url.absoluteString, title: item.title)
-                        }
-                    }
-                    Button("Open in Browser") { NSWorkspace.shared.open(url) }
-                    Button("Copy Link") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(url.absoluteString, forType: .string)
-                    }
-                }
-            }
-        } primaryAction: { _ in read() }
-        .flatList()
-        .pane($focus, .list, onReturn: read, onEscape: leaveList)
-        .overlay {
-            if rows.isEmpty {
-                ContentUnavailableView("Nothing Here", systemImage: "tray")
-            }
-        }
-        .background { keyboard(rows) }
     }
 
     /// The middle column as a list of subscription articles, for "Mark All
@@ -624,30 +451,6 @@ struct ThreePaneView: View {
     private func leaveReader(contentsShown: Bool) {
         readerFocused = false
         if contentsShown { focus = .contents } else { go(.list) }
-    }
-
-    /// j/k move through the list, s stars, m toggles read.
-    private func keyboard(_ rows: [ItemView]) -> some View {
-        Group {
-            Button("Next") { move(rows, 1) }.keyboardShortcut("j", modifiers: [])
-            Button("Previous") { move(rows, -1) }.keyboardShortcut("k", modifiers: [])
-            Button("Star") { if let item = current(rows) { model.setStarred(item, !item.starred) } }.keyboardShortcut("s", modifiers: [])
-            Button("Read") { if let item = current(rows) { model.setRead(item, !item.read) } }.keyboardShortcut("m", modifiers: [])
-        }
-        .disabled(model.overlayVisible)
-        .opacity(0)
-        .frame(width: 0, height: 0)
-        .accessibilityHidden(true)
-    }
-
-    private func current(_ rows: [ItemView]) -> ItemView? {
-        rows.first { $0.id == model.currentItemID }
-    }
-
-    private func move(_ rows: [ItemView], _ delta: Int) {
-        guard !rows.isEmpty else { return }
-        let index = model.currentItemID.flatMap { id in rows.firstIndex { $0.id == id } } ?? -1
-        model.currentItemID = rows[min(max(index + delta, 0), rows.count - 1)].id
     }
 
     // MARK: Reader
@@ -756,6 +559,237 @@ struct ThreePaneView: View {
         DispatchQueue.main.async {
             withAnimation(.easeInOut(duration: 0.2)) { open(id) }
         }
+    }
+}
+
+/// Three-pane's sidebar. A view of its own, and equal to itself for as long
+/// as what is chosen in it and where it stands are the same: three-pane's
+/// body runs several times as a swipe between the columns ends, and each
+/// run would otherwise bring every row here up to date again.
+private struct ThreePaneSidebar: View, Equatable {
+    @Environment(AppModel.self) private var model
+    /// Names of the subscription folders folded up; new folders start open.
+    @AppStorage("threePane.collapsedFolders") private var collapsedFoldersJSON = "[]"
+    let selection: ThreePaneView.Selection?
+    let tier: PaneTier
+    let canRead: Bool
+    var focus: FocusState<PaneFocus?>.Binding
+    let choose: (ThreePaneView.Selection?) -> Void
+    let go: (PanePlace) -> Void
+
+    static func == (a: Self, b: Self) -> Bool {
+        a.selection == b.selection && a.tier == b.tier && a.canRead == b.canRead
+    }
+
+    var body: some View {
+        // Folders fold, and the list leaves room at its start for their arrows.
+        let lead: CGFloat = model.folders.isEmpty ? 8 : 0
+        return List(selection: Binding(get: { selection }, set: choose)) {
+            SideHeading(title: "Library", first: true, lead: lead)
+            ForEach(ThreePaneView.Smart.allCases, id: \.self) { smart in
+                let tag = ThreePaneView.Selection.smart(smart)
+                SideRow(symbol: smart.icon, title: Text(LocalizedStringKey(smart.rawValue)), count: badge(smart), chosen: selection == tag)
+                    .flatRow(chosen: selection == tag, lead: lead)
+                    .tag(tag)
+            }
+            SideRow(symbol: "bookmark", title: Text("Saved"), count: model.collection.count, chosen: selection == .saved)
+                .flatRow(chosen: selection == .saved, lead: lead)
+                .tag(ThreePaneView.Selection.saved)
+            let kinds = CollectionKindView.all.filter { kind in model.collection.contains { $0.kind == kind } }
+            if !kinds.isEmpty {
+                SideHeading(title: "Collection", lead: lead)
+                ForEach(kinds) { kind in
+                    let tag = ThreePaneView.Selection.kind(kind)
+                    SideRow(symbol: kind.icon, title: Text(kind.title), count: model.collection.filter { $0.kind == kind }.count, chosen: selection == tag)
+                        .flatRow(chosen: selection == tag, lead: lead)
+                        .tag(tag)
+                }
+            }
+            if !model.feeds.isEmpty {
+                SideHeading(title: "Subscriptions", lead: lead)
+                ForEach(model.folders, id: \.self) { folder in
+                    let tag = ThreePaneView.Selection.folder(folder)
+                    DisclosureGroup(isExpanded: expanded(folder)) {
+                        feedRows(model.feeds(inFolder: folder), lead)
+                    } label: {
+                        SideRow(symbol: "folder", title: Text(verbatim: folder), count: model.unread(inFolder: folder), chosen: selection == tag) {
+                            if model.inGallery(folder: folder) { GalleryMark() }
+                        }
+                        .tag(tag)
+                        .contextMenu {
+                            let shown = model.inGallery(folder: folder)
+                            Button(shown ? "Remove from Gallery" : "Show in Gallery") { model.setGallery(folder: folder, !shown) }
+                        }
+                    }
+                    .flatRow(chosen: selection == tag, lead: lead)
+                }
+                feedRows(model.feeds(inFolder: nil), lead)
+            }
+            if !model.tags.isEmpty {
+                SideHeading(title: "Tags", lead: lead)
+                ForEach(model.tags) { t in
+                    let tag = ThreePaneView.Selection.tag(t.id)
+                    SideRow(symbol: "number", title: Text(verbatim: t.name), count: Int(t.count), chosen: selection == tag)
+                        .flatRow(chosen: selection == tag, lead: lead)
+                        .tag(tag)
+                }
+            }
+        }
+        .flatList()
+        .pane(focus, .sidebar, onReturn: { go(.list) }, onEscape: sidebarEscape)
+        .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in folderKey(press.key) }
+    }
+
+    /// Esc in the sidebar sends it away again, where it is in over the
+    /// other columns.
+    private var sidebarEscape: (() -> Void)? {
+        switch tier {
+        case .wide: nil
+        case .narrow: canRead ? { go(.reader) } : nil
+        case .medium, .narrowest: { go(.list) }
+        }
+    }
+
+    /// Left folds the selected folder, or goes up to it from a subscription
+    /// inside it; Right unfolds it.
+    private func folderKey(_ key: KeyEquivalent) -> KeyPress.Result {
+        switch selection {
+        case let .folder(name):
+            let open = !collapsedFolders.contains(name)
+            guard key == .leftArrow ? open : !open else { return .ignored }
+            withAnimation(.easeInOut(duration: 0.15)) { expanded(name).wrappedValue = !open }
+            return .handled
+        case let .feed(id):
+            guard key == .leftArrow, let folder = model.feeds.first(where: { $0.id == id })?.category else { return .ignored }
+            choose(.folder(folder))
+            return .handled
+        default:
+            return .ignored
+        }
+    }
+
+    private func badge(_ smart: ThreePaneView.Smart) -> Int {
+        switch smart {
+        case .unread: model.unreadTotal
+        case .continueReading: model.continueReadingCount
+        default: 0
+        }
+    }
+
+    private func feedRows(_ feeds: [SourceView], _ lead: CGFloat) -> some View {
+        ForEach(feeds) { feed in
+            let tag = ThreePaneView.Selection.feed(feed.id)
+            SideRow(symbol: "dot.radiowaves.up.forward", title: Text(verbatim: feed.title), count: Int(feed.unread), chosen: selection == tag) {
+                if let reason = model.galleryReason(feed) { GalleryMark(throughFolder: reason.isEmpty ? nil : reason) }
+            }
+            .flatRow(chosen: selection == tag, lead: lead)
+            .tag(tag)
+            .contextMenu {
+                if let folder = feed.category, model.inGallery(folder: folder) {
+                    Button("Shown in Gallery with “\(folder)”") {}.disabled(true)
+                } else {
+                    Button(feed.gallery ? "Remove from Gallery" : "Show in Gallery") { model.setGallery(source: feed, !feed.gallery) }
+                }
+                FullTextMenu(feed: feed)
+            }
+        }
+    }
+
+    private var collapsedFolders: Set<String> {
+        (try? JSONDecoder().decode(Set<String>.self, from: Data(collapsedFoldersJSON.utf8))) ?? []
+    }
+
+    private func expanded(_ folder: String) -> Binding<Bool> {
+        Binding {
+            !collapsedFolders.contains(folder)
+        } set: { open in
+            var collapsed = collapsedFolders
+            if open { collapsed.remove(folder) } else { collapsed.insert(folder) }
+            collapsedFoldersJSON = (try? String(data: JSONEncoder().encode(collapsed.sorted()), encoding: .utf8)) ?? collapsedFoldersJSON
+        }
+    }
+}
+
+/// The middle column's articles. A view of its own, equal to itself while
+/// it lists the same rows, for the reason the sidebar is.
+private struct ThreePaneArticles: View, Equatable {
+    @Environment(AppModel.self) private var model
+    let rows: [ItemView]
+    var focus: FocusState<PaneFocus?>.Binding
+    /// Return, or a double click: on to the reader.
+    let read: () -> Void
+    /// Esc: back a column.
+    let leave: () -> Void
+
+    static func == (a: Self, b: Self) -> Bool { a.rows == b.rows }
+
+    var body: some View {
+        @Bindable var model = model
+        return List(rows, selection: $model.currentItemID) { item in
+            ArticleRow(item: item)
+                .flatRow(chosen: item.id == model.currentItemID, inset: 6)
+                .tag(item.id)
+        }
+        .contextMenu(forSelectionType: String.self) { ids in
+            if let id = ids.first, let item = rows.first(where: { $0.id == id }) {
+                Button(item.starred ? "Unstar" : "Star") { model.setStarred(item, !item.starred) }
+                if item.hasBeenRead {
+                    Button("Mark as Unread") { model.markUnread([item.id]) }
+                } else {
+                    Button("Mark as Read") { model.setRead(item, true) }
+                }
+                if model.canExport(item.id, fromReader: false) {
+                    Menu("Export") {
+                        Button("Export as PDF…") { model.beginExport(targetID: item.id, format: .pdf, fromReader: false) }
+                        Button("Export as EPUB…") { model.beginExport(targetID: item.id, format: .epub, fromReader: false) }
+                    }
+                }
+                if let url = item.url.flatMap(URL.init(string:)) {
+                    if isVideoUrl(url: url.absoluteString) {
+                        Button("Convert Video to Book…") {
+                            model.requestVideoConvert(source: url.absoluteString, title: item.title)
+                        }
+                    }
+                    Button("Open in Browser") { NSWorkspace.shared.open(url) }
+                    Button("Copy Link") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(url.absoluteString, forType: .string)
+                    }
+                }
+            }
+        } primaryAction: { _ in read() }
+        .flatList()
+        .pane(focus, .list, onReturn: read, onEscape: leave)
+        .overlay {
+            if rows.isEmpty {
+                ContentUnavailableView("Nothing Here", systemImage: "tray")
+            }
+        }
+        .background { keyboard(rows) }
+    }
+
+    /// j/k move through the list, s stars, m toggles read.
+    private func keyboard(_ rows: [ItemView]) -> some View {
+        Group {
+            Button("Next") { move(rows, 1) }.keyboardShortcut("j", modifiers: [])
+            Button("Previous") { move(rows, -1) }.keyboardShortcut("k", modifiers: [])
+            Button("Star") { if let item = current(rows) { model.setStarred(item, !item.starred) } }.keyboardShortcut("s", modifiers: [])
+            Button("Read") { if let item = current(rows) { model.setRead(item, !item.read) } }.keyboardShortcut("m", modifiers: [])
+        }
+        .disabled(model.overlayVisible)
+        .opacity(0)
+        .frame(width: 0, height: 0)
+        .accessibilityHidden(true)
+    }
+
+    private func current(_ rows: [ItemView]) -> ItemView? {
+        rows.first { $0.id == model.currentItemID }
+    }
+
+    private func move(_ rows: [ItemView], _ delta: Int) {
+        guard !rows.isEmpty else { return }
+        let index = model.currentItemID.flatMap { id in rows.firstIndex { $0.id == id } } ?? -1
+        model.currentItemID = rows[min(max(index + delta, 0), rows.count - 1)].id
     }
 }
 

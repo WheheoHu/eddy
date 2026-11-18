@@ -31,13 +31,15 @@ struct PaneContainer<Sidebar: View, Middle: View, Reader: View>: View {
         let tier = arrangement.tier
         let dragged = CGFloat(min(max(listWidth, Self.listWidths.lowerBound), Self.listWidths.upperBound))
         let column = arrangement.columnWidth(dragged)
-        // The columns as they will be where the swipe in progress leads.
-        let heading = drag.destination.map { PaneArrangement(tier: tier, place: $0, sidebarOpen: arrangement.sidebarOpen) }
+        // The columns as they will be where a swipe in progress leads. The
+        // columns that move ask; this body doesn't read the swipe, so its
+        // starting and ending doesn't run it.
+        let heading: (PanePlace) -> PaneArrangement = { PaneArrangement(tier: tier, place: $0, sidebarOpen: arrangement.sidebarOpen) }
         let travel = arrangement.leadingTravel(column)
         ZStack(alignment: .topLeading) {
             // What shows around a column that has sunk.
             Theme.well
-            Sinking(sunk: !arrangement.readerShown, becoming: heading.map { !$0.readerShown }, travel: arrangement.coverTravel(column), drag: drag) {
+            Sinking(sunk: !arrangement.readerShown, becoming: { !heading($0).readerShown }, travel: arrangement.coverTravel(column), drag: drag) {
                 reader
                     // The placeholder for nothing selected sits in the middle.
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -56,10 +58,10 @@ struct PaneContainer<Sidebar: View, Middle: View, Reader: View>: View {
                 .allowsHitTesting(arrangement.dismissal != nil)
                 .accessibilityHidden(true)
             Sliding(
-                slot: arrangement.listSlot, heading: heading?.listSlot,
+                slot: arrangement.listSlot, heading: { heading($0).listSlot },
                 travel: arrangement.listLeadingTravel(column), push: PaneTier.sidebarWidth, drag: drag
             ) {
-                Sinking(sunk: arrangement.listSunk, becoming: heading?.listSunk, travel: PaneTier.sidebarWidth, drag: drag) {
+                Sinking(sunk: arrangement.listSunk, becoming: { heading($0).listSunk }, travel: PaneTier.sidebarWidth, drag: drag) {
                     list
                         .frame(width: tier == .narrowest ? nil : column)
                         .frame(maxHeight: .infinity)
@@ -73,7 +75,7 @@ struct PaneContainer<Sidebar: View, Middle: View, Reader: View>: View {
             .padding(.leading, arrangement.listBase)
             .allowsHitTesting(arrangement.listShown)
             .accessibilityHidden(!arrangement.listShown)
-            Sliding(slot: arrangement.sidebarSlot, heading: heading?.sidebarSlot, travel: travel, drag: drag) {
+            Sliding(slot: arrangement.sidebarSlot, heading: { heading($0).sidebarSlot }, travel: travel, drag: drag) {
                 sidebar
                     .frame(width: PaneTier.sidebarWidth)
                     .frame(maxHeight: .infinity)
@@ -147,8 +149,8 @@ struct ColumnEdge: View {
 struct Sliding<Content: View>: View {
     /// Where it rests: 0 in place, -1 off the leading edge, 1 pushed along.
     let slot: Int
-    /// Where it rests where the swipe in progress leads; nil with none on.
-    let heading: Int?
+    /// Where it rests at the place a swipe leads to.
+    let heading: (PanePlace) -> Int
     /// How far slot -1 is; nil for its own width.
     let travel: CGFloat?
     /// How far slot 1 is.
@@ -160,7 +162,7 @@ struct Sliding<Content: View>: View {
 
     var body: some View {
         var x = rest(slot)
-        if let heading, heading != slot {
+        if let heading = drag.destination.map(heading), heading != slot {
             let to = rest(heading)
             x += (to > x ? 1 : -1) * min(drag.distance, abs(to - x))
         }
@@ -183,7 +185,9 @@ struct Sliding<Content: View>: View {
 /// only then does it read the drag.
 struct Sinking<Content: View>: View {
     let sunk: Bool
-    let becoming: Bool?
+    /// Whether it is sunk at the place a swipe leads to; nil where no
+    /// swipe moves it.
+    let becoming: ((PanePlace) -> Bool)?
     /// How far the columns move to come all the way in; nil for the
     /// window's width.
     let travel: CGFloat?
@@ -196,7 +200,7 @@ struct Sinking<Content: View>: View {
 
     var body: some View {
         var amount: CGFloat = sunk ? 1 : 0
-        if let becoming, becoming != sunk {
+        if let becoming = drag.destination.flatMap({ becoming?($0) }), becoming != sunk {
             let moved = min(drag.distance / (travel ?? width), 1)
             amount = sunk ? 1 - moved : moved
         }

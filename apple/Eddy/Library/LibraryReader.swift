@@ -38,7 +38,7 @@ struct LibraryReader: View {
     }
 
     var body: some View {
-        LeadingColumn(shown: contentsShown, over: dock.over, width: 270, drag: dock.drag, gesturesEnabled: !model.overlayVisible) {
+        LeadingColumn(dock: dock, beside: $showContents, width: 270, gesturesEnabled: !model.overlayVisible) {
             VStack(spacing: 0) {
                 ColumnStrip(leads: true) { home } trailing: { AddMenu() }
                 contents

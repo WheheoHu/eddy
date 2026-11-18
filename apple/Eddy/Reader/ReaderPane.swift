@@ -459,16 +459,20 @@ struct ReaderPane: View {
 
     /// The reader's controls, along its top. Where they don't all fit, the
     /// ones used least go into a menu.
+    ///
+    /// Which set shows goes by the reader's width, not by `ViewThatFits`:
+    /// that builds every candidate afresh to measure it whenever layout
+    /// runs, pop-up buttons and all, and layout runs with every frame of a
+    /// column sliding past.
     private var strip: some View {
         VStack(spacing: 0) {
             ColumnStrip(leads: stripLeads) {
                 if let stripLeading { stripLeading }
             } trailing: {
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 4) { controls(compact: false) }
-                    HStack(spacing: 4) { controls(compact: true) }
-                }
-                .popover(isPresented: $showType, arrowEdge: .bottom) { typography }
+                // The same set whether or not the strip leads the window:
+                // going to the reader and back must not rebuild it.
+                HStack(spacing: 4) { controls(compact: paneWidth < 620) }
+                    .popover(isPresented: $showType, arrowEdge: .bottom) { typography }
             }
             Hairline()
         }
