@@ -4,13 +4,14 @@ Eddy 是本地优先的个人阅读器：Rust 内核（`crates/`）通过 UniFFI
 
 ## 构建与验证
 
-- Rust：`cargo test --workspace`、`cargo clippy --workspace --all-targets`。首次构建前先跑 `scripts/fetch-pdfium.sh`：`eddy-pdf` 静态链接 pdfium，库文件下到 `build/pdfium/`，`.cargo/config.toml` 里的 `PDFIUM_STATIC_LIB_PATH_*` 指向它。
+- Rust：`cargo test --workspace`、`cargo clippy --workspace --all-targets`。首次构建前先跑 `scripts/fetch-pdfium.sh`：Apple 平台上 `eddy-pdf` 静态链接 pdfium，库文件下到 `build/pdfium/`，`.cargo/config.toml` 里的 `PDFIUM_STATIC_LIB_PATH_*` 指向它。
+- Windows 上只有内核和 `eddy-cli`，pdfium 用 `scripts/fetch-pdfium.sh windows` 下载。那里 pdfium 是运行时加载的 `pdfium.dll`：`eddy-pdf` 按完整路径加载 exe 旁边的那份，调试构建和测试找不到时再用 `build/pdfium/windows/` 里解出来的。以后别的非 Apple 平台也这样按完整路径加载，绕开系统的库搜索顺序（它包含当前目录）。本机验证不了 Windows：只在 Windows 上编译的代码推上去后才由 CI 的 Windows job 编译和 lint，它用 Git Bash 跑脚本，那里没有 `shasum` 这类 macOS 自带的工具。
 - Mac 应用：`scripts/build-mac-app.sh`。它先跑 `scripts/build-apple.sh` 生成 XCFramework 和 Swift 绑定，再用 XcodeGen 生成工程并构建。
 - 生成物不进仓库：`apple/Eddy.xcodeproj`、`apple/EddyKit/EddyFFI.xcframework`、`apple/EddyKit/Sources/EddyKit/Generated/`。改了 `eddy-ffi` 的导出接口就重新跑构建脚本。
 - 本机的 `xcode-select` 可能指向命令行工具；`scripts/env.sh` 会自动设置 `DEVELOPER_DIR`，手动调用 `xcodebuild` 时也先 source 它。
 - 服务端：`deploy/compose.yaml`，端口只映射到 `127.0.0.1`；部署步骤见 `deploy/README.md`。
 - 服务端改动除了 `cargo test -p eddy-server`，再跑 `scripts/test-server-smoke.sh`：它在 OrbStack/Docker 里起一个临时服务端，用两个 `eddy-cli` 数据目录走一遍配对、停机、离线改动、恢复、收敛、登出。
-- 推到 GitHub 的每个提交都会跑 `.github/workflows/ci.yml`：`cargo fmt --all --check`、clippy 和测试（macOS 上整个 workspace，警告即失败）、Linux 上的服务端测试和镜像构建、Mac 应用构建。每次运行会把顺带编译出来的服务端二进制（linux/amd64）和 Mac 应用（Release 配置，未公证）作为 artifact 保留 14 天。`dev` 和 `main` 的服务端镜像（linux/amd64）还会推到 `ghcr.io/wheheohu/eddy/eddy-server`，标签是分支名和 `sha-<提交>`；`:latest` 和版本号标签只由发布流程打。提交前本地先跑 `cargo fmt --all` 和 clippy，别让 CI 替你发现。
+- 推到 GitHub 的每个提交都会跑 `.github/workflows/ci.yml`：`cargo fmt --all --check`、clippy 和测试（macOS 上整个 workspace，警告即失败）、Linux 上的服务端测试和镜像构建、Windows 上的内核测试和 `eddy-cli` 构建、Mac 应用构建。每次运行会把顺带编译出来的服务端二进制（linux/amd64）和 Mac 应用（Release 配置，未公证）作为 artifact 保留 14 天。`dev` 和 `main` 的服务端镜像（linux/amd64）还会推到 `ghcr.io/wheheohu/eddy/eddy-server`，标签是分支名和 `sha-<提交>`；`:latest` 和版本号标签只由发布流程打。提交前本地先跑 `cargo fmt --all` 和 clippy，别让 CI 替你发现。
 - 不开界面验证真实网络行为（保存网页、连服务端、搜索）用 `tools/eddy-cli`，它的数据和密钥都在 `build/` 下自己的目录里，和应用数据隔离。
 - 调试 Mac 应用时不要往用户的真实数据目录里写测试内容：用 `open --env EDDY_DATA_DIR=$PWD/build/app-test apple/DerivedData/Build/Products/Debug/Eddy.app` 指向 `build/` 下的测试目录。设了 `EDDY_DATA_DIR` 的应用用自己的钥匙串条目（`EddyPaths.keychainService`），不会读写真实安装的密钥。
 - 阅读视图用 TextKit 2（`NSTextView`），不要改回 SwiftUI 的 `LazyVStack` 拼文章：UX demo 阶段两次卡死都是它在滚动时的布局反馈循环。
