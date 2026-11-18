@@ -528,8 +528,18 @@ final class AppModel {
         } catch {
             report(error)
         }
+        unreadMark = UnreadMark(items: Set(itemIDs))
         reload()
     }
+
+    /// The items marked unread last. A reader showing one of them forgets
+    /// where it had been read to, so leaving doesn't save that place again.
+    struct UnreadMark: Equatable {
+        let items: Set<String>
+        var token = UUID()
+    }
+
+    var unreadMark: UnreadMark?
 
     /// A book or series resets all its chapters; a page or PDF itself.
     func markUnread(entry: CollectionEntryView) {
@@ -542,12 +552,15 @@ final class AppModel {
     }
 
     /// `atEnd`: the end of the text is on screen, which finishes the item.
-    /// Lists refresh when that happens so it leaves Continue Reading at once.
+    /// Lists refresh when that happens, and whenever the position saved has
+    /// moved on (the engine saves one every few seconds of reading), so the
+    /// row being read shows how far it is.
     func recordProgress(_ itemID: String, blockID: String, offset: Int, atEnd: Bool) {
-        let finishing = atEnd && item(itemID)?.finished == false
+        let before = item(itemID)
         _ = try? engine?.recordProgress(itemId: itemID, blockId: blockID, offset: UInt32(max(0, offset)), atEnd: atEnd, force: false)
         itemsCache.removeAll()
-        if finishing { reloadSoon() }
+        guard let before, let now = try? engine?.item(id: itemID) else { return }
+        if now.finished != before.finished || abs(now.progress - before.progress) >= 0.01 { reloadSoon() }
     }
 
     func flushProgress(_ itemID: String, blockID: String, offset: Int, atEnd: Bool) {

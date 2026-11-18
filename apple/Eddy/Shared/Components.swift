@@ -49,6 +49,9 @@ struct ProgressRing: View {
 
 struct ArticleRow: View {
     let item: ItemView
+    /// A finished article shows a check where its progress was: in
+    /// Continue Reading, where it stays listed until the list starts over.
+    var marksFinished = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -61,7 +64,19 @@ struct ArticleRow: View {
                 HStack(spacing: 6) {
                     Text(item.sourceName).font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.text2).lineLimit(1)
                     if item.starred { Image(systemName: "star.fill").font(.system(size: 10)).foregroundStyle(Theme.star) }
-                    if item.inProgress { ProgressRing(value: item.progress, size: 12) }
+                    let done = marksFinished && item.finished
+                    if item.inProgress || done {
+                        // One view either way: a row's views don't change
+                        // kind as it is read.
+                        ZStack {
+                            ProgressRing(value: item.progress, size: 12).opacity(done ? 0 : 1)
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(Theme.ok)
+                                .opacity(done ? 1 : 0)
+                        }
+                        .accessibilityLabel(done ? Text("Finished") : Text("Reading"))
+                    }
                     Spacer(minLength: 4)
                     Text(item.date, format: .relative(presentation: .named)).font(.system(size: 12)).foregroundStyle(Theme.text3).lineLimit(1)
                 }

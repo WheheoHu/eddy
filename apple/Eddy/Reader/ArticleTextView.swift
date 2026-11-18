@@ -91,6 +91,7 @@ struct ArticleTextView: NSViewRepresentable {
         textView.onReflow = { [weak coordinator = context.coordinator] done in
             if done { coordinator?.reflowed() } else { coordinator?.willReflow() }
         }
+        textView.onPlaced = { [weak coordinator = context.coordinator] in coordinator?.settle() }
         return container
     }
 
@@ -167,6 +168,15 @@ struct ArticleTextView: NSViewRepresentable {
         /// previous chapter) that images loading above must not disturb,
         /// until the user scrolls on their own.
         private var anchor: ScrollTarget?
+        /// The view couldn't go to `anchor` when asked: it had no window
+        /// yet, or its height hadn't caught up with its text, so the scroll
+        /// stopped short. It goes there again once it can (`settle`), and
+        /// until then where it stands isn't where the reader is: nothing is
+        /// reported from there, or the place it was left at would be saved
+        /// over the one it should have opened at.
+        private var anchorPending = false
+        private var anchorReports = true
+        private var settleTries = 0
         private var scrollingProgrammatically = false
         private var settlingEnd = false
 
@@ -249,9 +259,23 @@ struct ArticleTextView: NSViewRepresentable {
         }
 
         func reflowed() {
-            guard let held = heldForReflow else { return }
+            let held = heldForReflow
             heldForReflow = nil
-            restore(held, sameText: true)
+            // Still where the app put it, or on the way there (a view gets
+            // its width after its text): that place, not the line that
+            // happened to be on top.
+            if hasShown, let anchor, !anchor.toEnd {
+                scroll(to: anchor, animated: false, report: anchorReports)
+            } else if let held {
+                restore(held, sameText: true)
+            }
+        }
+
+        /// Goes to the app's position again, now that the view may be able
+        /// to: it is in a window, or a pass of layout later.
+        func settle() {
+            guard let anchor, anchorPending, textView?.window != nil else { return }
+            scroll(to: anchor, animated: false, report: anchorReports, settling: true)
         }
 
         /// Puts the held line back where it was, before anything is drawn.
@@ -409,7 +433,13 @@ struct ArticleTextView: NSViewRepresentable {
             reportTask?.cancel()
             reportTask = Task { [weak self] in
                 try? await Task.sleep(for: .milliseconds(250))
-                guard let self, !Task.isCancelled, let position = self.currentPosition() else { return }
+                guard let self, !Task.isCancelled, !self.anchorPending else { return }
+                // Where the app put the view is the position until the
+                // reader scrolls: the block it was asked to show, not the
+                // one whose last line is still in view above it, or every
+                // opening would save a place a paragraph further back.
+                let placed = self.anchor.flatMap { $0.toEnd ? nil : ($0.blockID, $0.offset) }
+                guard let position = placed ?? self.currentPosition() else { return }
                 let atEnd = self.atEnd
                 if onlyAtEnd, !atEnd { return }
                 if let last = self.lastReported, last.0 == position.0, last.1 == position.1, last.2 == atEnd { return }
@@ -418,7 +448,7 @@ struct ArticleTextView: NSViewRepresentable {
             }
         }
 
-        func scroll(to target: ScrollTarget, animated: Bool, report: Bool = true) {
+        func scroll(to target: ScrollTarget, animated: Bool, report: Bool = true, settling: Bool = false) {
             guard let scroll, let textView, let tlm = textView.textLayoutManager, let article else { return }
             var y: CGFloat
             if target.toEnd {
@@ -450,9 +480,29 @@ struct ArticleTextView: NSViewRepresentable {
                     y += line.typographicBounds.minY
                 }
             }
-            y = max(0, min(y, textView.frame.height - scroll.contentView.bounds.height))
+            let limit = textView.frame.height - scroll.contentView.bounds.height
+            let cutShort = !target.toEnd && (textView.window == nil || y > limit + 0.5)
+            y = max(0, min(y, limit))
             let point = NSPoint(x: 0, y: y)
             anchor = target
+            anchorReports = report
+            if !settling { settleTries = 0 }
+            if !cutShort {
+                anchorPending = false
+            } else if textView.window == nil {
+                // Goes there once it is in a window (`settle`), or has its
+                // width (`reflowed`).
+                anchorPending = true
+            } else if settleTries < 3 {
+                // The height lags the text by a pass of layout.
+                anchorPending = true
+                settleTries += 1
+                DispatchQueue.main.async { [weak self] in self?.settle() }
+            } else {
+                // The text ends before a screenful past the place: this is
+                // as far as it goes.
+                anchorPending = false
+            }
             scrollingProgrammatically = true
             if animated {
                 NSAnimationContext.runAnimationGroup { ctx in
@@ -681,8 +731,13 @@ final class ReaderTextView: NSTextView {
         guard window != nil else { return }
         DispatchQueue.main.async { [weak self] in
             self?.textLayoutManager?.textViewportLayoutController.layoutViewport()
+            self?.onPlaced?()
         }
     }
+
+    /// The view is in a window and its visible part laid out: a position
+    /// asked for before that can be gone to.
+    var onPlaced: (() -> Void)?
 
     override func becomeFirstResponder() -> Bool {
         let became = super.becomeFirstResponder()

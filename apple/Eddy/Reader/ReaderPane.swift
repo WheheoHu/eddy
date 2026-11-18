@@ -133,6 +133,14 @@ struct ReaderPane: View {
         }
         .task(id: itemID) { await load() }
         .onDisappear(perform: flush)
+        // Marked unread while open: where it was read to until then is
+        // forgotten, so leaving doesn't put that position back. Reading on
+        // from here is a position again.
+        .onChange(of: model.unreadMark) { _, mark in
+            guard mark?.items.contains(itemID) == true else { return }
+            lastPosition = nil
+            lastPage = nil
+        }
         .onChange(of: model.readerCommand) { _, request in
             guard let command = request?.value, command.itemID == itemID else { return }
             model.readerCommand = nil
@@ -737,8 +745,6 @@ struct ReaderPane: View {
     private func flush() {
         webTranslator?.cancel()
         links.forEach { $0.translator.cancel() }
-        // Marked unread while open: leaving doesn't put the position back.
-        guard model.item(itemID)?.read != false else { return }
         if let lastPosition { model.flushProgress(itemID, blockID: lastPosition.block, offset: lastPosition.offset, atEnd: lastPosition.atEnd) }
         if let lastPage { model.recordPage(itemID, page: lastPage.page, of: lastPage.count, force: true) }
     }

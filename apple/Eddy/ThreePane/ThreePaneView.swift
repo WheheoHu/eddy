@@ -359,7 +359,10 @@ struct ThreePaneView: View {
                     focus: $focus, onReturn: read, onEscape: leaveList
                 )
             } else {
-                ThreePaneArticles(rows: rows, focus: $focus, read: read, leave: leaveList)
+                ThreePaneArticles(
+                    rows: rows, marksFinished: selection == .smart(.continueReading),
+                    focus: $focus, read: read, leave: leaveList
+                )
                     .equatable()
                 if showsFilter {
                     Hairline()
@@ -772,18 +775,20 @@ private struct ThreePaneSidebar: View, Equatable {
 private struct ThreePaneArticles: View, Equatable {
     @Environment(AppModel.self) private var model
     let rows: [ItemView]
+    /// Finished articles show a check: Continue Reading keeps them listed.
+    let marksFinished: Bool
     var focus: FocusState<PaneFocus?>.Binding
     /// Return, or a double click: on to the reader.
     let read: () -> Void
     /// Esc: back a column.
     let leave: () -> Void
 
-    static func == (a: Self, b: Self) -> Bool { a.rows == b.rows }
+    static func == (a: Self, b: Self) -> Bool { a.rows == b.rows && a.marksFinished == b.marksFinished }
 
     var body: some View {
         @Bindable var model = model
         return List(rows, selection: $model.currentItemID) { item in
-            ArticleRow(item: item)
+            ArticleRow(item: item, marksFinished: marksFinished)
                 .flatRow(chosen: item.id == model.currentItemID, inset: 6)
                 .tag(item.id)
         }

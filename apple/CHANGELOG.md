@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Opening an article or chapter brings its text in with a short rise and fade. Going on to another, the text comes up from below when the new one lies after the one before (lower in the list, or a later chapter) and settles from above when it lies before it. With Reduce Motion on it only fades.
 - Continue Reading can show everything, only subscription articles, or only what is in the collection, with a switch under the list in Three-Pane and under the shelf in the Library. The Library's Continue Reading also shelves the subscriptions that have part-read articles.
 - Mark as Read in more places: a button beside the star over the article, Reader → Mark as Read (⇧⌘U) and Mark All as Read… (⇧⌘K) in the menu bar, Mark All as Read… on a subscription or folder in the sidebar and on a subscription on the Library's shelf, and Mark as Read on books, chapters, saved pages and PDFs.
+- Continue Reading: an article read to its end shows a check where its progress was, and stays listed until the list is opened again.
 
 ### Changed
 
@@ -48,6 +49,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - In a Three-Pane window too narrow for the list, a swipe to the right on a book's chapter shows the list instead of the previous chapter. Pull down past the top of the chapter or press ⌘← for the previous one.
 - Mark as Read, chosen by hand, also finishes the item, so it leaves Continue Reading. An item that is part read offers both Mark as Read and Mark as Unread. Opening an article still only marks it read.
 - Moving to the next or previous article or chapter fades the text in from the side it lies on, like every other way of opening one, instead of sliding the whole reader.
+- The row of the article being read shows its progress as reading goes on, not only after leaving it.
 
 ### Removed
 
@@ -56,6 +58,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- An article without pictures opened at its top instead of where it was left, and the top was then saved as its position, so the place was lost; it also dropped out of Continue Reading.
+- Opening an article again saved a position a paragraph further back each time.
+- After Mark as Unread on the article being read, reading on is saved again when leaving it. Leaving without reading on still leaves it unread and unstarted.
 - Continue Reading in Three-Pane: pulling past the end or the top of an article said “This is the last article” or “This is the first article” instead of moving on. Reading an article moved it to the top of the list, and reaching its end took it out; the rows now stay where they were while the list is on screen.
 - A sideways swipe over the sidebar or a list is picked up when the fingers don't travel perfectly level, and no longer nudges the list up or down before the columns move.
 - Swiping columns in and back is smooth: they no longer stutter while following the fingers, or hitch as the swipe ends.
