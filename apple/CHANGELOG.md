@@ -20,6 +20,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- A new look throughout: flat surfaces in two tones, square corners, large titles. The window has no title bar or toolbar; each column carries its own controls along its top, and the window's buttons sit in the first column.
+- The mode switch (Three-Pane, Library, Gallery) is at the bottom of the sidebar, with video conversions beside it.
+- Three-Pane: the list's name and unread count head the list in large type. Under the list a switch shows starred articles, unread ones, or all; it replaces the Unread Only button. Mark All as Read and search are over the list; Refresh and Add are over the sidebar.
+- Three-Pane, in a window with room for the list and the article: the sidebar comes in beside the list, over the article, instead of taking the list's place. A swipe to the right on the article brings it in too; a click on the article, Esc, or choosing something sends it away.
+- An article the columns have come in over sinks back behind them: a little smaller, with rounded corners, and dimmed.
+- The reader's controls are over the article, with a button that closes it. Where they don't all fit, translation, summary, text style, full text and export move into a menu.
+- Library and Gallery: the name of what is shown and how many items heads the page. The Library's filter field, sort order and covers-or-list switch are over the shelf.
 - Settings open as a panel in the main window (⌘, or the command palette), with the window dimmed behind it; Esc or a click outside closes it. In a narrow window its categories become a row of icons down the side.
 - Settings pages have a new look: a large title, bold section headings over ruled rows, square switches, and a segmented switch wherever there are only a few choices (Open in, Content appearance, Protocol, Keep up to, a full-text rule's mode).
 - Articles and the Gallery glide further after a flick on the trackpad, and spring back when the glide reaches an end. Touching the trackpad stops it.
@@ -33,6 +40,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Removed
 
+- The Home button while reading in the Library: the arrow at the start of the row of controls goes back to the shelf.
 - The Share button in the reader's toolbar. Copy Link is still in the article list's context menu and the command palette.
 
 ### Fixed

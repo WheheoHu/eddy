@@ -116,8 +116,10 @@ struct MediaViewer: View {
         }
         .buttonStyle(.borderless)
         .foregroundStyle(.white)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        // Clear of the window's buttons, which sit over its leading end.
+        .padding(.leading, WindowChrome.inset + WindowChrome.buttonsWidth)
+        .padding(.trailing, 14)
+        .frame(height: Theme.strip)
         .background(.black.opacity(0.4))
     }
 

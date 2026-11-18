@@ -37,19 +37,13 @@ struct LibraryReader: View {
 
     var body: some View {
         LeadingColumn(visible: showContents, width: 270) {
-            contents
+            VStack(spacing: 0) {
+                ColumnStrip(leads: true) { home } trailing: { AddMenu() }
+                contents
+            }
         } content: {
             reader
         }
-        .toolbar {
-            ColumnToggle(visible: $showContents)
-            ToolbarItem(placement: .navigation) {
-                Button(action: close) { Label("Home", systemImage: "house") }
-                    .help("Back to the library")
-            }
-            AddToolbar(model: model)
-        }
-        .navigationTitle(book.title)
         .onAppear {
             chooseStart()
             model.currentList = articleList
@@ -100,24 +94,36 @@ struct LibraryReader: View {
         if showContents { focus = .contents } else { close() }
     }
 
+    /// Back to the shelf: first in the strip that leads the window.
+    private var home: some View {
+        Button(action: close) { Label("Library", systemImage: "chevron.left") }
+            .help("Back to the library (Esc)")
+    }
+
     @ViewBuilder
     private var reader: some View {
         if let id = currentID {
             VStack(spacing: 0) {
                 ReaderPane(
                     itemID: id, scrollTarget: $scrollTarget, pageTarget: pageTarget, openItem: select,
+                    showContents: $showContents,
                     neighbors: neighbors(of: id), startAtEnd: landAtEnd == id,
-                    onEscape: leaveReader, focused: readerFocused, onFocus: { readerFocused = true }
+                    onEscape: leaveReader, focused: readerFocused, onFocus: { readerFocused = true },
+                    stripLeads: !showContents, stripLeading: showContents ? nil : AnyView(home)
                 )
                     .id(id)
                     .transition(.push(from: arrival))
                 if entries.count > 1 {
-                    Divider()
+                    Hairline()
                     SequenceBar(title: book.title, items: entries, current: id) { select($0) }
                 }
             }
+            .background(Theme.page)
         } else {
-            ContentUnavailableView("Nothing to Read", systemImage: "book.closed")
+            VStack(spacing: 0) {
+                ColumnStrip(leads: !showContents) { if !showContents { home } } trailing: { EmptyView() }
+                ContentUnavailableView("Nothing to Read", systemImage: "book.closed").frame(maxHeight: .infinity)
+            }
         }
     }
 
@@ -195,7 +201,7 @@ private struct FeedContents: View {
                 FilterField(text: $query, prompt: "Filter Articles")
                 if let onMarkAllRead {
                     Button(action: onMarkAllRead) { Image(systemName: "checkmark.circle") }
-                        .buttonStyle(.borderless)
+                        .buttonStyle(FlatButtonStyle(size: 28))
                         .help("Mark every unread article here as read")
                         .accessibilityLabel("Mark All as Read")
                 }
@@ -203,17 +209,25 @@ private struct FeedContents: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             List(selection: Binding(get: { currentID }, set: { if let id = $0 { select(id) } })) {
-                Section(title) {
+                Text(verbatim: title)
+                    .font(Theme.title(20))
+                    .foregroundStyle(Theme.text1)
+                    .lineLimit(2)
+                    .padding(.vertical, 6)
+                    .flatRow(chosen: false)
+                    .selectionDisabled()
+                Group {
                     ForEach(items.filter { $0.title.matches(filter: query) }) { item in
                         VStack(alignment: .leading, spacing: 3) {
                             HStack(spacing: 6) {
-                                Circle().fill(item.read ? Color.clear : Color.accentColor).frame(width: 6, height: 6)
-                                Text(item.date, format: .relative(presentation: .named)).font(.caption2).foregroundStyle(.secondary)
+                                RoundedRectangle(cornerRadius: 2).fill(item.read ? Color.clear : Theme.accent).frame(width: 6, height: 6)
+                                Text(item.date, format: .relative(presentation: .named)).font(.system(size: 11)).foregroundStyle(Theme.text3)
                                 if item.inProgress { ProgressRing(value: item.progress, size: 10) }
                             }
-                            Text(item.title).font(.callout.weight(item.read ? .regular : .semibold)).lineLimit(3)
+                            Text(item.title).font(.system(size: 13.5, weight: item.read ? .regular : .semibold)).foregroundStyle(item.read ? Theme.text2 : Theme.text1).lineLimit(3)
                         }
-                        .padding(.vertical, 2)
+                        .padding(.vertical, 6)
+                        .flatRow(chosen: item.id == currentID)
                         .tag(item.id)
                         .contextMenu {
                             if item.hasBeenRead {
@@ -231,7 +245,7 @@ private struct FeedContents: View {
                     }
                 }
             }
-            .listStyle(.sidebar)
+            .flatList()
             .pane(focus, .contents, onReturn: onReturn, onEscape: onEscape)
         }
     }

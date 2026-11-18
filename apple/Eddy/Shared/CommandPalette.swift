@@ -64,7 +64,7 @@ struct CommandPalette: View {
     var body: some View {
         let items = visibleItems
         ZStack(alignment: .top) {
-            Color.black.opacity(0.12)
+            Theme.scrim
                 .ignoresSafeArea()
                 .onTapGesture { close() }
             VStack(spacing: 0) {
@@ -92,8 +92,8 @@ struct CommandPalette: View {
             }
             .frame(maxWidth: 580)
             .background(FocusRecorder(memory: focusMemory))
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator))
+            .background(Theme.list, in: RoundedRectangle(cornerRadius: Theme.Radius.panel, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.panel, style: .continuous).strokeBorder(Theme.outline))
             .shadow(color: .black.opacity(0.25), radius: 24, y: 10)
             .padding(.top, 70)
             // Clear of the edges of a narrow window.

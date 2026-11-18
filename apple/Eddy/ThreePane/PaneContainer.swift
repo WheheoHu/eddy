@@ -1,23 +1,21 @@
 import SwiftUI
 
-/// Three-pane's list and reader, and its sidebar where the window is too
-/// narrow for the split view's own, laid out for the tier the window is in.
+/// Three-pane's three columns, laid out for the tier the window is in.
 /// Every column stays the same view from one tier to the next and while it
-/// is out of sight (moved off the leading edge, not removed), so the text
-/// keeps its place and the list its scroll position however the window is
+/// is out of sight (moved off an edge, not removed), so the text keeps its
+/// place and the lists their scroll positions however the window is
 /// resized. A swipe moves the columns with the fingers: `drag` says how far.
+/// A reader the columns have come in over sinks back behind them.
 struct PaneContainer<Sidebar: View, Middle: View, Reader: View>: View {
     let arrangement: PaneArrangement
-    /// The list's name, shown over it where the sidebar isn't beside it.
-    let title: Text
     /// Something is open in the reader to go on to.
     let canRead: Bool
     /// Swipes and row clicks are off: something lies over the window.
     let gesturesEnabled: Bool
     /// The swipe between columns in progress, if any.
     let drag: PaneDrag
-    /// Moves to a column: the way back over the list, the scrim, a swipe,
-    /// a click on a row.
+    /// Moves to a column: a strip's button, a click beside the columns, a
+    /// swipe, a click on a row.
     let go: (PanePlace) -> Void
     @ViewBuilder let sidebar: Sidebar
     @ViewBuilder let list: Middle
@@ -34,62 +32,50 @@ struct PaneContainer<Sidebar: View, Middle: View, Reader: View>: View {
         let dragged = CGFloat(min(max(listWidth, Self.listWidths.lowerBound), Self.listWidths.upperBound))
         let column = arrangement.columnWidth(dragged)
         // The columns as they will be where the swipe in progress leads.
-        let heading = drag.destination.map { PaneArrangement(tier: tier, place: $0) }
+        let heading = drag.destination.map { PaneArrangement(tier: tier, place: $0, sidebarOpen: arrangement.sidebarOpen) }
+        let travel = arrangement.travel(column)
         ZStack(alignment: .topLeading) {
-            reader
-                // The placeholder for nothing selected sits in the middle.
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(.leading, tier >= .medium ? column : 0)
-                .allowsHitTesting(arrangement.readerShown)
-                .accessibilityHidden(!arrangement.readerShown)
-            // What dims the reader while the columns are in over it.
-            Scrim(dimmed: arrangement.dimmed, becoming: heading?.dimmed, travel: PaneTier.sidebarWidth + column, drag: drag)
-                .contentShape(Rectangle())
-                .onTapGesture { if canRead { go(.reader) } }
-                .allowsHitTesting(arrangement.dimmed)
-                .accessibilityHidden(true)
-            Sliding(
-                slot: arrangement.listSlot, heading: heading?.listSlot,
-                travel: tier == .narrowest ? nil : (tier == .narrow ? PaneTier.sidebarWidth + column : column), drag: drag
-            ) {
-                VStack(spacing: 0) {
-                    if tier == .medium || tier == .narrowest {
-                        header
-                        Divider()
-                    }
-                    list
-                }
-                .frame(width: tier == .narrowest ? nil : column)
-                .frame(maxHeight: .infinity)
-                // A color, not the background style: that one stays where
-                // it is when the column moves, and covers the reader.
-                .background(Color(nsColor: .textBackgroundColor))
-                .overlay(alignment: .trailing) { if tier != .narrowest { ColumnEdge() } }
+            // What shows around a reader that has sunk.
+            Theme.well
+            Sinking(sunk: !arrangement.readerShown, becoming: heading.map { !$0.readerShown }, travel: travel, drag: drag) {
+                reader
+                    // The placeholder for nothing selected sits in the middle.
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Theme.page)
             }
-            // The list's space: beside the sidebar in the narrow tier, the
-            // leading column otherwise. Pushed out of it by the sidebar,
-            // the list is clipped away, not over the reader.
-            .padding(.leading, tier == .narrow ? PaneTier.sidebarWidth : 0)
-            .frame(width: tier == .narrowest ? nil : (tier == .narrow ? PaneTier.sidebarWidth + column : column), alignment: .leading)
-            .clipped()
+            .padding(.leading, arrangement.readerBase(column))
+            .allowsHitTesting(arrangement.readerShown)
+            .accessibilityHidden(!arrangement.readerShown)
+            // A click on the reader beside the columns over it sends them away.
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture { if let back = arrangement.dismissal, back != .reader || canRead { go(back) } }
+                .allowsHitTesting(arrangement.dismissal != nil)
+                .accessibilityHidden(true)
+            Sliding(slot: arrangement.listSlot, heading: heading?.listSlot, travel: travel, drag: drag) {
+                list
+                    .frame(width: tier == .narrowest ? nil : column)
+                    .frame(maxHeight: .infinity)
+                    // Colors, not background styles: those stay where they
+                    // are when a column moves, and cover the reader.
+                    .background(Theme.list)
+                    .overlay(alignment: .trailing) { if tier != .narrowest { ColumnEdge() } }
+                    .shadow(color: .black.opacity(arrangement.readerShown || tier == .narrowest ? 0 : 0.14), radius: 18, x: 8)
+            }
+            .padding(.leading, arrangement.listBase)
             .allowsHitTesting(arrangement.listShown)
             .accessibilityHidden(!arrangement.listShown)
-            if tier != .wide {
-                Sliding(
-                    slot: arrangement.sidebarSlot, heading: heading?.sidebarSlot,
-                    travel: tier == .narrowest ? nil : (tier == .narrow ? PaneTier.sidebarWidth + column : column), drag: drag
-                ) {
-                    sidebar
-                        .frame(width: tier == .narrowest ? nil : (tier == .narrow ? PaneTier.sidebarWidth : column))
-                        .frame(maxHeight: .infinity)
-                        .background(Color(nsColor: .windowBackgroundColor))
-                        .overlay(alignment: .trailing) { if tier != .narrowest { ColumnEdge() } }
-                }
-                .allowsHitTesting(arrangement.sidebarShown)
-                .accessibilityHidden(!arrangement.sidebarShown)
+            Sliding(slot: arrangement.sidebarSlot, heading: heading?.sidebarSlot, travel: travel, drag: drag) {
+                sidebar
+                    .frame(width: tier == .narrowest ? nil : PaneTier.sidebarWidth)
+                    .frame(maxHeight: .infinity)
+                    .background(Theme.side)
+                    .overlay(alignment: .trailing) { if tier != .narrowest { ColumnEdge() } }
             }
-            if tier >= .medium {
-                resizeHandle.offset(x: column - 4)
+            .allowsHitTesting(arrangement.sidebarShown)
+            .accessibilityHidden(!arrangement.sidebarShown)
+            if tier >= .medium, arrangement.readerShown {
+                resizeHandle.offset(x: arrangement.readerBase(column) - 4)
             }
             PaneSwipes(
                 enabled: gesturesEnabled && tier != .wide,
@@ -117,26 +103,6 @@ struct PaneContainer<Sidebar: View, Middle: View, Reader: View>: View {
         .clipped()
     }
 
-    /// The list's name and the way back to the sidebar, where the list has
-    /// taken its place.
-    private var header: some View {
-        Button { go(.sidebar) } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "chevron.left")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                title.font(.headline).lineLimit(1)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help("Back to the sidebar")
-        .accessibilityLabel(Text("Back to the sidebar"))
-    }
-
     /// Dragging the line between the list and the reader sets the list's
     /// width.
     private var resizeHandle: some View {
@@ -162,7 +128,7 @@ struct PaneContainer<Sidebar: View, Middle: View, Reader: View>: View {
 /// lies flat.)
 struct ColumnEdge: View {
     var body: some View {
-        Rectangle().fill(.separator).frame(width: 1).frame(maxHeight: .infinity)
+        Rectangle().fill(Theme.line).frame(width: 1).frame(maxHeight: .infinity)
     }
 }
 
@@ -201,21 +167,34 @@ private struct Sliding<Content: View>: View {
     }
 }
 
-/// What dims the reader while the columns are in over it, deepening as a
-/// swipe brings them in.
-private struct Scrim: View {
-    let dimmed: Bool
+/// A column the others have come in over: it sinks back, a little smaller
+/// with its corners rounded, and dims. A swipe takes it there by degrees;
+/// only then does it read the drag.
+private struct Sinking<Content: View>: View {
+    let sunk: Bool
     let becoming: Bool?
-    /// How far the columns move to come all the way in.
-    let travel: CGFloat
+    /// How far the columns move to come all the way in; nil for the
+    /// window's width.
+    let travel: CGFloat?
     let drag: PaneDrag
+    @ViewBuilder let content: Content
+    @State private var width: CGFloat = 480
+
+    /// How much smaller it is, sunk.
+    private var depth: CGFloat { 0.06 }
 
     var body: some View {
-        var amount: CGFloat = dimmed ? 1 : 0
-        if let becoming, becoming != dimmed {
-            let moved = min(drag.distance / travel, 1)
-            amount = dimmed ? 1 - moved : moved
+        var amount: CGFloat = sunk ? 1 : 0
+        if let becoming, becoming != sunk {
+            let moved = min(drag.distance / (travel ?? width), 1)
+            amount = sunk ? 1 - moved : moved
         }
-        return Color.black.opacity(0.18 * amount)
+        return content
+            .overlay { Theme.scrim.opacity(amount).allowsHitTesting(false) }
+            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.panel * amount, style: .continuous))
+            .scaleEffect(1 - depth * amount)
+            .onGeometryChange(for: CGFloat.self) { travel == nil ? $0.size.width : 0 } action: { new in
+                if new > 0 { width = new }
+            }
     }
 }

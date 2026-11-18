@@ -1,10 +1,8 @@
 import SwiftUI
 
-/// A collapsible column on the leading side, for the library's screens.
-/// The window holds one split view (three-pane mode); a second one that
-/// replaces it loses its sidebar toggle and column widths, so the library
-/// lays its columns out itself and puts `ColumnToggle` where the system
-/// toggle sits, right after the window buttons.
+/// A collapsible column on the leading side, for the Library's and the
+/// Gallery's screens, with the content beside it. Each side has its own
+/// strip along the top; `SidebarToggle` goes first in whichever leads.
 struct LeadingColumn<Column: View, Content: View>: View {
     let visible: Bool
     let width: CGFloat
@@ -16,47 +14,51 @@ struct LeadingColumn<Column: View, Content: View>: View {
             if visible {
                 column
                     .frame(width: width)
-                    .background(.background.secondary)
+                    .background(Theme.side)
                     .transition(.move(edge: .leading))
-                Divider()
+                Hairline(vertical: true)
             }
-            content.frame(maxWidth: .infinity, maxHeight: .infinity)
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Theme.list)
         }
     }
 }
 
-/// Shows or hides a `LeadingColumn`; the first item of the toolbar.
-struct ColumnToggle: ToolbarContent {
+/// Shows or hides a `LeadingColumn`: the first button of the strip that
+/// leads the window.
+struct SidebarToggle: View {
     @Binding var visible: Bool
 
-    var body: some ToolbarContent {
-        ToolbarItem(placement: .navigation) {
-            Button { withAnimation(.easeInOut(duration: 0.2)) { visible.toggle() } } label: {
-                Label(visible ? "Hide Sidebar" : "Show Sidebar", systemImage: "sidebar.left")
-            }
-            .help(visible ? "Hide sidebar" : "Show sidebar")
+    var body: some View {
+        Button { withAnimation(.easeInOut(duration: 0.2)) { visible.toggle() } } label: {
+            Label(visible ? "Hide Sidebar" : "Show Sidebar", systemImage: "sidebar.left")
         }
+        .buttonStyle(FlatButtonStyle(on: visible))
+        .help(visible ? "Hide sidebar" : "Show sidebar")
     }
 }
 
-/// The Add menu. Each screen places it after its own leading controls (the
-/// column toggle, Home while reading in the library), so the toolbar reads
-/// the same way everywhere.
-struct AddToolbar: ToolbarContent {
-    let model: AppModel
+/// A sidebar under its strip, over the status line and the mode switch:
+/// what the Library's and the Gallery's leading columns share.
+struct SidebarColumn<Rows: View>: View {
+    @Environment(AppModel.self) private var model
+    @Binding var visible: Bool
+    @ViewBuilder var rows: Rows
 
-    var body: some ToolbarContent {
-        ToolbarItem(placement: .navigation) {
-            Menu {
-                Button("Save Page…") { model.savingURL = true }
-                Button("Convert Video to Book…") { model.requestVideoConvert() }
-                Button("Import EPUB, PDF, or Video…") { model.importing = true }
-            } label: {
-                Label("Add", systemImage: "plus")
-            } primaryAction: {
-                model.savingURL = true
+    var body: some View {
+        VStack(spacing: 0) {
+            ColumnStrip(leads: true) {
+                SidebarToggle(visible: $visible)
+            } trailing: {
+                Button { Task { await model.refresh() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
+                    .help("Refresh (⌘R)")
+                    .disabled(model.busy)
+                AddMenu()
             }
-            .help("Save a page (⌘L), convert a presentation video, or import a file (⌘O)")
+            rows
+            StatusFooter()
+            ModeBar()
         }
     }
 }

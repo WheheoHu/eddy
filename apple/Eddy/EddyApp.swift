@@ -52,8 +52,9 @@ struct EddyApp: App {
         }
         .handlesExternalEvents(matching: ["*"])
         .defaultSize(width: 1360, height: 860)
-        // One toolbar height whether or not a screen shows a title.
-        .windowToolbarStyle(.unifiedCompact)
+        // Every column carries its own strip of controls; `WindowChrome`
+        // puts the window's buttons in the leading one.
+        .windowStyle(.hiddenTitleBar)
         .commands {
             // Settings are a panel in the window, not a window of their own.
             CommandGroup(replacing: .appSettings) {
@@ -109,7 +110,6 @@ struct RootView: View {
         Group {
             if let error = model.openError {
                 ContentUnavailableView("Eddy Couldn’t Open Its Library", systemImage: "exclamationmark.triangle", description: Text(error))
-                    .toolbar(removing: .title)
             } else {
                 switch mode {
                 case .threePane: ThreePaneView()
@@ -118,7 +118,9 @@ struct RootView: View {
                 }
             }
         }
-        .background(ModeSwitchInstaller())
+        .background(Theme.page)
+        .ignoresSafeArea(.container, edges: .top)
+        .background(WindowChrome())
         .overlay(alignment: .bottom) { MessageBanner() }
         // Links from the browser go to this window, not a new one.
         .handlesExternalEvents(preferring: ["*"], allowing: ["*"])

@@ -37,8 +37,8 @@ struct ProgressRing: View {
 
     var body: some View {
         ZStack {
-            Circle().stroke(Color.secondary.opacity(0.25), lineWidth: 2)
-            Circle().trim(from: 0, to: value).stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, lineCap: .round)).rotationEffect(.degrees(-90))
+            Circle().stroke(Theme.outline, lineWidth: 2)
+            Circle().trim(from: 0, to: value).stroke(Theme.accent, style: StrokeStyle(lineWidth: 2, lineCap: .round)).rotationEffect(.degrees(-90))
         }
         .frame(width: size, height: size)
     }
@@ -48,21 +48,31 @@ struct ArticleRow: View {
     let item: ItemView
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Circle().fill(item.read ? Color.clear : Color.accentColor).frame(width: 7, height: 7)
-                Text(item.sourceName).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                Spacer()
-                if item.starred { Image(systemName: "star.fill").font(.caption2).foregroundStyle(.yellow) }
-                if item.inProgress { ProgressRing(value: item.progress, size: 12) }
-                Text(item.date, format: .relative(presentation: .named)).font(.caption).foregroundStyle(.tertiary)
-            }
-            Text(item.title).font(.body.weight(item.read ? .regular : .semibold)).lineLimit(2)
-            if let excerpt = item.excerpt, !excerpt.isEmpty {
-                Text(excerpt).font(.callout).foregroundStyle(.secondary).lineLimit(2)
+        HStack(alignment: .top, spacing: 8) {
+            // Unread: a small square in the accent colour.
+            RoundedRectangle(cornerRadius: 2)
+                .fill(item.read ? Color.clear : Theme.accent)
+                .frame(width: 7, height: 7)
+                .padding(.top, 5)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(item.sourceName).font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.text2).lineLimit(1)
+                    if item.starred { Image(systemName: "star.fill").font(.system(size: 10)).foregroundStyle(Theme.star) }
+                    if item.inProgress { ProgressRing(value: item.progress, size: 12) }
+                    Spacer(minLength: 4)
+                    Text(item.date, format: .relative(presentation: .named)).font(.system(size: 12)).foregroundStyle(Theme.text3).lineLimit(1)
+                }
+                Text(item.title)
+                    .font(.system(size: 15, weight: item.read ? .regular : .semibold))
+                    .foregroundStyle(item.read ? Theme.text2 : Theme.text1)
+                    .lineLimit(2)
+                if let excerpt = item.excerpt, !excerpt.isEmpty {
+                    Text(excerpt).font(.system(size: 13)).foregroundStyle(Theme.text2).lineLimit(2)
+                }
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 11)
+        .overlay(alignment: .bottom) { Hairline().padding(.leading, 15) }
     }
 }
 
@@ -182,8 +192,9 @@ struct MessageBanner: View {
             .font(.callout)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            .background(.regularMaterial, in: Capsule())
-            .contentShape(Capsule())
+            .background(Theme.list, in: RoundedRectangle(cornerRadius: Theme.Radius.panel, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.panel, style: .continuous).strokeBorder(Theme.outline))
+            .contentShape(Rectangle())
             .onTapGesture { if notice.kind == .error { copy(notice) } }
             .shadow(color: .black.opacity(0.1), radius: 8, y: 2)
             .padding(20)

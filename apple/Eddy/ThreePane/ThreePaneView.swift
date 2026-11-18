@@ -5,10 +5,9 @@ import SwiftUI
 /// (articles, or the entries of the collection), the reader on the right.
 /// A collection entry keeps its contents in a panel beside the text.
 ///
-/// A window too narrow for all three shows fewer (`PaneTier`): the split
-/// view holds only the sidebar and, as its detail, a `PaneContainer` with
-/// the list and the reader, which lays them out for the tier and shows the
-/// sidebar itself where the split view's is collapsed.
+/// Each column has a strip of its own controls along its top; there is no
+/// toolbar. A window too narrow for all three shows fewer (`PaneTier`), and
+/// `PaneContainer` lays the columns out for the tier.
 struct ThreePaneView: View {
     @Environment(AppModel.self) private var model
     @AppStorage("app.mode") private var mode: AppMode = .threePane
@@ -19,7 +18,6 @@ struct ThreePaneView: View {
     @State private var selection: Selection? = .smart(.all)
     /// The collection entry picked in the middle column.
     @State private var entryID: String?
-    @State private var unreadOnly = false
     /// Articles read while the unread-only list has been on screen. They
     /// stay listed, so rows don't move under the pointer with each one
     /// read, until the list starts over: another sidebar selection, the
@@ -43,11 +41,10 @@ struct ThreePaneView: View {
     @State private var tier = PaneTier.wide
     /// The column the reader is at, where not all of them show.
     @State private var place = PanePlace.list
-    /// The split view's own sidebar: shown in the wide tier only.
-    @State private var columns: NavigationSplitViewVisibility =
-        UserDefaults.standard.object(forKey: "threePane.sidebar") as? Bool == false ? .detailOnly : .all
-    /// The sidebar as last left in the wide tier.
+    /// The sidebar is open in the wide tier, where it can be shut.
     @AppStorage("threePane.sidebar") private var showSidebar = true
+    /// Which of the articles the middle column lists.
+    @State private var filter = ListFilter.all
     /// The contents over the text, in the narrowest tier, where there is no
     /// room for them beside it.
     @State private var contentsDrawer = false
@@ -67,41 +64,10 @@ struct ThreePaneView: View {
         }
     }
 
-    /// How large the sidebar's rows are set: as the system sets a sidebar
-    /// column's, or larger where the sidebar has more room than that.
-    ///
-    /// The two larger sizes differ only in numbers, never in the views they
-    /// make: the container's sidebar goes from one to the other as the
-    /// window is resized, and a list whose rows change type under it
-    /// crashes in SwiftUI's cell reuse.
-    enum SidebarScale: ViewModifier {
-        case standard, roomy, large
+    /// The switch under the article list.
+    enum ListFilter: Hashable { case starred, unread, all }
 
-        private var rowFont: Font { self == .large ? .title2 : .title3 }
-        private var rowPadding: CGFloat { self == .large ? 5 : 3 }
-        private var headingFont: Font { self == .large ? .title.weight(.bold) : .title3.weight(.semibold) }
-        private var headingPadding: CGFloat { self == .large ? 10 : 6 }
-
-        func body(content: Content) -> some View {
-            if self == .standard {
-                content
-            } else {
-                content.font(rowFont).padding(.vertical, rowPadding)
-            }
-        }
-
-        /// A section's title: the list's own small one, or one that leads
-        /// the section the way the larger rows need.
-        @ViewBuilder
-        func heading(_ title: LocalizedStringKey) -> some View {
-            if self == .standard {
-                Text(title)
-            } else {
-                Text(title).font(headingFont).foregroundStyle(.primary)
-                    .padding(.top, headingPadding).padding(.bottom, headingPadding / 3)
-            }
-        }
-    }
+    private var unreadOnly: Bool { filter == .unread }
 
     enum Selection: Hashable {
         case smart(Smart), saved, kind(CollectionKindView), folder(String), feed(String), tag(String)
@@ -117,33 +83,17 @@ struct ThreePaneView: View {
     }
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columns) {
-            // The split view takes the column's width only from the sidebar
-            // itself, not through a view wrapped around it (a condition, a
-            // stack), so the sidebar stays here in every tier: collapsed in
-            // the narrower ones, where the container shows another.
-            // The minimum is on the content too: the column's alone isn't
-            // kept when the sidebar comes back after a much narrower window.
-            sidebar(onstage: tier == .wide, scale: .standard)
-                .frame(minWidth: 210)
-                .navigationSplitViewColumnWidth(min: 210, ideal: PaneTier.sidebarWidth)
-                .toolbar(removing: tier == .wide ? nil : .sidebarToggle)
-        } detail: {
-            PaneContainer(
-                arrangement: arrangement, title: listTitle, canRead: canRead,
-                gesturesEnabled: !model.overlayVisible && model.mediaRequest == nil, drag: drag, go: go
-            ) {
-                sidebar(onstage: true, scale: tier == .narrowest ? .large : .roomy)
-            } list: {
-                middle
-            } reader: {
-                detail
-            }
+        PaneContainer(
+            arrangement: arrangement, canRead: canRead,
+            gesturesEnabled: !model.overlayVisible && model.mediaRequest == nil, drag: drag, go: go
+        ) {
+            sidebarColumn
+        } list: {
+            listColumn
+        } reader: {
+            detail
         }
-        .toolbar { paneToolbar }
-        .toolbar(removing: .title)
         .onGeometryChange(for: PaneTier.self) { PaneTier.at($0.size.width, from: tier) } action: { fit($0) }
-        .onChange(of: columns) { _, new in sidebarToggled(shown: new != .detailOnly) }
         .onAppear {
             showCurrentEntry()
             place = canRead ? .reader : .list
@@ -170,7 +120,7 @@ struct ThreePaneView: View {
             history.reset(model.currentItemID)
             readHere = []
         }
-        .onChange(of: unreadOnly) { readHere = [] }
+        .onChange(of: filter) { readHere = [] }
         .onChange(of: model.listsReset) { readHere = [] }
         .onChange(of: focus) { _, new in if new != nil { readerFocused = false } }
         .onChange(of: articleList, initial: true) { _, list in model.currentList = list }
@@ -195,7 +145,7 @@ struct ThreePaneView: View {
     /// With nothing open the reader has only a placeholder, so the list
     /// shows in its place.
     private var arrangement: PaneArrangement {
-        PaneArrangement(tier: tier, place: place == .reader && !canRead ? .list : place)
+        PaneArrangement(tier: tier, place: place == .reader && !canRead ? .list : place, sidebarOpen: showSidebar)
     }
 
     /// The window is in another tier. Narrowing past the list leaves the
@@ -211,21 +161,6 @@ struct ThreePaneView: View {
         tier = new
         drag.end()
         contentsDrawer = false
-        columns = new == .wide && showSidebar ? .all : .detailOnly
-    }
-
-    /// The split view's sidebar was shown or hidden: by its toggle in the
-    /// wide tier, which is remembered; in a narrower one only by dragging it
-    /// out from the window's edge, and there the container's is shown.
-    private func sidebarToggled(shown: Bool) {
-        if tier == .wide {
-            showSidebar = shown
-        } else if shown {
-            DispatchQueue.main.async {
-                columns = .detailOnly
-                go(.sidebar)
-            }
-        }
     }
 
     /// Moves to a column, and keyboard focus with it. In the wide tier,
@@ -238,7 +173,7 @@ struct ThreePaneView: View {
         } else {
             // From wherever a swipe has brought the columns, the rest of
             // the way.
-            withAnimation(.easeOut(duration: 0.22)) {
+            withAnimation(.easeOut(duration: 0.24)) {
                 place = new
                 drag.end()
             }
@@ -250,46 +185,50 @@ struct ThreePaneView: View {
         }
     }
 
-    /// The first item of the toolbar where the split view's sidebar toggle
-    /// isn't: back a column in the narrowest tier, the sidebar (with the
-    /// list, over the reader) shown or hidden in the others.
-    @ToolbarContentBuilder
-    private var paneToolbar: some ToolbarContent {
-        if tier != .wide {
-            ToolbarItem(placement: .navigation) {
-                let shown = arrangement.sidebarShown
-                if tier == .narrowest {
-                    Button { go(arrangement.place == .reader ? .list : .sidebar) } label: {
-                        Label("Back", systemImage: "chevron.left")
-                    }
-                    .help(arrangement.place == .reader ? "Back to the list" : "Back to the sidebar")
-                    .disabled(arrangement.place == .sidebar)
-                } else {
-                    Button { go(shown ? (tier == .narrow ? .reader : .list) : (tier == .narrow ? .list : .sidebar)) } label: {
-                        Label(shown ? "Hide Sidebar" : "Show Sidebar", systemImage: "sidebar.left")
-                    }
-                    .help(shown ? "Hide sidebar" : "Show sidebar")
-                    .disabled(tier == .narrow && shown && !canRead)
+    /// The first button of the strip that leads the window: back a column
+    /// in the narrowest tier, the sidebar shown or hidden in the others.
+    @ViewBuilder
+    private func leadButton(in column: PanePlace) -> some View {
+        if arrangement.leading == column {
+            let shown = arrangement.sidebarShown
+            if tier == .narrowest {
+                Button { go(arrangement.place == .reader ? .list : .sidebar) } label: {
+                    Label("Back", systemImage: "chevron.left")
                 }
+                .help(arrangement.place == .reader ? "Back to the list" : "Back to the sidebar")
+                .disabled(arrangement.place == .sidebar)
+            } else {
+                Button {
+                    switch tier {
+                    case .wide: withAnimation(.easeOut(duration: 0.24)) { showSidebar.toggle() }
+                    case .medium: go(shown ? .list : .sidebar)
+                    default: go(shown ? .reader : .list)
+                    }
+                } label: {
+                    Label(shown ? "Hide Sidebar" : "Show Sidebar", systemImage: "sidebar.left")
+                }
+                .buttonStyle(FlatButtonStyle(on: shown))
+                .help(shown ? "Hide sidebar" : "Show sidebar")
+                .disabled(tier == .narrow && shown && !canRead)
             }
         }
-        AddToolbar(model: model)
     }
 
-    /// What the reader's swipe to the right leads back to, where the
-    /// columns are behind it: they come in over it with the fingers.
+    /// What the reader's swipe to the right leads back to, where columns
+    /// can come in over it: they come with the fingers.
     private var readerBack: ReaderBack? {
-        guard tier <= .narrow, arrangement.readerShown else { return nil }
+        guard tier <= .medium, arrangement.readerShown else { return nil }
+        let back: PanePlace = tier == .medium ? .sidebar : .list
         return ReaderBack(
             commit: PaneDrag.commit,
             follow: { [drag] distance in
-                if let distance { drag.move(to: .list, distance) } else { drag.cancel() }
+                if let distance { drag.move(to: back, distance) } else { drag.cancel() }
             },
-            go: { go(.list) }
+            go: { go(back) }
         )
     }
 
-    /// The middle column's name, for where the sidebar isn't beside it.
+    /// The middle column's name.
     private var listTitle: Text {
         switch selection {
         case .saved: Text("Saved")
@@ -301,93 +240,82 @@ struct ThreePaneView: View {
     /// Esc in the middle column: back to the reader from the columns over
     /// it, else to the sidebar.
     private func leaveList() {
-        if tier == .narrow, canRead { go(.reader) } else { go(.sidebar) }
+        if tier == .narrow, canRead { go(.reader) } else if tier != .wide || showSidebar { go(.sidebar) }
     }
 
     // MARK: Sidebar
 
-    /// `onstage`: the one on screen, which keyboard focus goes to. There
-    /// are two in the narrower tiers: the split view's, collapsed, and the
-    /// container's.
-    ///
-    /// `scale`: the container's sidebar has a column or the whole window to
-    /// itself, where the split view's small type would leave it looking
-    /// empty; it is set larger there, with bolder section titles.
-    private func sidebar(onstage: Bool, scale: SidebarScale) -> some View {
-        List(selection: Binding(get: { selection }, set: choose)) {
-            Section {
-                ForEach(Smart.allCases, id: \.self) { smart in
-                    Label(smart.rawValue, systemImage: smart.icon)
-                        .modifier(scale)
-                        .badge(badge(smart))
-                        .tag(Selection.smart(smart))
-                }
-                Label("Saved", systemImage: "bookmark").modifier(scale).badge(model.collection.count).tag(Selection.saved)
-            } header: {
-                scale.heading("Library")
+    private var sidebarColumn: some View {
+        VStack(spacing: 0) {
+            ColumnStrip(leads: arrangement.leading == .sidebar) {
+                leadButton(in: .sidebar)
+            } trailing: {
+                Button { Task { await model.refresh() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
+                    .help("Refresh (⌘R)")
+                    .disabled(model.busy)
+                AddMenu()
             }
+            sidebarList
+            StatusFooter()
+            ModeBar()
+        }
+    }
+
+    private var sidebarList: some View {
+        List(selection: Binding(get: { selection }, set: choose)) {
+            SideHeading(title: "Library", first: true)
+            ForEach(Smart.allCases, id: \.self) { smart in
+                let tag = Selection.smart(smart)
+                SideRow(symbol: smart.icon, title: Text(LocalizedStringKey(smart.rawValue)), count: badge(smart), chosen: selection == tag)
+                    .flatRow(chosen: selection == tag)
+                    .tag(tag)
+            }
+            SideRow(symbol: "bookmark", title: Text("Saved"), count: model.collection.count, chosen: selection == .saved)
+                .flatRow(chosen: selection == .saved)
+                .tag(Selection.saved)
             let kinds = CollectionKindView.all.filter { kind in model.collection.contains { $0.kind == kind } }
             if !kinds.isEmpty {
-                Section {
-                    ForEach(kinds) { kind in
-                        Label(kind.title, systemImage: kind.icon)
-                            .modifier(scale)
-                            .badge(model.collection.filter { $0.kind == kind }.count)
-                            .tag(Selection.kind(kind))
-                    }
-                } header: {
-                    scale.heading("Collection")
+                SideHeading(title: "Collection")
+                ForEach(kinds) { kind in
+                    let tag = Selection.kind(kind)
+                    SideRow(symbol: kind.icon, title: Text(kind.title), count: model.collection.filter { $0.kind == kind }.count, chosen: selection == tag)
+                        .flatRow(chosen: selection == tag)
+                        .tag(tag)
                 }
             }
             if !model.feeds.isEmpty {
-                Section {
-                    ForEach(model.folders, id: \.self) { folder in
-                        DisclosureGroup(isExpanded: expanded(folder)) {
-                            feedRows(model.feeds(inFolder: folder), scale)
-                        } label: {
-                            Label {
-                                HStack(spacing: 4) {
-                                    Text(folder)
-                                    if model.inGallery(folder: folder) { GalleryMark() }
-                                }
-                            } icon: {
-                                Image(systemName: "folder")
-                            }
-                                .modifier(scale)
-                                .badge(model.unread(inFolder: folder))
-                                .tag(Selection.folder(folder))
-                                .contextMenu {
-                                    let shown = model.inGallery(folder: folder)
-                                    Button(shown ? "Remove from Gallery" : "Show in Gallery") { model.setGallery(folder: folder, !shown) }
-                                }
+                SideHeading(title: "Subscriptions")
+                ForEach(model.folders, id: \.self) { folder in
+                    let tag = Selection.folder(folder)
+                    DisclosureGroup(isExpanded: expanded(folder)) {
+                        feedRows(model.feeds(inFolder: folder))
+                    } label: {
+                        SideRow(symbol: "folder", title: Text(verbatim: folder), count: model.unread(inFolder: folder), chosen: selection == tag) {
+                            if model.inGallery(folder: folder) { GalleryMark() }
+                        }
+                        .tag(tag)
+                        .contextMenu {
+                            let shown = model.inGallery(folder: folder)
+                            Button(shown ? "Remove from Gallery" : "Show in Gallery") { model.setGallery(folder: folder, !shown) }
                         }
                     }
-                    feedRows(model.feeds(inFolder: nil), scale)
-                } header: {
-                    scale.heading("Subscriptions")
+                    .flatRow(chosen: selection == tag)
                 }
+                feedRows(model.feeds(inFolder: nil))
             }
             if !model.tags.isEmpty {
-                Section {
-                    ForEach(model.tags) { t in
-                        Label(t.name, systemImage: "number").modifier(scale).badge(Int(t.count)).tag(Selection.tag(t.id))
-                    }
-                } header: {
-                    scale.heading("Tags")
+                SideHeading(title: "Tags")
+                ForEach(model.tags) { t in
+                    let tag = Selection.tag(t.id)
+                    SideRow(symbol: "number", title: Text(verbatim: t.name), count: Int(t.count), chosen: selection == tag)
+                        .flatRow(chosen: selection == tag)
+                        .tag(tag)
                 }
             }
         }
-        .listStyle(.sidebar)
-        .pane($focus, onstage ? .sidebar : .offstage, onReturn: { go(.list) }, onEscape: tier == .narrow && canRead ? { go(.reader) } : nil)
-        .accessibilityHidden(!onstage)
+        .flatList()
+        .pane($focus, .sidebar, onReturn: { go(.list) }, onEscape: tier == .narrow && canRead ? { go(.reader) } : nil)
         .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in folderKey(press.key) }
-        .safeAreaInset(edge: .bottom) {
-            // Over its own ground in the container, where the rows that
-            // scroll under it would show through.
-            StatusFooter()
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(scale == .standard ? Color.clear : Color(nsColor: .windowBackgroundColor))
-        }
     }
 
     /// Left folds the selected folder, or goes up to it from a subscription
@@ -416,26 +344,22 @@ struct ThreePaneView: View {
         }
     }
 
-    private func feedRows(_ feeds: [SourceView], _ scale: SidebarScale) -> some View {
+    private func feedRows(_ feeds: [SourceView]) -> some View {
         ForEach(feeds) { feed in
-            Label {
-                HStack(spacing: 4) {
-                    Text(feed.title)
-                    if let reason = model.galleryReason(feed) { GalleryMark(throughFolder: reason.isEmpty ? nil : reason) }
-                }
-            } icon: {
-                Image(systemName: "dot.radiowaves.up.forward")
+            let tag = Selection.feed(feed.id)
+            SideRow(symbol: "dot.radiowaves.up.forward", title: Text(verbatim: feed.title), count: Int(feed.unread), chosen: selection == tag) {
+                if let reason = model.galleryReason(feed) { GalleryMark(throughFolder: reason.isEmpty ? nil : reason) }
             }
-            .modifier(scale)
-            .badge(Int(feed.unread)).tag(Selection.feed(feed.id))
-                .contextMenu {
-                    if let folder = feed.category, model.inGallery(folder: folder) {
-                        Button("Shown in Gallery with “\(folder)”") {}.disabled(true)
-                    } else {
-                        Button(feed.gallery ? "Remove from Gallery" : "Show in Gallery") { model.setGallery(source: feed, !feed.gallery) }
-                    }
-                    FullTextMenu(feed: feed)
+            .flatRow(chosen: selection == tag)
+            .tag(tag)
+            .contextMenu {
+                if let folder = feed.category, model.inGallery(folder: folder) {
+                    Button("Shown in Gallery with “\(folder)”") {}.disabled(true)
+                } else {
+                    Button(feed.gallery ? "Remove from Gallery" : "Show in Gallery") { model.setGallery(source: feed, !feed.gallery) }
                 }
+                FullTextMenu(feed: feed)
+            }
         }
     }
 
@@ -488,39 +412,79 @@ struct ThreePaneView: View {
 
     // MARK: Middle column
 
-    @ViewBuilder
-    private var middle: some View {
-        if let kinds = selection?.kinds {
-            CollectionList(
-                kinds: kinds, sort: collectionSort, selection: Binding(get: { entryID }, set: openEntry),
-                focus: $focus, onReturn: read, onEscape: leaveList
-            )
-                .toolbar {
-                    if arrangement.listShown {
-                        ToolbarItem(placement: .navigation) {
-                            Menu {
-                                Picker("Sort By", selection: $collectionSort) {
-                                    ForEach(CollectionSort.allCases) { Text($0.rawValue).tag($0) }
-                                }
-                                .pickerStyle(.inline)
-                            } label: {
-                                Label("Sort By", systemImage: "arrow.up.arrow.down")
-                            }
-                            .help("Sort order")
+    /// The middle column: its strip, its name in large type, the list, and
+    /// under a list of articles the switch that filters it.
+    private var listColumn: some View {
+        let kinds = selection?.kinds
+        let rows = kinds == nil ? rowsForSelection : []
+        return VStack(spacing: 0) {
+            ColumnStrip(leads: arrangement.leading == .list) {
+                leadButton(in: .list)
+            } trailing: {
+                if kinds != nil {
+                    FlatMenu("Sort By", symbol: "arrow.up.arrow.down", help: "Sort order") {
+                        Picker("Sort By", selection: $collectionSort) {
+                            ForEach(CollectionSort.allCases) { Text($0.rawValue).tag($0) }
                         }
-                        refreshItem
+                        .pickerStyle(.inline)
                     }
+                } else if let articleList {
+                    Button { model.requestMarkAllRead(articleList) } label: {
+                        Label("Mark All as Read", systemImage: "checkmark.circle")
+                    }
+                    .help("Mark every unread article here as read")
                 }
-        } else {
-            articles
+                Button { model.paletteVisible = true } label: { Label("Search", systemImage: "magnifyingglass") }
+                    .help("Go to or search (⌘K)")
+            }
+            ColumnTitle(title: listTitle, note: listNote(kinds: kinds, rows: rows))
+            if let kinds {
+                CollectionList(
+                    kinds: kinds, sort: collectionSort, selection: Binding(get: { entryID }, set: openEntry),
+                    focus: $focus, onReturn: read, onEscape: leaveList
+                )
+            } else {
+                articles(rows)
+                if showsFilter {
+                    Hairline()
+                    SwitchBar(
+                        selection: $filter,
+                        options: [
+                            .symbol(.starred, "star", help: String(localized: "Starred")),
+                            .symbol(.unread, "circle.inset.filled", help: String(localized: "Unread")),
+                            .symbol(.all, "line.3.horizontal", help: String(localized: "All")),
+                        ],
+                        segment: 52
+                    )
+                    .frame(height: 56)
+                }
+            }
         }
     }
 
-    private var articles: some View {
+    /// What the line under the list's name says is in it.
+    private func listNote(kinds: [CollectionKindView]?, rows: [ItemView]) -> Text {
+        if let kinds {
+            let count = model.collection.filter { kinds.contains($0.kind) }.count
+            return Text("^[\(count) Item](inflect: true)")
+        }
+        return Text("^[\(rows.filter { !$0.read }.count) Unread Item](inflect: true)")
+    }
+
+    /// The lists that are a filter already have no switch under them.
+    private var showsFilter: Bool {
+        switch selection {
+        case .smart(.unread), .smart(.continueReading), .saved, .kind, nil: false
+        default: true
+        }
+    }
+
+    private func articles(_ rows: [ItemView]) -> some View {
         @Bindable var model = model
-        let rows = rowsForSelection
         return List(rows, selection: $model.currentItemID) { item in
-            ArticleRow(item: item).tag(item.id)
+            ArticleRow(item: item)
+                .flatRow(chosen: item.id == model.currentItemID, inset: 6)
+                .tag(item.id)
         }
         .contextMenu(forSelectionType: String.self) { ids in
             if let id = ids.first, let item = rows.first(where: { $0.id == id }) {
@@ -550,40 +514,14 @@ struct ThreePaneView: View {
                 }
             }
         } primaryAction: { _ in read() }
-        .listStyle(.inset)
+        .flatList()
         .pane($focus, .list, onReturn: read, onEscape: leaveList)
         .overlay {
             if rows.isEmpty {
                 ContentUnavailableView("Nothing Here", systemImage: "tray")
             }
         }
-        .toolbar {
-            if arrangement.listShown {
-                ToolbarItem(placement: .navigation) {
-                    Toggle(isOn: $unreadOnly) { Label("Unread Only", systemImage: "line.3.horizontal.decrease.circle") }.help("Show unread only")
-                }
-                if let articleList {
-                    ToolbarItem(placement: .navigation) {
-                        Button { model.requestMarkAllRead(articleList) } label: {
-                            Label("Mark All as Read", systemImage: "checkmark.circle")
-                        }
-                        .help("Mark every unread article here as read")
-                    }
-                }
-                refreshItem
-            }
-        }
         .background { keyboard(rows) }
-    }
-
-    /// The list's controls lead the toolbar, over the list, and leave it
-    /// while the list is out of sight.
-    private var refreshItem: some ToolbarContent {
-        ToolbarItem(placement: .navigation) {
-            Button { Task { await model.refresh() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
-                .help("Refresh (⌘R)")
-                .disabled(model.busy)
-        }
     }
 
     /// The middle column as a list of subscription articles, for "Mark All
@@ -614,7 +552,7 @@ struct ThreePaneView: View {
         switch selection {
         case .smart(.unread): true
         case .smart(.continueReading), .saved, .kind, nil: false
-        default: unreadOnly
+        default: unreadOnly && showsFilter
         }
     }
 
@@ -624,7 +562,7 @@ struct ThreePaneView: View {
         var kept = readHere
         if let current = model.currentItemID { kept.insert(current) }
         let keep = Array(kept)
-        return switch selection {
+        let rows: [ItemView] = switch selection {
         case .smart(.unread): model.items(.all, unreadOnly: true, keep: keep)
         case .smart(.starred): model.items(.starred, unreadOnly: unreadOnly, keep: keep)
         case .smart(.continueReading): model.items(.continueReading)
@@ -633,6 +571,7 @@ struct ThreePaneView: View {
         case let .tag(id): model.items(.tag(id: id), unreadOnly: unreadOnly, keep: keep)
         default: model.items(.all, unreadOnly: unreadOnly, keep: keep)
         }
+        return filter == .starred && showsFilter ? rows.filter(\.starred) : rows
     }
 
     /// Opens an entry where reading stopped; the reader restores the position.
@@ -687,6 +626,16 @@ struct ThreePaneView: View {
 
     // MARK: Reader
 
+    /// What leads the reader's strip: the button for the columns where the
+    /// reader leads the window, and the one that closes what is open.
+    private var readerLead: AnyView {
+        AnyView(HStack(spacing: 4) {
+            leadButton(in: .reader)
+            Button { if tier >= .medium { open(nil) } else { go(.list) } } label: { Label("Close", systemImage: "xmark") }
+                .help(tier >= .medium ? "Close the article" : "Back to the list (Esc)")
+        })
+    }
+
     @ViewBuilder
     private var detail: some View {
         if let id = model.currentItemID, let item = model.item(id) {
@@ -701,8 +650,8 @@ struct ThreePaneView: View {
                         focus: $focus, onReturn: read, onEscape: { go(.list) }
                     )
                         .frame(width: 260)
-                        .background(.background.secondary)
-                    Divider()
+                        .background(Theme.side)
+                    Hairline(vertical: true)
                 }
                 VStack(spacing: 0) {
                     ReaderPane(
@@ -711,19 +660,19 @@ struct ThreePaneView: View {
                         neighbors: neighbors(of: item, in: entry), startAtEnd: landAtEnd == id,
                         onEscape: { leaveReader(contentsShown: entry != nil && beside) },
                         focused: readerFocused, onFocus: { readerFocused = true },
-                        onBack: readerBack, toolbarHidden: !arrangement.readerShown
+                        onBack: readerBack, stripLeads: arrangement.leading == .reader, stripLeading: readerLead
                     )
                     .id(id)
                     .transition(.push(from: arrival))
                     if let seriesID = item.seriesId, let info = model.series.first(where: { $0.id == seriesID }) {
-                        Divider()
+                        Hairline()
                         SequenceBar(title: info.title, items: model.chapters(seriesID), current: id) { open($0) }
                     }
                 }
             }
             .overlay {
                 if entry != nil, contentsDrawer, tier == .narrowest {
-                    Color.black.opacity(0.18)
+                    Theme.scrim
                         .contentShape(Rectangle())
                         .onTapGesture(perform: closeContents)
                         .accessibilityHidden(true)
@@ -738,13 +687,17 @@ struct ThreePaneView: View {
                         focus: $focus, onReturn: { closeContents(); read() }, onEscape: closeContents
                     )
                         .frame(width: 280)
-                        .background(.background.secondary)
+                        .background(Theme.side)
                         .overlay(alignment: .trailing) { ColumnEdge() }
                         .transition(.move(edge: .leading))
                 }
             }
         } else {
-            ContentUnavailableView("No Article Selected", systemImage: "text.alignleft", description: Text("J and K move through the list."))
+            VStack(spacing: 0) {
+                ColumnStrip(leads: arrangement.leading == .reader) { leadButton(in: .reader) } trailing: { EmptyView() }
+                ContentUnavailableView("No Article Selected", systemImage: "text.alignleft", description: Text("J and K move through the list."))
+                    .frame(maxHeight: .infinity)
+            }
         }
     }
 
@@ -805,12 +758,13 @@ struct CollectionList: View {
                 ForEach(kinds) { kind in
                     let group = entries.filter { $0.kind == kind }
                     if !group.isEmpty {
-                        Section(kind.title) { rows(group) }
+                        SideHeading(title: kind.title)
+                        rows(group)
                     }
                 }
             }
         }
-        .listStyle(.inset)
+        .flatList()
         .contextMenu(forSelectionType: String.self) { ids in
             if let id = ids.first, let entry = model.entry(id) {
                 if entry.hasBeenRead {
@@ -863,7 +817,7 @@ struct CollectionList: View {
 
     private func rows(_ entries: [CollectionEntryView]) -> some View {
         ForEach(entries) { entry in
-            CollectionRow(entry: entry).tag(entry.id)
+            CollectionRow(entry: entry).flatRow(chosen: entry.id == selection, inset: 6).tag(entry.id)
         }
     }
 
@@ -893,9 +847,10 @@ struct StatusFooter: View {
                 }
             }
         }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .padding(10)
+        .font(Theme.small)
+        .foregroundStyle(Theme.text2)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 8)
         .help(sync?.detail ?? "")
     }
 

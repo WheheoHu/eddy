@@ -160,20 +160,28 @@ struct EntryContents: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(entry.title).font(.headline).lineLimit(3)
-            if let byline = entry.byline { Text(byline).font(.callout).foregroundStyle(.secondary).lineLimit(1) }
-            ProgressView(value: entry.progress)
+            Text(entry.title).font(Theme.title(20)).foregroundStyle(Theme.text1).lineLimit(3)
+            if let byline = entry.byline { Text(byline).font(Theme.small).foregroundStyle(Theme.text2).lineLimit(1) }
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Theme.track)
+                    Capsule().fill(Theme.accent).frame(width: proxy.size.width * min(1, max(0, entry.progress)))
+                }
+            }
+            .frame(height: 3)
+            .padding(.vertical, 2)
+            .accessibilityHidden(true)
             HStack {
-                Text(entry.progressText).font(.caption).foregroundStyle(.secondary)
+                Text(entry.progressText).font(Theme.small).foregroundStyle(Theme.text2)
                 Spacer()
                 if let next = entry.resumeItemId, next != currentItemID {
-                    Button("Continue") { open(next) }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
+                    Button("Continue") { open(next) }.buttonStyle(KeyButtonStyle())
                 }
             }
         }
         .padding(.vertical, 4)
+        .flatRow(chosen: false)
+        .selectionDisabled()
     }
 
     /// Top-level chapters whose sections are shown. Starts with the one
@@ -192,22 +200,24 @@ struct EntryContents: View {
             return expanded.contains(parent)
         }
         return List(selection: Binding(get: { currentItemID }, set: { if let id = $0 { open(id) } })) {
-            Section { header }
-            Section("Chapters") {
+            header
+            SideHeading(title: "Chapters")
+            Group {
                 ForEach(shown, id: \.chapter.id) { row in
                     let chapter = row.chapter
                     HStack(spacing: 8) {
                         if row.parent == nil {
-                            Text("\(row.index)").font(.caption.monospacedDigit()).foregroundStyle(.secondary).frame(width: 22, alignment: .trailing)
+                            Text("\(row.index)").font(.system(size: 12).monospacedDigit()).foregroundStyle(Theme.text3).frame(width: 22, alignment: .trailing)
                         } else {
                             Color.clear.frame(width: 22 + CGFloat(max(Int(chapter.chapterLevel) - 1, 0)) * 12, height: 1)
                         }
                         Text(row.parent == nil ? Self.displayTitle(chapter.title, number: row.index) : chapter.title)
+                            .font(.system(size: 14, weight: chapter.id == currentItemID ? .semibold : .regular))
                             .lineLimit(2)
-                            .foregroundStyle(chapter.finished ? .secondary : .primary)
+                            .foregroundStyle(chapter.finished ? Theme.text2 : Theme.text1)
                         Spacer()
                         if chapter.finished {
-                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green).accessibilityLabel("Finished")
+                            Image(systemName: "checkmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.ok).accessibilityLabel("Finished")
                         } else if chapter.inProgress {
                             ProgressRing(value: chapter.progress, size: 12)
                         }
@@ -224,7 +234,8 @@ struct EntryContents: View {
                                 .accessibilityAddTraits(.isButton)
                         }
                     }
-                    .padding(.vertical, 2)
+                    .padding(.vertical, 5)
+                    .flatRow(chosen: chapter.id == currentItemID)
                     .tag(chapter.id)
                     .contextMenu {
                         if chapter.hasBeenRead {
@@ -243,7 +254,7 @@ struct EntryContents: View {
                 }
             }
         }
-        .listStyle(.sidebar)
+        .flatList()
         .pane(focus, .contents, onReturn: onReturn, onEscape: onEscape)
         .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in
             guard !filtering, let current = currentItemID,
@@ -314,25 +325,28 @@ struct EntryContents: View {
             outlineSelection = id
             if let line = outline.first(where: { $0.id == id }) { jump(line.target) }
         })) {
-            Section { header }
-            Section("Contents") {
+            header
+            SideHeading(title: "Contents")
+            Group {
                 if outline.isEmpty {
-                    Label(entry.title, systemImage: entry.kind.icon).lineLimit(2)
+                    Label(entry.title, systemImage: entry.kind.icon).lineLimit(2).foregroundStyle(Theme.text1).flatRow(chosen: false)
                 }
                 ForEach(outline.filter { $0.title.matches(filter: query) }) { line in
                     HStack {
-                        Text(line.title).lineLimit(2)
+                        Text(line.title).font(.system(size: 14, weight: line.id == outlineSelection ? .semibold : .regular)).foregroundStyle(Theme.text1).lineLimit(2)
                         Spacer()
                         if case let .page(page, _) = line.target {
-                            Text("\(page + 1)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                            Text("\(page + 1)").font(.system(size: 12).monospacedDigit()).foregroundStyle(Theme.text3)
                         }
                     }
                     .padding(.leading, CGFloat(max(line.level - 1, 0)) * 12)
+                    .padding(.vertical, 5)
+                    .flatRow(chosen: line.id == outlineSelection)
                     .tag(line.id)
                 }
             }
         }
-        .listStyle(.sidebar)
+        .flatList()
         .pane(focus, .contents, onReturn: onReturn, onEscape: onEscape)
     }
 

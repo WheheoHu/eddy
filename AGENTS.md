@@ -14,8 +14,10 @@ Eddy 是本地优先的个人阅读器：Rust 内核（`crates/`）通过 UniFFI
 - 不开界面验证真实网络行为（保存网页、连服务端、搜索）用 `tools/eddy-cli`，它的数据和密钥都在 `build/` 下自己的目录里，和应用数据隔离。
 - 调试 Mac 应用时不要往用户的真实数据目录里写测试内容：用 `open --env EDDY_DATA_DIR=$PWD/build/app-test apple/DerivedData/Build/Products/Debug/Eddy.app` 指向 `build/` 下的测试目录。设了 `EDDY_DATA_DIR` 的应用用自己的钥匙串条目（`EddyPaths.keychainService`），不会读写真实安装的密钥。
 - 阅读视图用 TextKit 2（`NSTextView`），不要改回 SwiftUI 的 `LazyVStack` 拼文章：UX demo 阶段两次卡死都是它在滚动时的布局反馈循环。
-- 窗口里只有三栏模式用 `NavigationSplitView`：另一个分栏视图替换它之后，系统的侧边栏开关会消失，栏宽也会互相串（同一窗口的分栏视图共用一份自动保存的栏宽）。Library 的栏用 `LeadingColumn` 自己排，开关是 `ColumnToggle`。
-- 三栏模式的分栏视图只有侧边栏和详情两栏：列表和阅读区在详情里由 `PaneContainer` 按窗口宽度的档位（`PaneTier`：三栏、列表加文章、仅文章、一次一栏）排，收起的栏移出屏幕而不卸载，阅读位置和列表滚动位置跨档保留。`ThreePaneView` 只存档位不存宽度（它的 body 会查列表，不能随窗口拖动逐帧重算）；分栏里的侧边栏必须直接带 `navigationSplitViewColumnWidth`，外面套条件或容器后栏宽会失效。容器里两个列表（侧边栏和文章列表）不能上下叠放：侧边栏进来时把列表推走并裁掉，否则指针悬停会让 AppKit 的约束更新进入死循环而崩溃。会随栏移动的背景用 `Color`，不用 `.background(.background)` 这类背景样式（它不跟着位移）。同一个 `List` 里行的样式随状态变化时只变数值、不变视图类型，否则 SwiftUI 复用单元格时会崩。
+- 界面只有一套设计语言，定义在 `apple/Eddy/Shared/Design.swift`（`Theme` 的颜色、圆角和扁平控件：`FlatButtonStyle`、`KeyButtonStyle`、`SwitchBar`、`FlatToggleStyle` 等）：平面、两级色调、方形圆角，不用渐变、内阴影和系统的材质背景。新界面用这些，不直接用系统的 `.secondary`、`.separator`、分段选择器和分组表单。
+- 窗口没有系统标题栏和工具栏，不要再给任何视图加 `.toolbar`：每一栏顶部有自己的按钮条（`ColumnStrip`），红绿灯由 `WindowChrome` 挪进领头那一栏的按钮条里（那一栏传 `leads: true` 留出位置）。Library 和 Gallery 的栏用 `LeadingColumn` 加 `SidebarColumn` 排。设置是主窗口里的面板（`SettingsPanel`），页面仍写成 `Form`，由 `PanelFormStyle` 排版。
+- 三栏模式不用 `NavigationSplitView`：三栏都由 `PaneContainer` 按窗口宽度的档位（`PaneTier`：三栏、列表加文章、仅文章、一次一栏）排，收起的栏移出屏幕而不卸载，阅读位置和列表滚动位置跨档保留。`ThreePaneView` 只存档位不存宽度（它的 body 会查列表，不能随窗口拖动逐帧重算）。左边的栏盖在右边的栏上，被盖住的阅读区下沉（缩小、圆角、变暗）；唯一的例外是最窄档侧边栏进来时把文章列表推走而不是盖住：两个列表上下叠放时指针悬停会让 AppKit 的约束更新进入死循环而崩溃。会随栏移动的背景用 `Color`，不用 `.background(.background)` 这类背景样式（它不跟着位移）。
+- 侧边栏和各种列表仍是 SwiftUI 的 `List`，用 `.flatList()` 和每行的 `.flatRow(chosen:)` 画成扁平样式（选中底色自己画，系统的高亮由 `TableTuner` 关掉）。分组标题用 `SideHeading` 当普通行，不用 `Section` 的 header（表格会给它画自己的底色）。同一个 `List` 里行的样式随状态变化时只变数值、不变视图类型，否则 SwiftUI 复用单元格时会崩。
 - 界面文字先只做英文（SwiftUI 的字符串字面量就是本地化 key），中文等以后加 `.xcstrings`。
 
 ## 版本

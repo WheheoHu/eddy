@@ -7,7 +7,8 @@ enum PaneTier: Int, Comparable {
     case narrowest
     /// The reader alone; the sidebar and list come in over it.
     case narrow
-    /// The list and the reader; the sidebar takes the list's place.
+    /// The list and the reader; the sidebar comes in beside the list, over
+    /// the reader.
     case medium
     /// All three side by side.
     case wide
@@ -46,8 +47,8 @@ enum PaneTier: Int, Comparable {
 
 /// The column the reader is at, in the tiers that don't show all of them:
 /// which page of the narrowest, whether the columns are in over the reader
-/// in the narrow one, whether the sidebar stands in for the list in the
-/// medium one.
+/// in the narrow one, whether the sidebar is in beside the list (over the
+/// reader) in the medium one.
 enum PanePlace: Int, Comparable {
     case sidebar, list, reader
 
@@ -55,17 +56,23 @@ enum PanePlace: Int, Comparable {
 }
 
 /// What the columns are doing over or beside the reader, from the tier and
-/// the place: the one description the container, the toolbar, the swipes
+/// the place: the one description the container, the strips, the swipes
 /// and the clicks all go by.
+///
+/// Columns to the left lie over what is to their right: a column that comes
+/// in covers the reader, which sinks back (a little smaller, and dimmed).
+/// The exception is the sidebar over the list in the narrowest tier, which
+/// pushes the list out instead: two lists one over the other under the
+/// pointer send AppKit's hover tracking into a loop that ends the app.
 struct PaneArrangement: Equatable {
     let tier: PaneTier
     let place: PanePlace
+    /// The sidebar is open, in the wide tier where it has a column to itself.
+    var sidebarOpen = true
 
-    /// The container shows the sidebar; in the wide tier the split view
-    /// shows its own.
     var sidebarShown: Bool {
         switch tier {
-        case .wide: false
+        case .wide: sidebarOpen
         case .medium, .narrowest: place == .sidebar
         case .narrow: place != .reader
         }
@@ -73,8 +80,7 @@ struct PaneArrangement: Equatable {
 
     var listShown: Bool {
         switch tier {
-        case .wide: true
-        case .medium: place != .sidebar
+        case .wide, .medium: true
         case .narrow: place != .reader
         case .narrowest: place == .list
         }
@@ -83,31 +89,58 @@ struct PaneArrangement: Equatable {
     /// The reader is on screen with nothing over it.
     var readerShown: Bool {
         switch tier {
-        case .wide, .medium: true
+        case .wide: true
+        case .medium: place != .sidebar
         case .narrow, .narrowest: place == .reader
         }
     }
 
-    /// Where the list rests: 0 in its place, -1 off the leading edge (the
-    /// reader has the window), 1 pushed off the trailing side of its space
-    /// by the sidebar coming in. The sidebar pushes the list rather than
-    /// covering it: two lists one over the other under the pointer send
-    /// AppKit's hover tracking into a loop that ends the app.
-    var listSlot: Int {
+    /// The column whose strip has the window's buttons over it.
+    var leading: PanePlace {
         switch tier {
-        case .wide: 0
-        case .medium: place == .sidebar ? 1 : 0
-        case .narrow: place == .reader ? -1 : 0
-        case .narrowest: place.rawValue < PanePlace.list.rawValue ? 1 : (place == .reader ? -1 : 0)
+        case .wide: sidebarOpen ? .sidebar : .list
+        case .medium: place == .sidebar ? .sidebar : .list
+        case .narrow: place == .reader ? .reader : .sidebar
+        case .narrowest: place
         }
     }
 
-    /// Where the container's sidebar rests: 0 in its place, -1 off the
-    /// leading edge.
+    /// Where the list rests, in steps of `listTravel` from its place: 0 in
+    /// it, -1 towards the leading edge, 1 towards the trailing one.
+    var listSlot: Int {
+        switch tier {
+        case .wide: sidebarOpen ? 1 : 0
+        case .medium: place == .sidebar ? 1 : 0
+        case .narrow: place == .reader ? -1 : 0
+        case .narrowest: place == .sidebar ? 1 : (place == .reader ? -1 : 0)
+        }
+    }
+
+    /// Where the sidebar rests: 0 in its place, -1 off the leading edge.
     var sidebarSlot: Int { sidebarShown ? 0 : -1 }
 
-    /// The reader shows dimmed behind the columns that are in over it.
-    var dimmed: Bool { tier == .narrow && !readerShown }
+    /// How far a step of the sidebar and of the list is; nil for the
+    /// column's own width (the whole window, in the narrowest tier).
+    func travel(_ column: CGFloat) -> CGFloat? {
+        switch tier {
+        case .wide, .medium: PaneTier.sidebarWidth
+        case .narrow: PaneTier.sidebarWidth + column
+        case .narrowest: nil
+        }
+    }
+
+    /// The list's leading edge with nothing moved: beside the sidebar in the
+    /// narrow tier, where the two come and go together.
+    var listBase: CGFloat { tier == .narrow ? PaneTier.sidebarWidth : 0 }
+
+    /// The reader's leading edge.
+    func readerBase(_ column: CGFloat) -> CGFloat {
+        switch tier {
+        case .wide: (sidebarOpen ? PaneTier.sidebarWidth : 0) + column
+        case .medium: column
+        case .narrow, .narrowest: 0
+        }
+    }
 
     /// The list's width where it is one of two or three columns, from the
     /// width it was dragged to.
@@ -119,7 +152,7 @@ struct PaneArrangement: Equatable {
     /// width.
     func columnsExtent(_ dragged: CGFloat) -> CGFloat? {
         switch tier {
-        case .wide, .medium: dragged
+        case .wide, .medium: (sidebarShown ? PaneTier.sidebarWidth : 0) + dragged
         case .narrow: place == .reader ? 0 : PaneTier.sidebarWidth + columnWidth(dragged)
         case .narrowest: place == .reader ? 0 : nil
         }
@@ -131,8 +164,7 @@ struct PaneArrangement: Equatable {
         guard sidebarShown else { return 0 }
         switch tier {
         case .wide: return 0
-        case .medium: return dragged
-        case .narrow: return PaneTier.sidebarWidth
+        case .medium, .narrow: return PaneTier.sidebarWidth
         case .narrowest: return nil
         }
     }
@@ -146,6 +178,16 @@ struct PaneArrangement: Equatable {
         }
     }
 
+    /// Where a click on the reader beside the columns that cover it leads:
+    /// they go away again.
+    var dismissal: PanePlace? {
+        switch tier {
+        case .medium: place == .sidebar ? .list : nil
+        case .narrow: place != .reader ? .reader : nil
+        case .wide, .narrowest: nil
+        }
+    }
+
     /// Where a sideways swipe leads from here, with the pointer over the
     /// columns or beside them; nil where it leads nowhere. `canRead`:
     /// something is open in the reader to go on to.
@@ -156,7 +198,7 @@ struct PaneArrangement: Equatable {
         case (.medium, .right):
             return overColumns && place != .sidebar ? .sidebar : nil
         case (.medium, .left):
-            return overColumns && place == .sidebar ? .list : nil
+            return place == .sidebar ? .list : nil
         case (.narrow, .right):
             return place == .reader ? .list : nil
         case (.narrow, .left):
