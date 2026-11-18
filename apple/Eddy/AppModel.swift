@@ -170,6 +170,31 @@ final class AppModel {
         readerCommand = PaletteRequest(value: ReaderCommand(itemID: id, action: .toggleTranslation))
     }
 
+    /// What Three-Pane's sidebar has chosen. Kept here, not in the view: it
+    /// outlives a switch of mode, and the Library sets it. The sidebars of
+    /// the two modes follow each other, each choice made in one setting
+    /// what the other shows next (`chose`).
+    var threePaneSelection: ThreePaneView.Selection? = .smart(.all)
+
+    /// Chosen in Three-Pane's sidebar: the Library's shelf follows, where
+    /// it has one for it (not for unread, starred or a tag).
+    func chose(_ selection: ThreePaneView.Selection?) {
+        threePaneSelection = selection
+        if let selection, let filter = LibraryFilter(selection, feeds: feeds) {
+            UserDefaults.standard.set(filter.rawValue, forKey: LibraryFilter.key)
+        }
+    }
+
+    /// Chosen in the Library's sidebar: Three-Pane's follows.
+    func chose(_ filter: LibraryFilter) {
+        threePaneSelection = ThreePaneView.Selection(filter, folders: folders)
+    }
+
+    /// A subscription opened from the Library's shelf: Three-Pane lists it.
+    func opened(feed sourceID: String) {
+        threePaneSelection = .feed(sourceID)
+    }
+
     /// Picked in the palette, for the current mode: a sidebar entry, an item
     /// to open, a command for the reader.
     var navigation: PaletteRequest<Destination>?

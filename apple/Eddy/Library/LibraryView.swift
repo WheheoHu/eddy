@@ -51,6 +51,32 @@ enum ShelfLayout: String {
 enum LibraryFilter: Hashable, RawRepresentable {
     case all, continueReading, saved, kind(CollectionKindView), subscriptions, category(String)
 
+    /// Where the filter chosen is kept.
+    static let key = "library.filter"
+    /// The shelf category of subscriptions that are in no folder.
+    static let unfiled = "Subscriptions"
+
+    /// The shelf for what Three-Pane's sidebar has chosen; nil where the
+    /// Library has none (unread, starred, a tag). A folder, and the folder
+    /// of a subscription, are shelves only when there is more than one.
+    init?(_ selection: ThreePaneView.Selection, feeds: [SourceView]) {
+        let categories = Set(feeds.map { $0.category ?? Self.unfiled })
+        func shelf(_ category: String?) -> LibraryFilter {
+            categories.count > 1 ? .category(category ?? Self.unfiled) : .subscriptions
+        }
+        switch selection {
+        case .smart(.all): self = .all
+        case .smart(.continueReading): self = .continueReading
+        case .smart, .tag: return nil
+        case .saved: self = .saved
+        case let .kind(kind): self = .kind(kind)
+        case let .folder(name): self = shelf(name)
+        case let .feed(id):
+            guard let feed = feeds.first(where: { $0.id == id }) else { return nil }
+            self = shelf(feed.category)
+        }
+    }
+
     init?(rawValue: String) {
         switch rawValue {
         case "all": self = .all
@@ -117,7 +143,7 @@ struct LibraryView: View {
     @Environment(AppModel.self) private var model
     @AppStorage("app.mode") private var mode: AppMode = .threePane
     @AppStorage("library.sort") private var sort: ShelfSort = .updated
-    @AppStorage("library.filter") private var filter: LibraryFilter = .all
+    @AppStorage(LibraryFilter.key) private var filter: LibraryFilter = .all
     @AppStorage("library.sidebar") private var showSidebar = true
     /// Which of the books being read Continue Reading shelves.
     @AppStorage(ReadingScope.key) private var readingScope: ReadingScope = .all
@@ -151,7 +177,10 @@ struct LibraryView: View {
             }
         }
         .docks(dock, model: model)
-        .onAppear(perform: openCurrent)
+        .onAppear {
+            pickChosenFeed()
+            openCurrent()
+        }
         .onChange(of: model.revealed) { _, revealed in
             guard let revealed else { return }
             model.revealed = nil
@@ -167,6 +196,7 @@ struct LibraryView: View {
                 open = nil
                 query = ""
                 filter = destination
+                model.chose(destination)
                 focusShelf = true
                 DispatchQueue.main.async { claimShelfFocus() }
             case let .libraryFeed(sourceID):
@@ -188,7 +218,7 @@ struct LibraryView: View {
     private var shelf: some View {
         LeadingColumn(dock: dock, beside: $showSidebar, width: PaneTier.sidebarWidth, gesturesEnabled: !model.overlayVisible) {
             SidebarColumn(dock: dock, beside: $showSidebar) {
-                LibrarySidebar(selection: $filter, focus: $focus, onReturn: enterShelf)
+                LibrarySidebar(selection: chosen, focus: $focus, onReturn: enterShelf)
             }
         } content: {
             let books = shelfBooks
@@ -427,13 +457,44 @@ struct LibraryView: View {
 
     // MARK: Navigation
 
-    private func show(_ book: Book) {
+    /// Opens a book. `mirrored`: Three-Pane follows to a subscription opened
+    /// here; not when it is only this mode catching up with what was being
+    /// read there.
+    private func show(_ book: Book, mirrored: Bool = true) {
         lastOpened = book.id
         open = book
+        if mirrored, case let .feed(sourceID) = book.kind { model.opened(feed: sourceID) }
     }
 
-    /// Back to the shelf, with the book just read selected.
+    /// The sidebar's filter; choosing one here sets what Three-Pane's
+    /// sidebar shows too. The list also reports the filter it is given when
+    /// it appears, which is no choice.
+    private var chosen: Binding<LibraryFilter> {
+        Binding {
+            filter
+        } set: { new in
+            guard new != filter else { return }
+            filter = new
+            model.chose(new)
+        }
+    }
+
+    /// Coming from Three-Pane with a subscription chosen there and nothing
+    /// open: its book is the one picked on the shelf.
+    private func pickChosenFeed() {
+        guard open == nil, model.currentItemID == nil, case let .feed(sourceID) = model.threePaneSelection,
+              let book = allBooks.first(where: { $0.kind == .feed(sourceID: sourceID) })
+        else { return }
+        lastOpened = book.id
+        selectedBook = book.id
+        tableSelection = [book.id]
+        focusShelf = true
+    }
+
+    /// Back to the shelf, with the book just read selected. Nothing is
+    /// being read any more, here or in the mode switched to next.
     private func close() {
+        model.currentItemID = nil
         open = nil
         selectedBook = lastOpened
         tableSelection = lastOpened.map { [$0] } ?? []
@@ -459,12 +520,12 @@ struct LibraryView: View {
     /// Switching from three-pane mode keeps reading the same item.
     private func openCurrent() {
         guard open == nil, let id = model.currentItemID else { return }
-        reveal(id)
+        reveal(id, mirrored: false)
     }
 
     /// Opens the book an item belongs to, at that item: its entry, or its
     /// subscription. A book already open moves to the item itself.
-    private func reveal(_ id: String) {
+    private func reveal(_ id: String, mirrored: Bool = true) {
         guard let item = model.item(id) else { return }
         let target: Book? = if let entry = model.entry(containing: item) {
             allBooks.first { $0.entry?.id == entry.id }
@@ -475,7 +536,7 @@ struct LibraryView: View {
         }
         guard let target else { return }
         model.currentItemID = id
-        if open?.id != target.id { show(target) }
+        if open?.id != target.id { show(target, mirrored: mirrored) }
     }
 
     // MARK: Books

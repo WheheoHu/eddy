@@ -13,7 +13,12 @@ struct ThreePaneView: View {
     @AppStorage("app.mode") private var mode: AppMode = .threePane
     @AppStorage("threePane.contents") private var showContents = false
     @AppStorage("threePane.collectionSort") private var collectionSort: CollectionSort = .added
-    @State private var selection: Selection? = .smart(.all)
+    /// What the sidebar has chosen; the model keeps it (`threePaneSelection`).
+    private var selection: Selection? { model.threePaneSelection }
+    /// Names of the subscription folders folded up; new folders start open.
+    /// Read here and handed to the sidebar, which only draws again when
+    /// what it is handed changes.
+    @AppStorage("threePane.collapsedFolders") private var collapsedFoldersJSON = "[]"
     /// The collection entry picked in the middle column.
     @State private var entryID: String?
     /// Articles read while the unread-only list has been on screen. They
@@ -104,6 +109,9 @@ struct ThreePaneView: View {
         .onGeometryChange(for: PaneTier.self) { PaneTier.at($0.size.width, from: tier) } action: { fit($0) }
         .onAppear {
             showCurrentEntry()
+            // The sidebar's choice was made before this view was: its list
+            // starts here.
+            startOver()
             // Coming from another mode with its sidebar in: it stays in.
             place = model.sidebarPulled ? .sidebar : (canRead ? .reader : .list)
         }
@@ -283,7 +291,10 @@ struct ThreePaneView: View {
                     .disabled(model.busy)
                 AddMenu()
             }
-            ThreePaneSidebar(selection: selection, tier: tier, canRead: canRead, focus: $focus, choose: choose, go: go)
+            ThreePaneSidebar(
+                selection: selection, tier: tier, canRead: canRead, collapsedFoldersJSON: $collapsedFoldersJSON,
+                focus: $focus, choose: choose, go: go
+            )
                 .equatable()
             StatusFooter()
             ModeBar()
@@ -291,9 +302,12 @@ struct ThreePaneView: View {
     }
 
     /// A click in the sidebar starts over: nothing is open until something
-    /// is picked in the middle column.
+    /// is picked in the middle column. The list also reports the choice it
+    /// is given when it appears, which is no click: coming from another
+    /// mode, what is being read there stays open.
     private func choose(_ new: Selection?) {
-        selection = new
+        guard new != selection else { return }
+        model.chose(new)
         entryID = nil
         model.currentItemID = nil
     }
@@ -310,16 +324,18 @@ struct ThreePaneView: View {
         if let entry = model.entry(containing: item) {
             show(entryID: entry.id)
         } else if let sourceID = item.sourceId {
-            selection = .feed(sourceID)
+            model.chose(.feed(sourceID))
             entryID = nil
         }
         open(id)
         go(.reader)
     }
 
+    /// Picks an entry in the middle column, in the list of its kind unless
+    /// the one showing (Saved) has it already.
     private func show(entryID id: String) {
         guard let entry = model.entry(id) else { return }
-        selection = .kind(entry.kind)
+        if selection?.kinds?.contains(entry.kind) != true { model.chose(.kind(entry.kind)) }
         entryID = entry.id
     }
 
@@ -626,23 +642,46 @@ struct ThreePaneView: View {
 /// run would otherwise bring every row here up to date again.
 private struct ThreePaneSidebar: View, Equatable {
     @Environment(AppModel.self) private var model
-    /// Names of the subscription folders folded up; new folders start open.
-    @AppStorage("threePane.collapsedFolders") private var collapsedFoldersJSON = "[]"
     let selection: ThreePaneView.Selection?
     let tier: PaneTier
     let canRead: Bool
+    /// Names of the subscription folders folded up, as JSON. The view that
+    /// owns it hands it over: a folder folding has to count as a change
+    /// here, or the rows wouldn't follow until something else changed.
+    @Binding var collapsedFoldersJSON: String
     var focus: FocusState<PaneFocus?>.Binding
     let choose: (ThreePaneView.Selection?) -> Void
     let go: (PanePlace) -> Void
 
     static func == (a: Self, b: Self) -> Bool {
         a.selection == b.selection && a.tier == b.tier && a.canRead == b.canRead
+            && a.collapsedFoldersJSON == b.collapsedFoldersJSON
     }
 
     var body: some View {
         // Folders fold, and the list leaves room at its start for their arrows.
         let lead: CGFloat = model.folders.isEmpty ? 8 : 0
-        return List(selection: Binding(get: { selection }, set: choose)) {
+        return ScrollViewReader { proxy in
+            rows(lead: lead)
+                // Coming from another mode with a subscription or folder
+                // chosen there: it may lie further down than shows.
+                // Once the list has its rows.
+                .onAppear { DispatchQueue.main.async { reveal(selection, in: proxy) } }
+        }
+    }
+
+    /// Brings the row chosen into view, where it is one of the many.
+    private func reveal(_ selection: ThreePaneView.Selection?, in proxy: ScrollViewProxy) {
+        switch selection {
+        case let .feed(id): proxy.scrollTo(id, anchor: .center)
+        case let .folder(name): proxy.scrollTo(name, anchor: .center)
+        case let .tag(id): proxy.scrollTo(id, anchor: .center)
+        default: break
+        }
+    }
+
+    private func rows(lead: CGFloat) -> some View {
+        List(selection: Binding(get: { selection }, set: choose)) {
             SideHeading(title: "Library", first: true, lead: lead)
             ForEach(ThreePaneView.Smart.allCases, id: \.self) { smart in
                 let tag = ThreePaneView.Selection.smart(smart)
@@ -1018,6 +1057,21 @@ private struct FullTextMenu: View {
             Divider()
             Button("Use Rules") { model.setFullText(source: feed, nil) }.disabled(feed.sourceRule == nil)
             Text("Now: \(Text(feed.fullText.title))")
+        }
+    }
+}
+
+extension ThreePaneView.Selection {
+    /// What Three-Pane's sidebar shows for a shelf of the Library. All
+    /// subscriptions are All Articles here; the shelf of subscriptions in
+    /// no folder has no counterpart.
+    init(_ filter: LibraryFilter, folders: [String]) {
+        switch filter {
+        case .all, .subscriptions: self = .smart(.all)
+        case .continueReading: self = .smart(.continueReading)
+        case .saved: self = .saved
+        case let .kind(kind): self = .kind(kind)
+        case let .category(name): self = folders.contains(name) ? .folder(name) : .smart(.all)
         }
     }
 }

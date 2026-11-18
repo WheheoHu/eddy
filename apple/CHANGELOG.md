@@ -50,6 +50,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Mark as Read, chosen by hand, also finishes the item, so it leaves Continue Reading. An item that is part read offers both Mark as Read and Mark as Unread. Opening an article still only marks it read.
 - Moving to the next or previous article or chapter fades the text in from the side it lies on, like every other way of opening one, instead of sliding the whole reader.
 - The row of the article being read shows its progress as reading goes on, not only after leaving it.
+- The sidebars of Three-Pane and the Library follow each other. A folder, a kind of the collection, Saved or Continue Reading chosen in one is what the other shows when switched to; a subscription chosen in Three-Pane is the one picked on the Library's shelf, and a subscription opened in the Library is the list Three-Pane shows. Unread, Starred and tags, which the Library has no shelf for, leave its shelf as it was.
+- Three-Pane keeps what its sidebar had chosen when coming back from another mode, instead of starting at All Articles, and scrolls the sidebar to it.
+- Going back to the Library's shelf closes the book: switching mode after that no longer brings its last article back.
 
 ### Removed
 
@@ -58,6 +61,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Switching from the Library to Three-Pane closed the article or chapter being read.
+- Three-Pane: a subscription folder in the sidebar didn’t fold or unfold when its arrow was clicked or Left or Right pressed, until something else was chosen.
 - An article without pictures opened at its top instead of where it was left, and the top was then saved as its position, so the place was lost; it also dropped out of Continue Reading.
 - Opening an article again saved a position a paragraph further back each time.
 - After Mark as Unread on the article being read, reading on is saved again when leaving it. Leaving without reading on still leaves it unread and unstarted.
