@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Save to Eddy</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { margin: 0; padding: 18px 20px; width: 420px; font: 13px -apple-system, BlinkMacSystemFont, sans-serif; }
+    h1 { font-size: 15px; margin: 0 0 4px; }
+    p { margin: 0 0 14px; color: GrayText; line-height: 1.45; }
+    label { display: block; margin: 12px 0 4px; font-weight: 500; }
+    input {
+      box-sizing: border-box; width: 100%; font: inherit; padding: 6px 8px; border-radius: 6px;
+      border: 1px solid color-mix(in srgb, CanvasText 20%, transparent);
+      background: color-mix(in srgb, CanvasText 4%, transparent); color: inherit;
+    }
+    .row { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
+    #status { flex: 1; color: GrayText; word-break: break-word; }
+    button {
+      font: inherit; padding: 5px 14px; border-radius: 6px; cursor: pointer; flex: none;
+      border: 1px solid #0a84ff; background: #0a84ff; color: white;
+    }
+    button:disabled { opacity: 0.5; cursor: default; }
+  </style>
+</head>
+<body>
+  <h1>RSSHub</h1>
+  <p>很多网站没有自己的订阅源，RSSHub 可以为它们生成。这里填你用的 RSSHub 实例；规则从它那里取得，每天更新一次。rsshub.app 是公共实例，只适合试用，长期使用请自己部署。</p>
+  <label for="rsshub">RSSHub 地址</label>
+  <input id="rsshub" type="url" placeholder="https://rsshub.app" spellcheck="false">
+  <label for="key">访问密钥（实例设置了 ACCESS_KEY 时才需要）</label>
+  <input id="key" type="text" spellcheck="false" autocomplete="off">
+  <div class="row">
+    <span id="status"></span>
+    <button id="save">保存并更新规则</button>
+  </div>
+  <script src="radar.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

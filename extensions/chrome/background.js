@@ -1,4 +1,58 @@
+importScripts("radar.js");
+
 const HOST = "dev.eddy.capture";
+
+// RSSHub: the instance whose feeds are offered, and the rules it serves for
+// finding them. rsshub.app is the public one, meant for trying things out;
+// the settings page takes another.
+const DEFAULTS = { rsshub: "https://rsshub.app", key: "", rules: null, rulesAt: 0, rulesFrom: "", rulesError: "" };
+const RULES_MAX_AGE = 24 * 60 * 60 * 1000;
+
+function settings() {
+  return chrome.storage.local.get(DEFAULTS);
+}
+
+// Fetches the instance's rules and keeps them. A failure leaves the rules
+// already here in place and is remembered for the settings page to show.
+let refreshing = null;
+function refreshRules() {
+  refreshing ??= (async () => {
+    const { rsshub, key } = await settings();
+    const base = rsshub.replace(/\/+$/, "");
+    try {
+      const response = await fetch(`${base}/api/radar/rules${key ? "?key=" + encodeURIComponent(key) : ""}`, { credentials: "omit" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const rules = await response.json();
+      if (!rules || typeof rules !== "object" || Array.isArray(rules)) throw new Error("不是规则列表");
+      await chrome.storage.local.set({ rules, rulesAt: Date.now(), rulesFrom: base, rulesError: "" });
+      return { ok: true, count: countRules(rules) };
+    } catch (e) {
+      const error = String(e?.message || e);
+      await chrome.storage.local.set({ rulesError: error });
+      return { ok: false, error };
+    }
+  })().finally(() => {
+    refreshing = null;
+  });
+  return refreshing;
+}
+
+// The feeds the instance can make for a page. Rules that are missing, a
+// day old or another instance's are fetched again: waited for (briefly)
+// when there are none to go on, in the background otherwise.
+async function radar(url) {
+  let { rsshub, key, rules, rulesAt, rulesFrom } = await settings();
+  const base = rsshub.replace(/\/+$/, "");
+  const stale = rulesFrom !== base || Date.now() - rulesAt > RULES_MAX_AGE;
+  if (!rules || rulesFrom !== base) {
+    await Promise.race([refreshRules(), new Promise((done) => setTimeout(done, 6000))]);
+    ({ rules, rulesFrom } = await settings());
+    if (rulesFrom !== base) rules = null;
+  } else if (stale) {
+    refreshRules();
+  }
+  return { feeds: radarFeeds(rules, url, base, key), loaded: !!rules };
+}
 
 function send(message) {
   return new Promise((resolve) => {
@@ -51,33 +105,71 @@ async function capture(tab) {
   return { ...reply, url: page.url };
 }
 
+// What a page says of its own feeds, run in the page. Besides the links in
+// its head that name a feed, the links in its text that look like one, and
+// the page itself when it is a feed opened in a tab.
+function feedsOnPage() {
+  const feeds = [];
+  const kinds = /(rss|atom|rdf)\+xml|feed\+json|^application\/json\+feed/i;
+  for (const link of document.querySelectorAll('link[rel~="alternate" i][href], link[rel~="feed" i][href]')) {
+    if (kinds.test(link.type) || /\bfeed\b/i.test(link.rel)) feeds.push({ url: link.href, title: link.title || "" });
+  }
+  // A feed shown as a page: Chrome wraps the XML, or shows it as text.
+  const root = document.querySelector("rss, feed, rdf\\:RDF") || document.getElementById("webkit-xml-viewer-source-xml")?.firstElementChild;
+  if (/(rss|atom)\+xml/i.test(document.contentType) || (root && /^(rss|feed|rdf:RDF)$/i.test(root.nodeName))) {
+    feeds.push({ url: location.href, title: document.title || "" });
+  }
+  // Links a reader would take for a feed: by where they point, or by what
+  // they say. Only on this site, and only a few.
+  const looks = /(^|[\/.=_-])(rss|atom|feed)s?([\/.]?(xml|rss|atom|json))?\/?$|\/(rss|atom|feed)\.(xml|php|aspx?)$|\/index\.xml$/i;
+  let linked = 0;
+  for (const anchor of document.querySelectorAll("a[href]")) {
+    if (linked >= 4) break;
+    let url;
+    try {
+      url = new URL(anchor.href);
+    } catch (e) {
+      continue;
+    }
+    if (!/^https?:$/.test(url.protocol)) continue;
+    const text = (anchor.textContent || anchor.title || anchor.getAttribute("aria-label") || "").trim();
+    const same = url.hostname.split(".").slice(-2).join(".") === location.hostname.split(".").slice(-2).join(".");
+    const says = /^(rss|atom|rss ?订阅|订阅 ?rss|rss feed|feed)$/i.test(text);
+    if ((same && looks.test(url.pathname + url.search)) || says) {
+      feeds.push({ url: url.href, title: says || !text || text.length > 40 ? "" : text });
+      linked++;
+    }
+  }
+  return feeds;
+}
+
 // What the popup offers before anything is saved: the page it was opened
-// on, and the feeds the page names in its head.
+// on, the feeds the page names, and the ones RSSHub can make for it.
 async function inspect(tab) {
   if (!tab || !/^https?:/.test(tab.url || "")) {
     return { ok: false, error: "只能保存网页" };
   }
-  const page = { ok: true, url: tab.url, title: tab.title || tab.url, feeds: [] };
-  if (isPdf(tab)) return page;
-  try {
-    const [result] = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: () =>
-        [...document.querySelectorAll('link[rel~="alternate" i][href]')]
-          .filter((link) => /(rss|atom)\+xml|feed\+json/i.test(link.type))
-          .map((link) => ({ url: link.href, title: link.title || "" })),
-    });
-    const seen = new Set();
-    for (const feed of result.result || []) {
-      if (!/^https?:/.test(feed.url) || seen.has(feed.url)) continue;
-      seen.add(feed.url);
-      page.feeds.push(feed);
+  const page = { ok: true, url: tab.url, title: tab.title || tab.url, feeds: [], radar: [], radarLoaded: false };
+  const found = radar(tab.url);
+  if (!isPdf(tab)) {
+    try {
+      const [result] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: feedsOnPage });
+      const seen = new Set();
+      for (const feed of result.result || []) {
+        if (!/^https?:/.test(feed.url) || seen.has(feed.url)) continue;
+        seen.add(feed.url);
+        page.feeds.push(feed);
+      }
+      page.feeds = page.feeds.slice(0, 8);
+    } catch (e) {
+      // A page scripts can't run on (the Web Store, a viewer): saving its
+      // address still works.
     }
-    page.feeds = page.feeds.slice(0, 8);
-  } catch (e) {
-    // A page scripts can't run on (the Web Store, a viewer): saving its
-    // address still works.
   }
+  const made = await found;
+  const known = new Set(page.feeds.map((feed) => feed.url));
+  page.radar = made.feeds.filter((feed) => !known.has(feed.url));
+  page.radarLoaded = made.loaded;
   return page;
 }
 
@@ -86,6 +178,10 @@ async function inspect(tab) {
 chrome.runtime.onMessage.addListener((message, _sender, respond) => {
   if (message.type === "inspect") {
     chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => inspect(tab)).then(respond);
+    return true;
+  }
+  if (message.type === "refreshRules") {
+    refreshRules().then(respond);
     return true;
   }
   if (message.type === "subscribe") {
@@ -104,6 +200,7 @@ chrome.runtime.onMessage.addListener((message, _sender, respond) => {
 });
 
 chrome.runtime.onInstalled.addListener(() => {
+  refreshRules();
   chrome.contextMenus.create({ id: "eddy-save-link", title: "用 Eddy 稍后阅读这个链接", contexts: ["link"] });
   chrome.contextMenus.create({ id: "eddy-save-page", title: "保存这个页面到 Eddy", contexts: ["page"] });
 });
