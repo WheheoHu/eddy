@@ -346,7 +346,7 @@ extension AppModel {
                         for block in ch.blocks {
                             if case let .image(src, _, _, _, _) = block.kind, imageMap[src] == nil {
                                 if state.cancelled { throw PDFExporter.ExportRenderError.cancelled }
-                                if let img = try? await engine.image(url: src) {
+                                if let img = try? await engine.image(url: src, page: nil) {
                                     imageMap[src] = Data(img.bytes)
                                 }
                             }

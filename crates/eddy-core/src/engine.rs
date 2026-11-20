@@ -164,6 +164,9 @@ pub(crate) struct Inner {
     pub media_pending: parking_lot::Mutex<std::collections::HashSet<String>>,
     /// PDFs whose figures are being rendered into the image cache.
     pub pdf_warming: parking_lot::Mutex<std::collections::HashSet<String>>,
+    /// Image hosts that refused a request without a `Referer` and served it
+    /// with one; the rest of this run asks them that way the first time.
+    pub referer_hosts: parking_lot::Mutex<std::collections::HashSet<String>>,
     pub video_cancels:
         parking_lot::Mutex<std::collections::HashMap<String, Arc<std::sync::atomic::AtomicBool>>>,
     pub video_listener: RwLock<Option<crate::video::VideoJobCallback>>,
@@ -237,6 +240,7 @@ impl Engine {
             media_gate: tokio::sync::Semaphore::new(4),
             media_pending: parking_lot::Mutex::new(Default::default()),
             pdf_warming: parking_lot::Mutex::new(Default::default()),
+            referer_hosts: parking_lot::Mutex::new(Default::default()),
             video_cancels: parking_lot::Mutex::new(Default::default()),
             video_listener: RwLock::new(None),
             export_cancels: parking_lot::Mutex::new(Default::default()),
@@ -633,9 +637,11 @@ impl Engine {
         Ok(())
     }
 
-    /// Image bytes and MIME type, cached for offline reading.
-    pub async fn image(&self, url: &str) -> Result<(Vec<u8>, String)> {
-        self.inner.image(url).await
+    /// Image bytes and MIME type, cached for offline reading. `page` is the
+    /// article the image belongs to, named to hosts that refuse to serve
+    /// pictures to requests that come from nowhere.
+    pub async fn image(&self, url: &str, page: Option<&str>) -> Result<(Vec<u8>, String)> {
+        self.inner.image(url, page).await
     }
 
     pub fn cache_limit(&self) -> Result<u64> {

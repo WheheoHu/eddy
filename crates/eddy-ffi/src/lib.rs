@@ -351,8 +351,10 @@ impl EddyEngine {
         Ok(self.engine.set_starred(&item_id, starred).await?)
     }
 
-    pub async fn image(&self, url: String) -> R<ImageData> {
-        let (bytes, mime) = self.engine.image(&url).await?;
+    /// `page` is the address of the article showing the image, if any.
+    #[uniffi::method(default(page = None))]
+    pub async fn image(&self, url: String, page: Option<String>) -> R<ImageData> {
+        let (bytes, mime) = self.engine.image(&url, page.as_deref()).await?;
         Ok(ImageData { bytes, mime })
     }
 

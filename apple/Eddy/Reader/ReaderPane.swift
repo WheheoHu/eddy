@@ -267,7 +267,7 @@ struct ReaderPane: View {
                     version: version,
                     style: style,
                     scrollTarget: scrollTarget,
-                    loadImage: { url in await model.image(url) },
+                    loadImage: { [page = item.url] url in await model.image(url, page: page) },
                     onPosition: { block, offset, atEnd in
                         lastPosition = (block, offset, atEnd)
                         model.recordProgress(itemID, blockID: block, offset: offset, atEnd: atEnd)

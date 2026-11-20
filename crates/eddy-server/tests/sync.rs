@@ -165,7 +165,7 @@ async fn standalone_client_migrates_and_a_second_device_joins() {
             _ => None,
         })
         .unwrap();
-    assert_eq!(b.image(&figure).await.unwrap().0, b"\x89PNG-figure");
+    assert_eq!(b.image(&figure, None).await.unwrap().0, b"\x89PNG-figure");
 
     let feed_doc = b
         .document(&find(&b, "Unread elsewhere").item.id)

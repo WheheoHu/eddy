@@ -2,6 +2,7 @@ import AppKit
 import EddyKit
 import ImageIO
 import Observation
+import os
 import PDFKit
 import SwiftUI
 
@@ -429,16 +430,32 @@ final class AppModel {
     static let readerPixels = 2400
 
     /// `maxPixelSize` bounds the longer side of the decoded picture; a grid
-    /// of thumbnails asks for no more than its tiles show.
-    func image(_ url: String, maxPixelSize: Int = AppModel.readerPixels) async -> NSImage? {
+    /// of thumbnails asks for no more than its tiles show. `page` is the
+    /// address of the article the picture is in, for hosts that only serve
+    /// pictures to their own pages.
+    func image(_ url: String, page: String? = nil, maxPixelSize: Int = AppModel.readerPixels) async -> NSImage? {
         let key = (maxPixelSize == Self.readerPixels ? url : "\(maxPixelSize):\(url)") as NSString
         if let cached = imageCache.object(forKey: key) { return cached }
-        guard let engine, let data = try? await engine.image(url: url) else { return nil }
-        let bytes = Data(data.bytes)
+        guard let bytes = await imageData(url, page: page) else { return nil }
         guard let image = await Task.detached(priority: .userInitiated, operation: { Self.decoded(bytes, maxPixelSize: maxPixelSize) }).value else { return nil }
         let pixels = image.representations.first.map { $0.pixelsWide * $0.pixelsHigh } ?? 0
         imageCache.setObject(image, forKey: key, cost: pixels * 4)
         return image
+    }
+
+    private static let imageLog = Logger(subsystem: EddyPaths.keychainService, category: "images")
+
+    /// The picture's bytes from the core. One that can't be had is noted in
+    /// the log, by host and reason: the reader shows only an empty frame.
+    private func imageData(_ url: String, page: String?) async -> Data? {
+        guard let engine else { return nil }
+        do {
+            return Data(try await engine.image(url: url, page: page).bytes)
+        } catch {
+            let host = URL(string: url)?.host ?? "?"
+            Self.imageLog.info("image from \(host, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+            return nil
+        }
     }
 
     /// A picture that is decoded already, without waiting for it: what a
@@ -453,8 +470,7 @@ final class AppModel {
     func animatedImage(_ url: String) async -> NSImage? {
         let key = "animated:\(url)" as NSString
         if let cached = imageCache.object(forKey: key) { return cached }
-        guard let engine, let data = try? await engine.image(url: url) else { return nil }
-        let bytes = Data(data.bytes)
+        guard let bytes = await imageData(url, page: nil) else { return nil }
         guard let image = await Task.detached(priority: .userInitiated, operation: { NSImage(data: bytes) }).value else { return nil }
         imageCache.setObject(image, forKey: key)
         return image

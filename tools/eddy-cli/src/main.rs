@@ -167,6 +167,14 @@ async fn main() {
             Some(d) => summarize(&d.document),
             None => println!("no content"),
         }),
+        // Fetches one image the way the reader does, optionally as part of
+        // the article at PAGE; for checking hosts that guard their pictures.
+        ["image", url] | ["image", url, _] => {
+            let page = args.get(2).map(String::as_str);
+            engine.image(url, page).await.map(|(bytes, mime)| {
+                println!("{mime}  {} bytes", bytes.len());
+            })
+        }
         // Every block as text, one per line prefixed with its kind; for
         // checking how a PDF or page reflowed.
         ["text", id] => engine.document(id).await.map(|d| match d {
@@ -356,7 +364,7 @@ async fn main() {
         }
         _ => {
             eprintln!(
-                "usage: eddy-cli [--data DIR] save URL | items | doc ID | text ID | fulltext ID | connect URL CODE | disconnect | sign-out [--discard-unsent] | sync | status | freshrss URL USER PASSWORD | server-account URL USER PASSWORD | tag NAME | tags | star ID | search QUERY | import FILE | media ID | gallery FOLDER COUNT | --version"
+                "usage: eddy-cli [--data DIR] save URL | items | doc ID | text ID | image URL [PAGE] | fulltext ID | connect URL CODE | disconnect | sign-out [--discard-unsent] | sync | status | freshrss URL USER PASSWORD | server-account URL USER PASSWORD | tag NAME | tags | star ID | search QUERY | import FILE | media ID | gallery FOLDER COUNT | --version"
             );
             std::process::exit(2);
         }

@@ -43,5 +43,6 @@ Sync protocol 2. Servers and devices on protocol 1 must be updated together.
 - The server stops cleanly on SIGTERM.
 - Articles stored but not published when the server stopped are ingested again.
 - Live sync no longer stacks up connections, times out and pings, and uploads waiting changes when it reconnects.
+- Images on hosts that refuse requests without a `Referer` (sspai's among them) load: a refused image is asked for once more the way a browser showing the article would.
 
 [Unreleased]: https://github.com/WheheoHu/eddy/commits/dev

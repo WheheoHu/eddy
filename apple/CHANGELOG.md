@@ -102,5 +102,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A table on the first screen of an article shows when the article opens, not only after scrolling away and back.
 - The Gallery scrolls without hitching: its list no longer reloads while the grid is moving, and thumbnails are decoded at the size they are shown.
 - An article keeps its place when the window is resized: the line at the top stays at the top while the text wraps to the new width.
+- Articles from sites that guard their pictures against hotlinking (少数派 among them) show their images in Reader. A picture that can't be loaded is noted in the log.
 
 [Unreleased]: https://github.com/WheheoHu/eddy/commits/dev
