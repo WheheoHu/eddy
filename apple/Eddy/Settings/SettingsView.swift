@@ -635,6 +635,8 @@ private struct ShortcutsSettings: View {
         Shortcut("Next chapter or article", ["⇧", "→"], ["⌘", "→"], ["⌘", "]"]),
         Shortcut("Previous chapter or article", ["⇧", "←"], ["⌘", "←"], ["⌘", "["]),
         Shortcut("On to the next, at the end of the text", ["Hold ↓"]),
+        Shortcut("An article’s web page, a book’s next chapter", ["Hold →"]),
+        Shortcut("Back to the text from the web page", ["Hold ←"]),
         Shortcut("Show or hide the contents", ["⌘", "B"]),
         Shortcut("Translate", ["⌥", "A"]),
         Shortcut("Mark as read or unread", ["⇧", "⌘", "U"]),

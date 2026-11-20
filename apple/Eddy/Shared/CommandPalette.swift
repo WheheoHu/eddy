@@ -45,8 +45,6 @@ struct CommandPalette: View {
     @AppStorage("reader.appearance") private var appearance: ReaderAppearance = .app
     @AppStorage(ReaderFonts.latinKey) private var latinFont = ReaderFonts.systemSans
     @AppStorage(ReaderFonts.cjkKey) private var cjkFont = ReaderFonts.systemSans
-    @AppStorage("threePane.contents") private var threePaneContents = false
-    @AppStorage("library.contents") private var libraryContents = true
 
     @State private var query = ""
     @State private var highlighted = 0
@@ -238,12 +236,7 @@ struct CommandPalette: View {
             items.append(PaletteItem(id: "fulltext", group: .reader, title: String(localized: "Toggle Full Text"), icon: "doc.text.magnifyingglass") { command(.toggleFullText) })
         }
         if model.entry(containing: item) != nil {
-            let shown = mode == .threePane ? threePaneContents : libraryContents
-            items.append(PaletteItem(id: "contents", group: .reader, title: shown ? String(localized: "Hide Contents") : String(localized: "Show Contents"), icon: "sidebar.left") {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    if mode == .threePane { threePaneContents.toggle() } else { libraryContents.toggle() }
-                }
-            })
+            items.append(PaletteItem(id: "contents", group: .reader, title: String(localized: "Show or Hide Contents (⌘B)"), icon: "list.bullet.indent") { command(.toggleContents) })
         }
         if let url = item.url.flatMap(URL.init(string:)) {
             if isVideoUrl(url: url.absoluteString) {

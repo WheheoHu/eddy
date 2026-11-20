@@ -775,7 +775,11 @@ final class ReaderTextView: NSTextView {
             if event.keyCode == 53 { cancelOperation(nil) } else { super.keyDown(with: event) }
             return
         }
-        let page = max(scroll.contentView.bounds.height - lineStep, lineStep)
+        // A page leaves a fifth of what was showing in view, or three
+        // lines if that is more: where the eye was is still there to go on
+        // from.
+        let height = scroll.contentView.bounds.height
+        let page = max(height - max(height * 0.2, lineStep * 3), lineStep)
         // Shift with Left or Right turns to the chapter or article before or
         // after, the way a swipe that way does in a book; Command does too.
         if modifiers == .shift || modifiers == .command, key == .leftArrow || key == .rightArrow, let onStep {
@@ -784,14 +788,19 @@ final class ReaderTextView: NSTextView {
         } else if modifiers.isEmpty, key == .leftArrow, let onLeft {
             tracker?.cancel()
             onLeft()
-        } else if modifiers.isEmpty, key == .downArrow || key == .rightArrow {
+        } else if modifiers.isEmpty, key == .rightArrow || key == .leftArrow {
+            // Held, Right does what a swipe to the left does and Left what
+            // one to the right does: the web page of an article, the next
+            // or previous chapter of a book. Nothing that way: nothing.
+            tracker?.hold(swipe: key == .rightArrow ? .left : .right, key: event.keyCode)
+        } else if modifiers.isEmpty, key == .downArrow {
             // A page at a time, not a line: the trackpad is for less.
             if scroll.atBottom {
                 tracker?.hold(.next, key: event.keyCode)
             } else {
                 scrollBy(page, animated: true)
             }
-        } else if modifiers.isEmpty, key == .upArrow || key == .leftArrow {
+        } else if modifiers.isEmpty, key == .upArrow {
             if scroll.atTop {
                 tracker?.hold(.previous, key: event.keyCode)
             } else {

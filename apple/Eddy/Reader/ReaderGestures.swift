@@ -213,7 +213,23 @@ final class EdgeGestureTracker {
         if holdKey == key, gesture?.kind == .pull(direction) { return }
         let target = pullTarget(direction)
         guard target != .none else { return }
-        start(.pull(direction), target: target)
+        beginHold(.pull(direction), target: target, key: key)
+    }
+
+    /// An arrow key held to do what a swipe of the fingers that way does
+    /// (the web page, the next chapter): it fills and acts as a key held at
+    /// an edge does. Only for what a swipe opens; what follows the fingers
+    /// instead (a column coming in) has no meaning for a key.
+    func hold(swipe fingers: SwipeDirection, key: UInt16) {
+        guard let swipeTarget = gestures.swipeTarget else { return }
+        if holdKey == key, gesture?.kind == .swipe(fingers) { return }
+        let target = swipeTarget(fingers)
+        guard case .item = target else { return }
+        beginHold(.swipe(fingers), target: target, key: key)
+    }
+
+    private func beginHold(_ kind: EdgeGesture.Kind, target: EdgeTarget, key: UInt16) {
+        start(kind, target: target)
         holdKey = key
         holdStart = Date()
         let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in

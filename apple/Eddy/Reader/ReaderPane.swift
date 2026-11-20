@@ -501,11 +501,11 @@ struct ReaderPane: View {
     @ViewBuilder
     private func controls(compact: Bool) -> some View {
         if let showContents {
-            Button { withAnimation(.easeInOut(duration: 0.2)) { showContents.wrappedValue.toggle() } } label: {
+            Button(action: toggleContents) {
                 Label("Contents", systemImage: "list.bullet.indent")
             }
             .buttonStyle(FlatButtonStyle(on: showContents.wrappedValue))
-            .help(showContents.wrappedValue ? "Hide contents" : "Show contents")
+            .help(showContents.wrappedValue ? "Hide contents (⌘B)" : "Show contents (⌘B)")
         }
         if let page = links.last {
             Button(action: closeLink) { Label("Back", systemImage: "chevron.left") }
@@ -753,6 +753,11 @@ struct ReaderPane: View {
         if let lastPage { model.recordPage(itemID, page: lastPage.page, of: lastPage.count, force: true) }
     }
 
+    private func toggleContents() {
+        guard let showContents else { return }
+        withAnimation(.easeInOut(duration: 0.2)) { showContents.wrappedValue.toggle() }
+    }
+
     private func toggleSummary(_ show: Bool) {
         withAnimation(.easeInOut(duration: 0.2)) { showSummary = show }
     }
@@ -763,11 +768,14 @@ struct ReaderPane: View {
             case .summary: toggleLinkSummary(true)
             case let .readingMode(new): setLinkMode(new)
             case .toggleTranslation: setLinkMode(page.mode == .original ? lastTranslationMode : .original)
+            case .toggleContents: toggleContents()
             case .toggleWeb, .toggleFullText, .step, .export: break
             }
             return
         }
         switch action {
+        case .toggleContents:
+            toggleContents()
         case .summary:
             toggleSummary(true)
         case let .readingMode(new):

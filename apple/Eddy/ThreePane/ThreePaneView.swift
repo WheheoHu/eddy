@@ -121,8 +121,10 @@ struct ThreePaneView: View {
             if case let .feed(id) = selection, let folder = model.feeds.first(where: { $0.id == id })?.category, collapsed.contains(folder) {
                 toggleFolder(folder)
             }
-            // Once the columns are there to take the keys.
-            DispatchQueue.main.async { focusFirstColumn() }
+            // Once the columns are there to take the keys, and it is known
+            // which of them the window has room for (`fit` does it if the
+            // window hasn't been measured yet).
+            DispatchQueue.main.async { if fitted { focusFirstColumn() } }
             // Coming from another mode with its sidebar in: it stays in.
             place = model.sidebarPulled ? .sidebar : (canRead ? .reader : .list)
         }
@@ -198,6 +200,9 @@ struct ThreePaneView: View {
             fitted = true
             tier = new
             if new == .wide { model.sidebarPulled = false }
+            // Now that it is known which columns show: the keys start in
+            // the first of them, not in a sidebar that is out of sight.
+            DispatchQueue.main.async { focusFirstColumn() }
             return
         }
         guard new != tier else { return }
@@ -290,6 +295,16 @@ struct ThreePaneView: View {
         if tier == .narrow, canRead { go(.reader) } else if tier != .wide || showSidebar { go(.sidebar) }
     }
 
+    /// Left in the middle column: a level back, to the sidebar, where Esc
+    /// in a narrow window goes to the article the columns lie over. A
+    /// sidebar that was shut in the wide window opens for it.
+    private func backToSidebar() {
+        if tier == .wide, !showSidebar {
+            withAnimation(.easeOut(duration: 0.24)) { showSidebar = true }
+        }
+        go(.sidebar)
+    }
+
     // MARK: Sidebar
 
     private var sidebarColumn: some View {
@@ -335,7 +350,15 @@ struct ThreePaneView: View {
     /// Return or Right in the sidebar: on to the middle column, at its
     /// first row unless one of its rows is open already.
     private func enterList() {
-        go(.list)
+        if tier == .medium, arrangement.sidebarShown {
+            // The sidebar lies beside the list here, over the article:
+            // the keys go on to the list and it stays, as Left from the
+            // list comes back to it. Going to the list would send it away.
+            readerFocused = false
+            focus = .list
+        } else {
+            go(.list)
+        }
         if let kinds = selection?.kinds {
             guard entryID == nil else { return }
             // In the order the list shows them: Saved by kind.
@@ -354,6 +377,12 @@ struct ThreePaneView: View {
                 listTable.reveal(row: 0)
             }
         }
+    }
+
+    /// A book's contents show beside the text: the chapter open there, not
+    /// the book in the middle column, is the row the text is read from.
+    private var contentsBeside: Bool {
+        showContents && tier != .narrowest && model.entry(containing: model.currentItemID) != nil
     }
 
     /// The keys start in the first column that shows: the sidebar's chosen
@@ -441,14 +470,14 @@ struct ThreePaneView: View {
             if let kinds {
                 CollectionList(
                     kinds: kinds, sort: collectionSort, selection: Binding(get: { entryID }, set: openEntry),
-                    active: focus == .list || readerFocused, reading: readerFocused,
-                    focus: $focus, onReturn: read, onEscape: leaveList
+                    active: focus == .list || (readerFocused && !contentsBeside), reading: readerFocused,
+                    focus: $focus, onReturn: read, onEscape: leaveList, onLeft: backToSidebar
                 )
             } else {
                 ThreePaneArticles(
                     rows: rows, marksFinished: selection == .smart(.continueReading),
-                    active: focus == .list || readerFocused, reading: readerFocused, table: listTable,
-                    focus: $focus, read: read, leave: leaveList
+                    active: focus == .list || (readerFocused && !contentsBeside), reading: readerFocused, table: listTable,
+                    focus: $focus, read: read, leave: leaveList, back: backToSidebar
                 )
                     .equatable()
                 if showsFilter {
@@ -622,7 +651,8 @@ struct ThreePaneView: View {
             HStack(spacing: 0) {
                 if let entry, beside {
                     EntryContents(
-                        entry: entry, currentItemID: id, open: open, jump: jump, active: focus == .contents,
+                        entry: entry, currentItemID: id, open: open, jump: jump,
+                        active: focus == .contents || readerFocused, reading: readerFocused,
                         focus: $focus, onReturn: read, onEscape: { go(.list) }
                     )
                         .frame(width: 260)
@@ -660,6 +690,7 @@ struct ThreePaneView: View {
                     EntryContents(
                         entry: entry, currentItemID: id,
                         open: { open($0); closeContents() }, jump: { jump($0); closeContents() },
+                        active: focus == .contents,
                         focus: $focus, onReturn: { closeContents(); read() }, onEscape: closeContents
                     )
                         .frame(width: 280)
@@ -857,7 +888,7 @@ private struct ThreePaneSidebar: View, Equatable {
     }
 
     /// Right goes on to the middle column, as Return does. Left goes back a
-    /// level: from a subscription to its folder, else where Esc leads.
+    /// level, from a subscription to its folder; there is none before that.
     /// Space folds the folder chosen, or unfolds it; on a subscription it
     /// folds the folder it is in, which is then the one chosen.
     private func key(_ key: KeyEquivalent) -> KeyPress.Result {
@@ -882,9 +913,9 @@ private struct ThreePaneSidebar: View, Equatable {
                 choose(.folder(folder))
                 return .handled
             }
-            guard let sidebarEscape else { return .ignored }
-            sidebarEscape()
-            return .handled
+            // The sidebar is the first level: nothing lies before it. Esc,
+            // not Left, sends it away where it lies over the columns.
+            return .ignored
         }
     }
 
@@ -936,6 +967,8 @@ private struct ThreePaneArticles: View, Equatable {
     let read: () -> Void
     /// Esc: back a column.
     let leave: () -> Void
+    /// Left: back a level, to the sidebar.
+    let back: () -> Void
 
     static func == (a: Self, b: Self) -> Bool {
         a.rows == b.rows && a.marksFinished == b.marksFinished && a.active == b.active && a.reading == b.reading
@@ -980,9 +1013,9 @@ private struct ThreePaneArticles: View, Equatable {
         .flatList()
         .tableHandle(table)
         .pane(focus, .list, onReturn: read, onEscape: leave)
-        // Right goes on to the article, Left back a column.
+        // Right goes on to the article, Left back to the sidebar.
         .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in
-            if press.key == .rightArrow { read() } else { leave() }
+            if press.key == .rightArrow { read() } else { back() }
             return .handled
         }
         .overlay {
@@ -1032,8 +1065,10 @@ struct CollectionList: View {
     var focus: FocusState<PaneFocus?>.Binding?
     /// Return or Right: read the entry selected.
     var onReturn: (() -> Void)?
-    /// Esc or Left: back a column.
+    /// Esc: back a column.
     var onEscape: (() -> Void)?
+    /// Left: back a level, to the sidebar.
+    var onLeft: (() -> Void)?
     /// The order taken when the list appears or its filter or sort changes.
     /// Reading an entry changes its last-read time and progress; re-sorting
     /// on that would move rows away from under the pointer.
@@ -1082,7 +1117,7 @@ struct CollectionList: View {
         } primaryAction: { _ in onReturn?() }
         .pane(focus, .list, onReturn: onReturn, onEscape: onEscape)
         .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in
-            guard let act = press.key == .rightArrow ? onReturn : onEscape else { return .ignored }
+            guard let act = press.key == .rightArrow ? onReturn : (onLeft ?? onEscape) else { return .ignored }
             act()
             return .handled
         }

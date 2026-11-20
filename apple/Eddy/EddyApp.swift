@@ -37,9 +37,6 @@ struct EddyApp: App {
     @State private var model = AppModel()
     @AppStorage("app.mode") private var mode: AppMode = .threePane
     @AppStorage(GalleryDensity.key) private var galleryRowHeight = GalleryDensity.standard
-    /// The contents beside the text, as each mode last left them.
-    @AppStorage("threePane.contents") private var threePaneContents = false
-    @AppStorage("library.contents") private var libraryContents = true
 
     init() {
         ReaderFonts.migrate()
@@ -82,16 +79,16 @@ struct EddyApp: App {
                 Divider()
                 // A book's chapters or a subscription's articles, beside
                 // the text; in Three-Pane a subscription's are the list.
-                let contents = mode == .threePane ? threePaneContents : libraryContents
+                // Asked of the reader, which knows where they go in a window
+                // this wide: beside the text, or over it.
                 let hasContents = switch mode {
                 case .threePane: model.entry(containing: model.currentItemID) != nil
                 case .library: model.currentItemID != nil
                 case .gallery: false
                 }
-                Button(contents ? "Hide Contents" : "Show Contents") {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        if mode == .threePane { threePaneContents.toggle() } else { libraryContents.toggle() }
-                    }
+                Button("Show or Hide Contents") {
+                    guard let id = model.currentItemID else { return }
+                    model.readerCommand = PaletteRequest(value: ReaderCommand(itemID: id, action: .toggleContents))
                 }
                 .keyboardShortcut("b", modifiers: .command)
                 .disabled(!hasContents)
