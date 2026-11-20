@@ -968,6 +968,30 @@ final class AppModel {
         Task { await refresh(quiet: true) }
     }
 
+    /// A subscription waiting for the user to confirm unsubscribing.
+    var pendingUnsubscribe: SourceView?
+
+    /// Unsubscribes, after the user has confirmed. The feed's articles go
+    /// with it, so one of them being read is closed, and a sidebar that
+    /// had the feed chosen goes back to everything.
+    func unsubscribe(_ feed: SourceView) async {
+        guard let engine else { return }
+        let reading = currentItemID.flatMap { item($0) }.map { $0.kind == .feed && $0.sourceId == feed.id } ?? false
+        do {
+            try await engine.removeFeed(sourceId: feed.id)
+            if reading { currentItemID = nil }
+            if threePaneSelection == .feed(feed.id) { chose(.smart(.all)) }
+            message = String(localized: "Unsubscribed from “\(feed.title)”")
+        } catch EddyError.Offline {
+            notice = Notice(text: String(localized: "The sync server is offline, and it is the one that unsubscribes. Try again when it is back."), kind: .error)
+        } catch let EddyError.Failed(message), let EddyError.UpgradeRequired(message), let EddyError.Unauthorized(message) {
+            notice = Notice(text: message, kind: .error)
+        } catch {
+            report(error)
+        }
+        reload()
+    }
+
     /// Lists a subscription where the current mode lists them; the Gallery
     /// hands over to the three panes, as it does for a saved page.
     func show(feed sourceID: String) {

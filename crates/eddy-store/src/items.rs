@@ -195,17 +195,33 @@ impl Store {
         })
     }
 
+    /// Drops the account's subscriptions that are not in `keep`, each with
+    /// its articles (`remove_source`).
     pub fn remove_sources_not_in(&self, account_id: &str, keep: &[String]) -> Result<()> {
         self.with(|c| {
-            let placeholders = vec!["?"; keep.len()].join(",");
-            let sql = if keep.is_empty() {
-                "DELETE FROM sources WHERE account_id=?".to_string()
-            } else {
-                format!("DELETE FROM sources WHERE account_id=? AND id NOT IN ({placeholders})")
+            let tx = c.transaction()?;
+            let gone: Vec<String> = {
+                let mut stmt = tx.prepare("SELECT id FROM sources WHERE account_id=?")?;
+                let ids = stmt.query_map([account_id], |r| r.get::<_, String>(0))?;
+                ids.collect::<rusqlite::Result<Vec<_>>>()?
+                    .into_iter()
+                    .filter(|id| !keep.contains(id))
+                    .collect()
             };
-            let mut values: Vec<Value> = vec![Value::Text(account_id.to_string())];
-            values.extend(keep.iter().map(|k| Value::Text(k.clone())));
-            c.execute(&sql, params_from_iter(values))?;
+            for id in &gone {
+                remove_source(&tx, id)?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
+    /// Removes a subscription and takes its articles out of every list.
+    pub fn remove_source(&self, id: &str) -> Result<()> {
+        self.with(|c| {
+            let tx = c.transaction()?;
+            remove_source(&tx, id)?;
+            tx.commit()?;
             Ok(())
         })
     }
@@ -880,4 +896,19 @@ pub(crate) fn insert_item(c: &rusqlite::Connection, item: &Item) -> rusqlite::Re
             item.chapter_level
         ],
     )
+}
+
+/// A subscription that is gone takes its articles with it: FreshRSS deletes
+/// them when a feed is unsubscribed from, and left listed here they would
+/// be articles of no feed that the next refresh marks read and unstarred.
+/// They are hidden the way deleted items are, so what only they used is
+/// released; pages saved from them are items of their own and stay.
+pub(crate) fn remove_source(conn: &rusqlite::Connection, id: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE items SET deleted=1 WHERE source_id=? AND kind='feed'",
+        [id],
+    )?;
+    conn.execute("DELETE FROM source_icons WHERE source_id=?", [id])?;
+    conn.execute("DELETE FROM sources WHERE id=?", [id])?;
+    Ok(())
 }

@@ -534,7 +534,7 @@ fn effect(tx: &Transaction, op: &Op) -> Result<()> {
         }
         (Entity::Source, fields::DELETED) => {
             if bool_value(v)? {
-                tx.execute("DELETE FROM sources WHERE id=?", [id])?;
+                crate::items::remove_source(tx, id)?;
             }
         }
         (Entity::ContentVersion, fields::CREATE) => {

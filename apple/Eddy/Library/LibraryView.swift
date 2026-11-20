@@ -196,6 +196,8 @@ struct LibraryView: View {
         }
         .onChange(of: model.revision) {
             if let entry = open?.entry, model.entry(entry.id) == nil { open = nil }
+            // A subscription unsubscribed from while it was open.
+            if case let .feed(sourceID) = open?.kind, !model.feeds.contains(where: { $0.id == sourceID }) { open = nil }
         }
         .onChange(of: model.navigation) { _, request in
             switch request?.value {
@@ -422,6 +424,9 @@ struct LibraryView: View {
     private func menu(for book: Book) -> some View {
         if case let .feed(sourceID) = book.kind {
             Button("Mark All as Read…") { model.requestMarkAllRead(ArticleList(filter: .source(id: sourceID), title: book.title)) }
+            if let feed = model.feeds.first(where: { $0.id == sourceID }) {
+                Button("Unsubscribe…", role: .destructive) { model.pendingUnsubscribe = feed }
+            }
         }
         if let entry = book.entry {
             if !entry.isDone {

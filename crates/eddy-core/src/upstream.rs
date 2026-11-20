@@ -7,7 +7,8 @@ use eddy_model::{
     Account, ContentOrigin, FullTextMode, Item, ItemKind, Source, SourceKind, fields, ids, now_ms,
 };
 use eddy_source_greader::{
-    GReaderClient, READ, READING_LIST, STARRED, Subscription, UpstreamItem, history_path,
+    GReaderClient, GReaderError, READ, READING_LIST, STARRED, Subscription, UpstreamItem,
+    history_path,
 };
 
 use crate::engine::{Engine, Inner, RefreshSummary};
@@ -210,6 +211,38 @@ impl DirectUpstream {
             title: source.title,
             folder: source.category,
         })
+    }
+
+    /// Has FreshRSS unsubscribe from the feed, then removes it here with
+    /// its articles, as the next refresh would. Only for the side that
+    /// writes to FreshRSS.
+    pub(crate) async fn remove_feed(&self, inner: &Inner, source: &Source) -> Result<()> {
+        let stream_id = source
+            .upstream_id
+            .as_deref()
+            .filter(|_| source.account_id.as_deref() == Some(self.account.id.as_str()))
+            .ok_or_else(|| crate::EngineError::Invalid("这不是这个账号的订阅源。".into()))?;
+        match self.client.unsubscribe(stream_id).await {
+            Ok(()) => {}
+            // FreshRSS's answer for a feed it does not have: gone already
+            // if it is not listed, anything else if it is.
+            Err(GReaderError::Http(400))
+                if !self
+                    .client
+                    .subscriptions()
+                    .await?
+                    .iter()
+                    .any(|s| s.id == stream_id) => {}
+            Err(e) => return Err(e.into()),
+        }
+        inner.publish(
+            eddy_model::Entity::Source,
+            &source.id,
+            fields::DELETED,
+            true.into(),
+        )?;
+        inner.store.remove_source(&source.id)?;
+        Ok(())
     }
 
     /// Server mode with the server unreachable: brings in new articles only.

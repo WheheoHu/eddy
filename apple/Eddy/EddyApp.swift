@@ -126,6 +126,47 @@ struct EddyApp: App {
     }
 }
 
+/// The questions asked before something that can't be taken back: deleting
+/// from the collection, marking a whole list read, unsubscribing. Apart
+/// from `RootView`, whose body is long enough for the compiler as it is.
+private struct Confirmations: ViewModifier {
+    @Environment(AppModel.self) private var model
+
+    func body(content: Content) -> some View {
+        content
+            .confirmationDialog(
+                Text("Delete “\(model.pendingDeletion?.title ?? "")”?"),
+                isPresented: Binding(get: { model.pendingDeletion != nil }, set: { if !$0 { model.pendingDeletion = nil } }),
+                presenting: model.pendingDeletion
+            ) { entry in
+                Button("Delete", role: .destructive) { Task { await model.delete(entry) } }
+                Button("Cancel", role: .cancel) {}
+            } message: { _ in
+                Text("It will be removed from Eddy on all your devices, along with its reading progress. This can’t be undone.")
+            }
+            .confirmationDialog(
+                Text("Mark \(model.pendingMarkAll?.count ?? 0) articles in “\(model.pendingMarkAll?.list.title ?? "")” as read?"),
+                isPresented: Binding(get: { model.pendingMarkAll != nil }, set: { if !$0 { model.pendingMarkAll = nil } }),
+                presenting: model.pendingMarkAll
+            ) { request in
+                Button("Mark as Read") { Task { await model.markAllRead(request) } }
+                Button("Cancel", role: .cancel) {}
+            } message: { _ in
+                Text("Articles that arrive from now on stay unread.")
+            }
+            .confirmationDialog(
+                Text("Unsubscribe from “\(model.pendingUnsubscribe?.title ?? "")”?"),
+                isPresented: Binding(get: { model.pendingUnsubscribe != nil }, set: { if !$0 { model.pendingUnsubscribe = nil } }),
+                presenting: model.pendingUnsubscribe
+            ) { feed in
+                Button("Unsubscribe", role: .destructive) { Task { await model.unsubscribe(feed) } }
+                Button("Cancel", role: .cancel) {}
+            } message: { _ in
+                Text("The feed and its articles, starred ones included, are removed from Eddy on all your devices and from FreshRSS. Pages you saved from it stay. This can’t be undone.")
+            }
+    }
+}
+
 struct RootView: View {
     @Environment(AppModel.self) private var model
     let mode: AppMode
@@ -185,26 +226,7 @@ struct RootView: View {
             if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
             keyMonitor = nil
         }
-        .confirmationDialog(
-            Text("Delete “\(model.pendingDeletion?.title ?? "")”?"),
-            isPresented: Binding(get: { model.pendingDeletion != nil }, set: { if !$0 { model.pendingDeletion = nil } }),
-            presenting: model.pendingDeletion
-        ) { entry in
-            Button("Delete", role: .destructive) { Task { await model.delete(entry) } }
-            Button("Cancel", role: .cancel) {}
-        } message: { _ in
-            Text("It will be removed from Eddy on all your devices, along with its reading progress. This can’t be undone.")
-        }
-        .confirmationDialog(
-            Text("Mark \(model.pendingMarkAll?.count ?? 0) articles in “\(model.pendingMarkAll?.list.title ?? "")” as read?"),
-            isPresented: Binding(get: { model.pendingMarkAll != nil }, set: { if !$0 { model.pendingMarkAll = nil } }),
-            presenting: model.pendingMarkAll
-        ) { request in
-            Button("Mark as Read") { Task { await model.markAllRead(request) } }
-            Button("Cancel", role: .cancel) {}
-        } message: { _ in
-            Text("Articles that arrive from now on stay unread.")
-        }
+        .modifier(Confirmations())
         .fileImporter(isPresented: $model.importing, allowedContentTypes: Self.importTypes, allowsMultipleSelection: true) { result in
             if case let .success(urls) = result { Task { await model.importFiles(urls) } }
         }

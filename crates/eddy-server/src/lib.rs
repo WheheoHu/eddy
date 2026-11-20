@@ -250,6 +250,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/account", post(set_account))
         .route("/v1/refresh", post(refresh))
         .route("/v1/subscriptions", post(add_feed))
+        .route("/v1/subscriptions/{id}", delete(remove_feed))
         .route("/v1/ops", post(push).get(pull))
         .route(
             "/v1/blobs/{key}",
@@ -425,6 +426,26 @@ async fn add_feed(
         title: added.title,
         folder: added.folder,
     }))
+}
+
+/// Unsubscribes from a feed in the server's FreshRSS account, for a
+/// device. The source's removal goes out to every device as an op, and its
+/// articles leave their lists with it.
+async fn remove_feed(
+    State(s): State<Arc<AppState>>,
+    _d: Device,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    use eddy_core::EngineError;
+    s.engine.remove_feed(&id).await.map_err(|e| match e {
+        // Not 404: that is what a server without this route answers.
+        EngineError::NotFound | EngineError::Invalid(_) | EngineError::NotConfigured => {
+            ApiError(StatusCode::UNPROCESSABLE_ENTITY, e.to_string())
+        }
+        other => ApiError::internal(other),
+    })?;
+    s.announce();
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn refresh(State(s): State<Arc<AppState>>, _d: Device) -> Result<StatusCode, ApiError> {

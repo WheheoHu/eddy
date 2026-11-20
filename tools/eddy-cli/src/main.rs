@@ -183,6 +183,23 @@ async fn main() {
                 );
             })
         }
+        // Unsubscribes from a feed by its source ID (`feed list` shows them).
+        ["feed", "remove", id] => engine.remove_feed(id).await.map(|()| {
+            println!("unsubscribed {id}");
+        }),
+        ["feed", "list"] => engine.sources().map(|sources| {
+            for s in sources {
+                if s.source.kind == eddy_model::SourceKind::Feed {
+                    println!(
+                        "{}  {}  [{}]  unread {}",
+                        s.source.id,
+                        s.source.title,
+                        s.source.category.as_deref().unwrap_or("-"),
+                        s.unread
+                    );
+                }
+            }
+        }),
         // Fetches one image the way the reader does, optionally as part of
         // the article at PAGE; for checking hosts that guard their pictures.
         ["image", url] | ["image", url, _] => {
@@ -380,7 +397,7 @@ async fn main() {
         }
         _ => {
             eprintln!(
-                "usage: eddy-cli [--data DIR] save URL | items | doc ID | text ID | image URL [PAGE] | feed add URL [FOLDER] | fulltext ID | connect URL CODE | disconnect | sign-out [--discard-unsent] | sync | status | freshrss URL USER PASSWORD | server-account URL USER PASSWORD | tag NAME | tags | star ID | search QUERY | import FILE | media ID | gallery FOLDER COUNT | --version"
+                "usage: eddy-cli [--data DIR] save URL | items | doc ID | text ID | image URL [PAGE] | feed add URL [FOLDER] | feed list | feed remove ID | fulltext ID | connect URL CODE | disconnect | sign-out [--discard-unsent] | sync | status | freshrss URL USER PASSWORD | server-account URL USER PASSWORD | tag NAME | tags | star ID | search QUERY | import FILE | media ID | gallery FOLDER COUNT | --version"
             );
             std::process::exit(2);
         }

@@ -843,3 +843,77 @@ fn reading_aside_sees_what_is_written_and_cannot_write() {
         release.send(()).unwrap();
     });
 }
+
+#[test]
+fn a_source_that_goes_takes_its_articles_out_of_the_lists() {
+    let (_dir, s) = store();
+    let source = |id: &str| eddy_model::Source {
+        id: id.into(),
+        account_id: Some("acct".into()),
+        upstream_id: Some(format!("feed/{id}")),
+        kind: eddy_model::SourceKind::Feed,
+        title: id.into(),
+        category: None,
+        site_url: None,
+        full_text: eddy_model::FullTextMode::Auto,
+        truncated: false,
+        gallery: false,
+    };
+    for id in ["src", "other", "third"] {
+        s.upsert_source(&source(id)).unwrap();
+    }
+    s.insert_item(&item("a", 1)).unwrap();
+    let mut starred = item("b", 2);
+    starred.starred = true;
+    s.insert_item(&starred).unwrap();
+    let mut elsewhere = item("c", 3);
+    elsewhere.source_id = Some("other".into());
+    s.insert_item(&elsewhere).unwrap();
+    // A saved page, even one filed under the feed's ID, is not its article.
+    let mut saved = item("d", 4);
+    saved.kind = ItemKind::Saved;
+    saved.read = true;
+    s.insert_item(&saved).unwrap();
+    s.set_source_icon("src", None, 1).unwrap();
+    let listed = |s: &Store| -> Vec<String> {
+        let mut ids: Vec<String> = s
+            .items(&ItemQuery {
+                limit: 100,
+                ..Default::default()
+            })
+            .unwrap()
+            .into_iter()
+            .map(|r| r.item.id)
+            .collect();
+        ids.sort();
+        ids
+    };
+    assert_eq!(listed(&s), ["a", "b", "c", "d"]);
+
+    // Its articles go, starred or not; a page saved under the same source
+    // ID, and other feeds' articles, stay.
+    s.remove_source("src").unwrap();
+    assert_eq!(listed(&s), ["c", "d"]);
+    assert!(s.source("src").unwrap().is_none());
+    assert!(s.source_icon("src").unwrap().is_none());
+    assert_eq!(s.unread_counts().unwrap(), [("other".to_string(), 1)]);
+
+    // The same happens when the removal arrives as an op, and when a
+    // refresh finds the account no longer lists the feed.
+    s.apply_remote(&Op {
+        op_id: "op-1".into(),
+        hlc: Hlc {
+            wall_ms: 10,
+            counter: 0,
+            node: "server".into(),
+        },
+        entity: Entity::Source,
+        entity_id: "other".into(),
+        field: fields::DELETED.into(),
+        value: json!(true),
+    })
+    .unwrap();
+    assert_eq!(listed(&s), ["d"]);
+    s.remove_sources_not_in("acct", &[]).unwrap();
+    assert!(s.source("third").unwrap().is_none());
+}
