@@ -6,9 +6,12 @@ use async_trait::async_trait;
 use eddy_model::{
     Account, ContentOrigin, FullTextMode, Item, ItemKind, Source, SourceKind, fields, ids, now_ms,
 };
-use eddy_source_greader::{GReaderClient, READ, READING_LIST, STARRED, UpstreamItem, history_path};
+use eddy_source_greader::{
+    GReaderClient, READ, READING_LIST, STARRED, Subscription, UpstreamItem, history_path,
+};
 
 use crate::engine::{Engine, Inner, RefreshSummary};
+use crate::subscribe::AddedFeed;
 use crate::{LogLevel, Result};
 
 /// Receives the running total of articles added, after each history page
@@ -38,6 +41,40 @@ pub(crate) trait Upstream: Send + Sync {
 pub(crate) struct DirectUpstream {
     pub account: Account,
     pub client: GReaderClient,
+}
+
+/// FreshRSS files every feed in a category. The ones filed nowhere sit in
+/// its default one, which it names in the language of its user
+/// ("Uncategorized", "未分类"): here those are feeds in no folder. The name
+/// is learned the first time a feed is added without a folder, and kept
+/// under this key with the account's ID.
+const DEFAULT_FOLDER_META: &str = "freshrss_default_folder";
+/// What FreshRSS calls it in English, until the account's own is known.
+const DEFAULT_FOLDER_NAME: &str = "Uncategorized";
+
+fn default_folder(inner: &Inner, account_id: &str) -> Result<String> {
+    Ok(inner
+        .store
+        .meta_get(&format!("{DEFAULT_FOLDER_META}:{account_id}"))?
+        .unwrap_or_else(|| DEFAULT_FOLDER_NAME.to_string()))
+}
+
+/// A subscription as the library keeps it. The ID follows from the account
+/// and FreshRSS's own, so every device and the server arrive at the same.
+/// `default_folder` is the category that stands for no folder.
+fn feed_source(account_id: &str, sub: &Subscription, default_folder: &str) -> Source {
+    Source {
+        id: ids::feed_source_id(account_id, &sub.id),
+        account_id: Some(account_id.to_string()),
+        upstream_id: Some(sub.id.clone()),
+        kind: SourceKind::Feed,
+        title: sub.title.clone(),
+        category: sub.category.clone().filter(|c| c != default_folder),
+        site_url: sub.site_url.clone(),
+        full_text: FullTextMode::Auto,
+        truncated: false,
+        gallery: false,
+    }
 }
 
 const ID_CAP: usize = 50_000;
@@ -115,6 +152,66 @@ impl Upstream for DirectUpstream {
 }
 
 impl DirectUpstream {
+    /// Has FreshRSS subscribe to `url` and files the feed in `folder`, then
+    /// lists it here as the next refresh would, which brings its articles.
+    /// Only for the side that writes to FreshRSS: standalone mode and the
+    /// server.
+    pub(crate) async fn add_feed(
+        &self,
+        inner: &Inner,
+        url: &str,
+        folder: Option<&str>,
+    ) -> Result<AddedFeed> {
+        let added = self.client.quickadd(url).await?;
+        if let Some(folder) = folder {
+            self.client.set_folder(&added.stream_id, folder).await?;
+        }
+        let account_id = self.account.id.as_str();
+        // As FreshRSS lists it now: the title unescaped, the site's address.
+        let listed = self
+            .client
+            .subscriptions()
+            .await?
+            .into_iter()
+            .find(|s| s.id == added.stream_id);
+        // A feed added without a folder shows what this account's FreshRSS
+        // calls the category for those.
+        if folder.is_none()
+            && let Some(name) = listed.as_ref().and_then(|s| s.category.as_deref())
+        {
+            inner
+                .store
+                .meta_set(&format!("{DEFAULT_FOLDER_META}:{account_id}"), name)?;
+        }
+        let default_folder = default_folder(inner, account_id)?;
+        let source = match &listed {
+            Some(sub) => feed_source(account_id, sub, &default_folder),
+            None => feed_source(
+                account_id,
+                &Subscription {
+                    id: added.stream_id.clone(),
+                    title: added.title.clone(),
+                    category: folder.map(str::to_string),
+                    site_url: None,
+                    feed_url: None,
+                },
+                &default_folder,
+            ),
+        };
+        inner.store.upsert_source(&source)?;
+        inner.publish(
+            eddy_model::Entity::Source,
+            &source.id,
+            fields::CREATE,
+            serde_json::to_value(&source)?,
+        )?;
+        Ok(AddedFeed {
+            source_id: source.id,
+            title: source.title,
+            folder: source.category,
+        })
+    }
+
     /// Server mode with the server unreachable: brings in new articles only.
     /// The server stays the one that writes to FreshRSS and that decides
     /// read/star state and which feeds exist, so nothing is pushed and
@@ -150,21 +247,15 @@ impl DirectUpstream {
             .collect();
         let mut source_ids = Vec::new();
         let mut feed_to_source = HashMap::new();
+        let default_folder = default_folder(inner, account_id)?;
         for sub in &subscriptions {
-            let id = ids::feed_source_id(account_id, &sub.id);
-            let source = Source {
-                id: id.clone(),
-                account_id: Some(account_id.to_string()),
-                upstream_id: Some(sub.id.clone()),
-                kind: SourceKind::Feed,
-                title: sub.title.clone(),
-                category: sub.category.clone(),
-                site_url: sub.site_url.clone(),
-                full_text: FullTextMode::Auto,
-                truncated: false,
-                gallery: false,
-            };
-            inner.store.upsert_source(&source)?;
+            let source = feed_source(account_id, sub, &default_folder);
+            let id = source.id.clone();
+            // With the server away, what it said of a feed stands: only
+            // feeds not here yet are taken from FreshRSS.
+            if authoritative || !previous.contains_key(&id) {
+                inner.store.upsert_source(&source)?;
+            }
             let changed = previous.get(&id).is_none_or(|p| {
                 p.title != source.title
                     || p.category != source.category

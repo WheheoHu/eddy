@@ -60,6 +60,26 @@ pub enum SyncError {
 
 pub type Result<T> = std::result::Result<T, SyncError>;
 
+/// `POST /v1/subscriptions`: a feed for the server to subscribe to.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AddFeedRequest {
+    /// The feed's address, or a page that names its feed.
+    pub url: String,
+    /// The folder to file it in; made if there is none by that name.
+    #[serde(default)]
+    pub folder: Option<String>,
+}
+
+/// The subscription made. The source itself reaches devices as an op, like
+/// every other.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AddFeedResponse {
+    pub source_id: String,
+    pub title: String,
+    #[serde(default)]
+    pub folder: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AccountInfo {
     pub base_url: String,
@@ -464,6 +484,20 @@ impl SyncClient {
                 .get(self.url("search"))
                 .timeout(SEARCH_TIMEOUT)
                 .query(&[("q", query.to_string()), ("limit", limit.to_string())]),
+        )
+        .await
+    }
+
+    /// Has the server subscribe to a feed in its FreshRSS account. The
+    /// server waits for FreshRSS, which fetches the feed first, so this is
+    /// given longer than other requests. A server from before this answers
+    /// 404; one whose FreshRSS would not subscribe, 422 with the reason.
+    pub async fn add_feed(&self, req: &AddFeedRequest) -> Result<AddFeedResponse> {
+        self.json(
+            self.http
+                .post(self.url("subscriptions"))
+                .timeout(Duration::from_secs(120))
+                .json(req),
         )
         .await
     }

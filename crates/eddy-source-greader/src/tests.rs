@@ -222,3 +222,94 @@ async fn redirects_and_auth_failures_are_reported_without_following() {
         .contains("secret")
     );
 }
+
+async fn mount_token(server: &MockServer) {
+    Mock::given(method("GET"))
+        .and(path("/api/greader.php/reader/api/0/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("edit-token\n"))
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn quickadd_subscribes_and_files_the_feed_in_a_folder() {
+    let server = MockServer::start().await;
+    mount_login(&server).await;
+    mount_token(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/api/greader.php/reader/api/0/subscription/quickadd"))
+        .and(body_string_contains(
+            "quickadd=https%3A%2F%2Fexample.com%2Ffeed.xml",
+        ))
+        .and(body_string_contains("T=edit-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"numResults":1,"query":"https://example.com/feed.xml","streamId":"feed/42","streamName":"Example"}"#,
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/greader.php/reader/api/0/subscription/edit"))
+        .and(body_string_contains("ac=edit"))
+        .and(body_string_contains("s=feed%2F42"))
+        .and(body_string_contains(
+            "a=user%2F-%2Flabel%2FTech+%26+Science",
+        ))
+        .and(body_string_contains("T=edit-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("OK"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = client(&server);
+    let added = client
+        .quickadd("https://example.com/feed.xml")
+        .await
+        .unwrap();
+    assert_eq!(
+        added,
+        QuickAdded {
+            stream_id: "feed/42".into(),
+            title: "Example".into()
+        }
+    );
+    client
+        .set_folder(&added.stream_id, "Tech & Science")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn quickadd_reports_why_freshrss_would_not_subscribe() {
+    let server = MockServer::start().await;
+    mount_login(&server).await;
+    mount_token(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/api/greader.php/reader/api/0/subscription/quickadd"))
+        .and(body_string_contains(
+            "quickadd=https%3A%2F%2Fexample.com%2Fa",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(r#"{"numResults":0,"error":"Feed already exists"}"#),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/greader.php/reader/api/0/subscription/quickadd"))
+        .and(body_string_contains(
+            "quickadd=https%3A%2F%2Fexample.com%2Fb",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"numResults":0}"#))
+        .mount(&server)
+        .await;
+    let client = client(&server);
+    let refused = client.quickadd("https://example.com/a").await.unwrap_err();
+    assert!(
+        matches!(&refused, GReaderError::Refused(why) if why == "Feed already exists"),
+        "{refused}"
+    );
+    assert!(matches!(
+        client.quickadd("https://example.com/b").await,
+        Err(GReaderError::Refused(_))
+    ));
+}

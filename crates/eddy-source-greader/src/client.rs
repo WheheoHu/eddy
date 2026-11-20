@@ -3,10 +3,10 @@ use std::time::Duration;
 use reqwest::{Method, StatusCode, redirect};
 use tokio::sync::Mutex;
 
-use crate::model::{RawItemIds, RawStream, RawSubscriptions};
+use crate::model::{RawItemIds, RawQuickAdd, RawStream, RawSubscriptions};
 use crate::{
-    GReaderError, Result, StreamPage, Subscription, UpstreamItem, long_item_id, normalize_base,
-    normalize_item_id,
+    GReaderError, QuickAdded, Result, StreamPage, Subscription, UpstreamItem, long_item_id,
+    normalize_base, normalize_item_id,
 };
 
 #[derive(Clone)]
@@ -112,6 +112,17 @@ impl GReaderClient {
         path: &str,
         form: Option<&[(String, String)]>,
     ) -> Result<reqwest::Response> {
+        self.request_within(method, path, form, None).await
+    }
+
+    /// `request`, with more time than the client's own when `timeout` says so.
+    async fn request_within(
+        &self,
+        method: Method,
+        path: &str,
+        form: Option<&[(String, String)]>,
+        timeout: Option<Duration>,
+    ) -> Result<reqwest::Response> {
         for attempt in 0..2 {
             let auth = self.auth().await?;
             let mut req = self
@@ -120,6 +131,9 @@ impl GReaderClient {
                 .header("Authorization", format!("GoogleLogin auth={auth}"));
             if let Some(form) = form {
                 req = req.form(form);
+            }
+            if let Some(timeout) = timeout {
+                req = req.timeout(timeout);
             }
             let response = req.send().await.map_err(network)?;
             let status = response.status();
@@ -240,14 +254,7 @@ impl GReaderClient {
         if ids.is_empty() {
             return Ok(());
         }
-        let token = self
-            .request(Method::GET, "token", None)
-            .await?
-            .text()
-            .await
-            .map_err(network)?
-            .trim()
-            .to_string();
+        let token = self.token().await?;
         for chunk in ids.chunks(200) {
             let mut form: Vec<(String, String)> = chunk
                 .iter()
@@ -257,6 +264,65 @@ impl GReaderClient {
             form.push(("T".to_string(), token.clone()));
             self.request(Method::POST, "edit-tag", Some(&form)).await?;
         }
+        Ok(())
+    }
+
+    /// The short-lived token that requests which change something carry.
+    async fn token(&self) -> Result<String> {
+        Ok(self
+            .request(Method::GET, "token", None)
+            .await?
+            .text()
+            .await
+            .map_err(network)?
+            .trim()
+            .to_string())
+    }
+
+    /// Subscribes to the feed at `url`, or to the one the page there names:
+    /// FreshRSS looks for it. The feed lands in no folder. FreshRSS fetches
+    /// the feed before it answers, so this is given a minute.
+    pub async fn quickadd(&self, url: &str) -> Result<QuickAdded> {
+        let form = vec![
+            ("quickadd".to_string(), url.to_string()),
+            ("T".to_string(), self.token().await?),
+        ];
+        let response = self
+            .request_within(
+                Method::POST,
+                "subscription/quickadd",
+                Some(&form),
+                Some(Duration::from_secs(60)),
+            )
+            .await?;
+        let text = response.text().await.map_err(network)?;
+        let raw: RawQuickAdd =
+            serde_json::from_str(&text).map_err(|e| GReaderError::Format(e.to_string()))?;
+        match raw.stream_id.filter(|_| raw.num_results > 0) {
+            Some(stream_id) => Ok(QuickAdded {
+                title: raw.stream_name.unwrap_or_default(),
+                stream_id,
+            }),
+            None => Err(GReaderError::Refused(
+                raw.error
+                    .map(|e| e.trim().to_string())
+                    .filter(|e| !e.is_empty())
+                    .unwrap_or_else(|| "没有在这个地址找到订阅源。".into()),
+            )),
+        }
+    }
+
+    /// Files a subscription (`feed/…`) in a folder, which FreshRSS makes if
+    /// there is none by that name. A feed is in one folder at a time.
+    pub async fn set_folder(&self, stream_id: &str, folder: &str) -> Result<()> {
+        let form = vec![
+            ("ac".to_string(), "edit".to_string()),
+            ("s".to_string(), stream_id.to_string()),
+            ("a".to_string(), format!("user/-/label/{folder}")),
+            ("T".to_string(), self.token().await?),
+        ];
+        self.request(Method::POST, "subscription/edit", Some(&form))
+            .await?;
         Ok(())
     }
 }

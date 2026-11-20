@@ -7,7 +7,9 @@ mod model;
 
 pub use client::{Credentials, GReaderClient};
 pub use history::{HistoryScope, history_path, history_scope, validate_continuation};
-pub use model::{StreamPage, Subscription, UpstreamItem, long_item_id, normalize_item_id};
+pub use model::{
+    QuickAdded, StreamPage, Subscription, UpstreamItem, long_item_id, normalize_item_id,
+};
 
 use url::Url;
 
@@ -31,6 +33,10 @@ pub enum GReaderError {
     Network(String),
     #[error("FreshRSS 返回的数据格式不正确：{0}")]
     Format(String),
+    /// FreshRSS answered, and would not subscribe: not a feed, already
+    /// subscribed. Its own words.
+    #[error("FreshRSS 没有添加这个订阅源：{0}")]
+    Refused(String),
 }
 
 pub type Result<T> = std::result::Result<T, GReaderError>;

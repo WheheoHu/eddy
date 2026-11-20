@@ -48,6 +48,28 @@ pub struct StreamPage {
     pub continuation: Option<String>,
 }
 
+/// A subscription FreshRSS just made.
+#[derive(Clone, Debug, PartialEq)]
+pub struct QuickAdded {
+    /// `feed/…`, as subscriptions are listed.
+    pub stream_id: String,
+    pub title: String,
+}
+
+/// FreshRSS answers `subscription/quickadd` with the new stream, or with
+/// `numResults: 0` and why not.
+#[derive(Deserialize)]
+pub(crate) struct RawQuickAdd {
+    #[serde(default, rename = "numResults")]
+    pub num_results: u32,
+    #[serde(default, rename = "streamId")]
+    pub stream_id: Option<String>,
+    #[serde(default, rename = "streamName")]
+    pub stream_name: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
 #[derive(Deserialize)]
 pub(crate) struct RawSubscriptions {
     pub subscriptions: Vec<RawSubscription>,

@@ -17,12 +17,17 @@ use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 pub const READ: &str = "user/-/state/com.google/read";
 pub const STARRED: &str = "user/-/state/com.google/starred";
+/// What the mock's FreshRSS calls its default category.
+pub const DEFAULT_CATEGORY: &str = "未分类";
 
 #[derive(Default)]
 pub struct FreshState {
     pub listed: Vec<u64>,
     pub unread: HashSet<u64>,
     pub starred: HashSet<u64>,
+    /// Feeds subscribed to through the API, after `feed/1`: the address
+    /// asked for and the folder each was filed in.
+    pub added: Vec<(String, Option<String>)>,
 }
 
 /// FreshRSS mock whose read/starred state changes with edit-tag calls.
@@ -32,6 +37,7 @@ pub async fn stateful_freshrss() -> (MockServer, Arc<Mutex<FreshState>>) {
         listed: vec![1, 2, 3],
         unread: [2, 3].into(),
         starred: [1].into(),
+        ..Default::default()
     }));
     let titles = [
         (1u64, "Old post"),
@@ -67,9 +73,77 @@ pub async fn stateful_freshrss() -> (MockServer, Arc<Mutex<FreshState>>) {
         .respond_with(ResponseTemplate::new(200).set_body_string("T"))
         .mount(&server)
         .await;
+    let st = state.clone();
     Mock::given(method("GET"))
         .and(path("/api/greader.php/reader/api/0/subscription/list"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"subscriptions": [{"id": "feed/1", "title": "Graphics Blog", "categories": [{"label": "Tech"}]}]})))
+        .respond_with(move |_: &Request| {
+            let s = st.lock().unwrap();
+            let mut subscriptions = vec![json!({"id": "feed/1", "title": "Graphics Blog", "categories": [{"label": "Tech"}]})];
+            for (n, (url, folder)) in s.added.iter().enumerate() {
+                // No feed is in no category: the default one takes the rest,
+                // named in the user's language.
+                let categories = [json!({"label": folder.as_deref().unwrap_or(DEFAULT_CATEGORY)})];
+                subscriptions.push(json!({
+                    "id": format!("feed/{}", n + 2), "title": format!("Feed & {}", n + 2),
+                    "categories": categories, "url": url, "htmlUrl": "https://added.example/"
+                }));
+            }
+            ResponseTemplate::new(200).set_body_json(json!({ "subscriptions": subscriptions }))
+        })
+        .mount(&server)
+        .await;
+    // Subscribes like FreshRSS: the answer names the new stream, its title
+    // still escaped; an address with no feed, or one subscribed to already,
+    // is answered with why not.
+    let st = state.clone();
+    Mock::given(method("POST"))
+        .and(path("/api/greader.php/reader/api/0/subscription/quickadd"))
+        .respond_with(move |req: &Request| {
+            let url = url::form_urlencoded::parse(&req.body)
+                .find(|(k, _)| k == "quickadd")
+                .map(|(_, v)| v.into_owned())
+                .unwrap_or_default();
+            let mut s = st.lock().unwrap();
+            let refused = if url.contains("not-a-feed") {
+                Some("Feed not found")
+            } else if s.added.iter().any(|(known, _)| *known == url) {
+                Some("Feed already exists")
+            } else {
+                None
+            };
+            if let Some(why) = refused {
+                return ResponseTemplate::new(200).set_body_json(json!({"numResults": 0, "error": why}));
+            }
+            s.added.push((url.clone(), None));
+            let n = s.added.len() + 1;
+            ResponseTemplate::new(200).set_body_json(json!({
+                "numResults": 1, "query": url, "streamId": format!("feed/{n}"), "streamName": format!("Feed &amp; {n}")
+            }))
+        })
+        .mount(&server)
+        .await;
+    let st = state.clone();
+    Mock::given(method("POST"))
+        .and(path("/api/greader.php/reader/api/0/subscription/edit"))
+        .respond_with(move |req: &Request| {
+            let form: std::collections::HashMap<String, String> =
+                url::form_urlencoded::parse(&req.body)
+                    .into_owned()
+                    .collect();
+            let feed = form
+                .get("s")
+                .and_then(|s| s.strip_prefix("feed/"))
+                .and_then(|n| n.parse::<usize>().ok());
+            let folder = form.get("a").and_then(|a| a.strip_prefix("user/-/label/"));
+            let mut s = st.lock().unwrap();
+            match (form.get("ac").map(String::as_str), feed, folder) {
+                (Some("edit"), Some(n), Some(folder)) if n >= 2 && n - 2 < s.added.len() => {
+                    s.added[n - 2].1 = Some(folder.to_string());
+                    ResponseTemplate::new(200).set_body_string("OK")
+                }
+                _ => ResponseTemplate::new(400),
+            }
+        })
         .mount(&server)
         .await;
     let st = state.clone();

@@ -269,6 +269,19 @@ impl EddyEngine {
         Ok(self.engine.backfill_history(callback).await?)
     }
 
+    /// Subscribes to the feed at `url`, or the one the page there names, in
+    /// `folder` if given (made if there is none by that name). In server
+    /// mode the server does it, and `Offline` says it could not be reached.
+    /// The feed is listed when this returns; a refresh brings its articles.
+    pub async fn add_feed(&self, url: String, folder: Option<String>) -> R<AddedFeedView> {
+        let added = self.engine.add_feed(&url, folder.as_deref()).await?;
+        Ok(AddedFeedView {
+            source_id: added.source_id,
+            title: added.title,
+            folder: added.folder,
+        })
+    }
+
     /// Status, sources, their counts, series, collection, tags and Gallery
     /// folders at once, read on a connection of their own: counting a large
     /// library takes a while, and this way it can be done on a background

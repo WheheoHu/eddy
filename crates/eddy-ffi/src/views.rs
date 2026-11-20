@@ -17,6 +17,15 @@ pub struct AccountView {
     pub username: String,
 }
 
+/// A subscription just made with `add_feed`.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct AddedFeedView {
+    pub source_id: String,
+    pub title: String,
+    /// The folder it was filed in, if any.
+    pub folder: Option<String>,
+}
+
 /// What the sidebars and shelves are drawn from, read in one go.
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct OverviewView {
