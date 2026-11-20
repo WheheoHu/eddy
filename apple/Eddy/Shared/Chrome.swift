@@ -156,8 +156,9 @@ struct AddMenu: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        FlatMenu("Add", symbol: "plus", help: "Save a page (⌘L), convert a presentation video, or import a file (⌘O)") {
+        FlatMenu("Add", symbol: "plus", help: "Save a page (⌘L), add a feed, convert a presentation video, or import a file (⌘O)") {
             Button("Save Page…") { model.savingURL = true }
+            Button("Add Feed…") { model.addingFeed = AddFeedRequest() }
             Button("Convert Video to Book…") { model.requestVideoConvert() }
             Button("Import EPUB, PDF, or Video…") { model.importing = true }
         }

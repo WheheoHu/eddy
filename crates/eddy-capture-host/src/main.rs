@@ -2,7 +2,9 @@
 //! a page the user is looking at (or a bare link); it is written atomically
 //! into Eddy's spool directory, which the app imports on its own schedule, so
 //! saving works even while Eddy is closed. A `{"show": url}` message opens
-//! Eddy at the page saved from `url` instead.
+//! Eddy at the page saved from `url` instead, and `{"feed": url}` opens its
+//! Add Feed sheet on that feed: subscribing is confirmed there, where the
+//! folders are.
 
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -100,6 +102,27 @@ fn show_link(page: &str) -> Result<String, String> {
     Ok(link.into())
 }
 
+#[derive(Deserialize)]
+struct Feed {
+    feed: String,
+    #[serde(default)]
+    title: Option<String>,
+}
+
+/// The link that opens Eddy's Add Feed sheet on `feed`, under the name the
+/// page gave it.
+fn feed_link(feed: &str, title: Option<&str>) -> Result<String, String> {
+    if !(feed.starts_with("https://") || feed.starts_with("http://")) {
+        return Err("only http and https feeds can be added".into());
+    }
+    let mut link = url::Url::parse("eddy://add-feed").map_err(|e| e.to_string())?;
+    link.query_pairs_mut().append_pair("url", feed);
+    if let Some(title) = title.map(str::trim).filter(|t| !t.is_empty()) {
+        link.query_pairs_mut().append_pair("title", title);
+    }
+    Ok(link.into())
+}
+
 fn open_link(link: &str) -> Result<(), String> {
     let status = std::process::Command::new("/usr/bin/open")
         .arg(link)
@@ -121,6 +144,11 @@ fn serve(
     while let Some(raw) = read_message(input)? {
         let reply = if let Ok(Show { show }) = serde_json::from_slice(&raw) {
             match show_link(&show).and_then(|link| open(&link)) {
+                Ok(()) => serde_json::json!({"ok": true}),
+                Err(e) => serde_json::json!({"ok": false, "error": e}),
+            }
+        } else if let Ok(Feed { feed, title }) = serde_json::from_slice(&raw) {
+            match feed_link(&feed, title.as_deref()).and_then(|link| open(&link)) {
                 Ok(()) => serde_json::json!({"ok": true}),
                 Err(e) => serde_json::json!({"ok": false, "error": e}),
             }
@@ -211,6 +239,58 @@ mod tests {
         assert_eq!(
             link.query_pairs().find(|(k, _)| k == "url").unwrap().1,
             "https://example.com/a?b=1&c=2#d"
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn feed_opens_the_add_feed_sheet_and_stores_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut input = frame(
+            &serde_json::json!({"feed": "https://example.com/feed.xml?a=1&b=2", "title": " News & Notes "}),
+        );
+        input.extend(frame(
+            &serde_json::json!({"feed": "https://example.com/atom"}),
+        ));
+        input.extend(frame(&serde_json::json!({"feed": "javascript:alert(1)"})));
+        let opened = std::cell::RefCell::new(Vec::new());
+        let mut output = Vec::new();
+        serve(&mut input.as_slice(), &mut output, dir.path(), |link| {
+            opened.borrow_mut().push(link.to_string());
+            Ok(())
+        })
+        .unwrap();
+
+        let mut replies = output.as_slice();
+        let oks: Vec<bool> = (0..3)
+            .map(|_| {
+                let reply: serde_json::Value =
+                    serde_json::from_slice(&read_message(&mut replies).unwrap().unwrap()).unwrap();
+                reply["ok"] == true
+            })
+            .collect();
+        assert_eq!(oks, [true, true, false]);
+        let opened = opened.into_inner();
+        assert_eq!(opened.len(), 2);
+        let named = url::Url::parse(&opened[0]).unwrap();
+        assert_eq!(
+            (named.scheme(), named.host_str()),
+            ("eddy", Some("add-feed"))
+        );
+        let pairs: Vec<(String, String)> = named.query_pairs().into_owned().collect();
+        assert_eq!(
+            pairs,
+            [
+                (
+                    "url".to_string(),
+                    "https://example.com/feed.xml?a=1&b=2".to_string()
+                ),
+                ("title".to_string(), "News & Notes".to_string())
+            ]
+        );
+        assert_eq!(
+            url::Url::parse(&opened[1]).unwrap().query_pairs().count(),
+            1
         );
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }

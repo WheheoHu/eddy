@@ -29,6 +29,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - View → Show Contents / Hide Contents (⌘B) shows or hides a book’s contents beside the text.
 - Shift with Left or Right turns to the previous or next chapter or article while reading, as a swipe that way does in a book. ⌘← and ⌘→ still do.
 - Three-Pane: Space on a subscription folds the folder it is in. Going from the sidebar to the list with Return or Right scrolls the list to the article open, if it had been scrolled away.
+- Add Feed… in the Add menu (and under File): subscribes to a feed from its address, or from a website's address when the site names its feed, into a folder chosen from the ones there are, a new one, or none. FreshRSS does the subscribing, through the sync server when Eddy is paired with one; while the server is offline the sheet says so. What FreshRSS answers (not a feed, subscribed already) is shown beside the address. The new subscription is listed at once and its articles follow.
+- Chrome extension 0.2.0: the popup lists the feeds the page names, each with a button that opens Add Feed in Eddy on that feed; a page that names none offers its own address to start from. `eddy://add-feed?url=…` opens the same sheet.
 
 ### Changed
 
@@ -75,6 +77,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The media viewer works out the items before and after ahead of time and has their pictures decoded, so the one slid to is there at once; a video shows its poster until its first frame.
 - View → Show or Hide Contents (⌘B) replaces Show Contents / Hide Contents.
 - Library and Gallery: Esc on the shelf or among the pictures brings the sidebar in where it was away (hidden, or off the edge of a narrow window), with the keys in it. Return or Right from a sidebar that lies over the shelf or the pictures sends it away again. Switching to either mode puts the keys in the sidebar only if it shows.
+- Chrome extension: the toolbar button no longer saves the page as soon as its popup opens. The popup shows the page's title and waits for Save (Return presses it), so ⌘⇧E followed by Return saves. The right-click menu's items still save at once. Reload the extension in `chrome://extensions` after updating.
+- Subscriptions that FreshRSS keeps in its default category are listed outside any folder, instead of in a folder named "Uncategorized".
 
 ### Removed
 
