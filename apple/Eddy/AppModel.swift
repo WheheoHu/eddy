@@ -1,4 +1,5 @@
 import AppKit
+import CoreImage
 import EddyKit
 import ImageIO
 import Observation
@@ -32,6 +33,76 @@ struct SiteIcon: @unchecked Sendable {
 
     let image: NSImage
     let ink: Ink
+    /// The icon's longer side in pixels: a favicon is small, and is not
+    /// drawn much larger than it is.
+    let pixels: Int
+    /// A soft field of the icon's colours to set it on: the icon enlarged
+    /// until it bleeds off, on its own tone, blurred. A few dozen pixels,
+    /// stretched to whatever it backs.
+    let backdrop: NSImage
+    /// The field is light: what is written on it is dark.
+    let backdropIsLight: Bool
+
+    init(image: NSImage, pixels: CGImage?) {
+        self.image = image
+        self.pixels = max(pixels?.width ?? 0, pixels?.height ?? 0, 16)
+        ink = Self.ink(of: pixels)
+        (backdrop, backdropIsLight) = Self.backdrop(of: pixels, ink: ink)
+    }
+
+    private static let blurring = CIContext(options: [.cacheIntermediates: false])
+
+    /// Two to three, as a book's cover is.
+    private static func backdrop(of image: CGImage?, ink: Ink) -> (NSImage, Bool) {
+        let width = 36, height = 54
+        // What shows through the icon and around it: the opposite of a
+        // one-tone drawing, the icon's own average colour otherwise.
+        var tone: (r: Double, g: Double, b: Double) = switch ink {
+        case .dark: (0.93, 0.93, 0.94)
+        case .light: (0.13, 0.13, 0.15)
+        case .mixed: (0.45, 0.45, 0.48)
+        }
+        var small = [UInt8](repeating: 0, count: 8 * 8 * 4)
+        if ink == .mixed, let image,
+           let context = CGContext(data: &small, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 32,
+                                   space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
+            context.interpolationQuality = .high
+            context.draw(image, in: CGRect(x: 0, y: 0, width: 8, height: 8))
+            var r = 0.0, g = 0.0, b = 0.0, a = 0.0
+            for index in stride(from: 0, to: small.count, by: 4) {
+                r += Double(small[index]); g += Double(small[index + 1]); b += Double(small[index + 2]); a += Double(small[index + 3])
+            }
+            if a > 0 { tone = (r / a, g / a, b / a) }
+        }
+        var field = [UInt8](repeating: 0, count: width * height * 4)
+        guard let context = CGContext(data: &field, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                                      space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return (NSImage(size: NSSize(width: 1, height: 1)), tone.r + tone.g + tone.b > 1.8) }
+        context.setFillColor(red: tone.r, green: tone.g, blue: tone.b, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        if let image {
+            // Larger than the cover, so its middle fills it.
+            let side = Double(height) * 1.25
+            context.interpolationQuality = .high
+            context.draw(image, in: CGRect(x: (Double(width) - side) / 2, y: (Double(height) - side) / 2, width: side, height: side))
+        }
+        var light = tone.r * 0.2126 + tone.g * 0.7152 + tone.b * 0.0722 > 0.6
+        guard let drawn = context.makeImage() else { return (NSImage(size: NSSize(width: 1, height: 1)), light) }
+        let extent = CGRect(x: 0, y: 0, width: width, height: height)
+        let blurred = CIImage(cgImage: drawn).clampedToExtent()
+            .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 9.0])
+            .cropped(to: extent)
+        let soft = blurring.createCGImage(blurred, from: extent) ?? drawn
+        // How bright it came out, to choose the colour of what is written.
+        var sample = [UInt8](repeating: 0, count: 4)
+        if let one = CGContext(data: &sample, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                               space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
+            one.interpolationQuality = .high
+            one.draw(soft, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+            light = (0.2126 * Double(sample[0]) + 0.7152 * Double(sample[1]) + 0.0722 * Double(sample[2])) / 255 > 0.6
+        }
+        return (NSImage(cgImage: soft, size: NSSize(width: width, height: height)), light)
+    }
 
     /// Read from a 16 by 16 copy: icons with see-through parts whose solid
     /// pixels are all nearly black, or all nearly white.
@@ -623,13 +694,13 @@ final class AppModel {
     }
 
     /// An icon file often holds several sizes, smallest first: the largest
-    /// is taken, and drawn down to what a row needs at twice its size.
+    /// is taken, at no more pixels than the largest place it is shown needs.
     private nonisolated static func decodedIcon(_ data: Data) -> SiteIcon? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil), CGImageSourceGetCount(source) >= 1 else {
             // SVG, which ImageIO does not read.
             guard let image = NSImage(data: data), image.isValid else { return nil }
-            image.size = NSSize(width: 64, height: 64)
-            return SiteIcon(image: image, ink: SiteIcon.ink(of: image.cgImage(forProposedRect: nil, context: nil, hints: nil)))
+            image.size = NSSize(width: 128, height: 128)
+            return SiteIcon(image: image, pixels: image.cgImage(forProposedRect: nil, context: nil, hints: nil))
         }
         var best = 0, bestWidth = 0
         for index in 0 ..< CGImageSourceGetCount(source) {
@@ -641,10 +712,11 @@ final class AppModel {
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceThumbnailMaxPixelSize: 64,
+            // Enough for a cover's icon at twice its size; rows draw it down.
+            kCGImageSourceThumbnailMaxPixelSize: 128,
         ]
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, best, options as CFDictionary) else { return nil }
-        return SiteIcon(image: NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height)), ink: SiteIcon.ink(of: image))
+        return SiteIcon(image: NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height)), pixels: image)
     }
 
     /// A picture that is decoded already, without waiting for it: what a

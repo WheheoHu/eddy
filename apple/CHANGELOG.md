@@ -34,6 +34,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Subscriptions show their site's icon, in colour: in the sidebars of Three-Pane and the Gallery in place of the feed symbol, before the feed's name on each article in a list, and beside the title of a subscription opened in the Library. A subscription whose site has no icon keeps the symbol. Icons drawn in black or white alone are set on a small plate of the other tone where they would vanish into the background. They are fetched once from the sites themselves and then shown offline.
 - Settings → Storage → Clear Cache removes what the offline cache holds beyond what is always kept (unread, starred, saved and in-progress articles), and says how much it freed. A large cache takes a little while; Eddy stays usable meanwhile.
 - Unsubscribe… on a subscription, in Three-Pane's sidebar and on the Library's shelf. After a question, FreshRSS unsubscribes (through the sync server when Eddy is paired with one; not while it is offline) and the feed leaves with its articles, starred ones included. Pages saved from it stay.
+- Library: a subscription's cover is made from its site's icon. The icon sits near its own size at the top, not blown up, on a soft field of its own colours, with the name below in dark or light type as the field asks. Subscriptions whose site has no icon keep the cover they had. In the list layout a subscription's row shows its icon too.
 
 ### Changed
 

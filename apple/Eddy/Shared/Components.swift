@@ -180,14 +180,46 @@ struct BookCover: View {
     var imageURL: String?
     var pdfItemID: String?
     var symbol: String = "book.closed"
+    /// A subscription's cover is made from its site's icon, when it has one.
+    var feedID: String?
 
     @State private var image: String?
     @State private var cover: NSImage?
+    @State private var loadedIcon: SiteIcon?
 
     var body: some View {
+        // In hand already, or just loaded.
+        let siteIcon = loadedIcon ?? feedID.flatMap { model.cachedFeedIcon($0) }
         ZStack(alignment: .bottomLeading) {
             if let cover {
                 Color.white.overlay { Image(nsImage: cover).resizable().aspectRatio(contentMode: .fill) }
+            } else if let siteIcon {
+                // A favicon is a few dozen pixels: it is not blown up to
+                // fill the cover. It sits near its own size on a soft field
+                // of its colours, over the name.
+                let ink: Color = siteIcon.backdropIsLight ? Color(white: 0.13) : .white
+                Color.clear.overlay { Image(nsImage: siteIcon.backdrop).resizable().interpolation(.high) }
+                (siteIcon.backdropIsLight ? Color.white.opacity(0.22) : Color.black.opacity(0.22))
+                VStack(alignment: .leading, spacing: 4) {
+                    let side = min(44, max(24, CGFloat(siteIcon.pixels) / 2))
+                    Image(nsImage: siteIcon.image)
+                        .resizable()
+                        .interpolation(.high)
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: side, height: side)
+                        .clipShape(RoundedRectangle(cornerRadius: side * 0.22, style: .continuous))
+                        .padding(.leading, 5)
+                        .padding(.top, 4)
+                    Spacer(minLength: 0)
+                    Text(title)
+                        .font(.system(size: 13, weight: .bold, design: .serif))
+                        .lineLimit(4)
+                    if let subtitle {
+                        Text(subtitle).font(.system(size: 10, weight: .medium)).opacity(0.85).lineLimit(1)
+                    }
+                }
+                .foregroundStyle(ink)
+                .padding(10)
             } else {
                 LinearGradient(colors: palette, startPoint: .topLeading, endPoint: .bottomTrailing)
                 if let image {
@@ -220,6 +252,10 @@ struct BookCover: View {
             } else if let pdfItemID {
                 cover = await model.pdfCover(pdfItemID)
             }
+        }
+        .task(id: feedID) {
+            loadedIcon = nil
+            if let feedID { loadedIcon = await model.feedIcon(feedID) }
         }
     }
 
