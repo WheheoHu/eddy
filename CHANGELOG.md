@@ -27,6 +27,7 @@ Sync protocol 2. Servers and devices on protocol 1 must be updated together.
 - Subscribing to a feed (`add_feed`, `eddy-cli feed add URL [FOLDER]`): FreshRSS subscribes to the address, or to the feed the page there names, and files it in the folder given, making the folder if there is none by that name. A device paired with a server asks the server, which is the one that writes to FreshRSS (`POST /v1/subscriptions`); with the server out of reach the answer is that it is offline, and nothing is queued. The feed reaches every device as a source like any other. This needs no protocol change: a device asking an older server is told the server must be updated.
 - Engine: `mark_read` marks items read and finished by hand, leaving the reading position; it is what the apps' Mark as Read does. Opening an item still only marks it read. A Continue Reading query lists the items named in `keep` even once they are finished.
 - Engine: `feed_icon` gives the icon of a subscription's site. It is looked for on the device, from the site's address the feed carries: the icons the page names (or the site's front page, when the feed gives its own address as its site's), then `/favicon.ico`; what comes back is only taken if it is an image. The icon is kept in the cache and found again if evicted; a site without one is asked again after a week, and one that can't be reached, the next time. Nothing about icons is synced. The local data format goes to 8.
+- Engine: `clear_cache` empties the offline cache now, whatever its limit: articles already read, cached pictures and feed icons go; unread, starred, saved and in-progress content and imported files stay.
 
 ### Changed
 
@@ -40,6 +41,7 @@ Sync protocol 2. Servers and devices on protocol 1 must be updated together.
 - After a long sync the articles fetched for offline reading are the newest, several at a time.
 - Feeds that FreshRSS keeps in its default category ("Uncategorized", or its name in the language FreshRSS is set to) are in no folder, instead of in a folder of that name. The name in another language is learned the first time a feed is added without a folder.
 - Refreshing from FreshRSS while the server is offline takes only feeds not listed yet; what the server said of the others stands.
+- Trimming the offline cache deletes files several at a time and records them in batches: emptying a cache of two hundred thousand files took a minute and now takes about half that.
 
 ### Fixed
 

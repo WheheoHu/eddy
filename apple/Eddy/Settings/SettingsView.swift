@@ -107,6 +107,9 @@ struct SettingsPanel: View {
                     .background(Theme.list)
                 }
                 .frame(maxWidth: 820, maxHeight: 600)
+                // Under the line between the two columns, which is drawn
+                // see-through: without it the window behind showed there.
+                .background(Theme.list)
                 .background(FocusRecorder(memory: focusMemory))
                 .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.panel, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: Theme.Radius.panel, style: .continuous).strokeBorder(Theme.outline))
@@ -1090,18 +1093,44 @@ private struct StorageSettings: View {
     @State private var usage: UInt64 = 0
     @State private var limit: UInt64 = 2 << 30
     @State private var note = ""
+    @State private var clearing = false
+    @State private var cleared = ""
+
+    /// Removing some gigabytes of files takes a moment: off the main thread.
+    private func clear() {
+        guard let engine = model.engine else { return }
+        clearing = true
+        Task {
+            let freed = await Task.detached { (try? engine.clearCache()) ?? 0 }.value
+            usage = (try? engine.cacheUsage()) ?? usage
+            cleared = freed > 0
+                ? String(localized: "Freed \(ByteCountFormatter.string(fromByteCount: Int64(freed), countStyle: .file)).")
+                : String(localized: "Nothing to clear.")
+            clearing = false
+        }
+    }
 
     var body: some View {
         Form {
             Section {
-                LabeledContent("Offline cache", value: ByteCountFormatter.string(fromByteCount: Int64(usage), countStyle: .file))
+                LabeledContent("Offline cache") {
+                    HStack(spacing: 10) {
+                        if clearing {
+                            ProgressView().controlSize(.small)
+                        } else if !cleared.isEmpty {
+                            Text(cleared)
+                        }
+                        Text(ByteCountFormatter.string(fromByteCount: Int64(usage), countStyle: .file))
+                        Button("Clear Cache") { clear() }.disabled(clearing)
+                    }
+                }
                 SettingsChoice("Keep up to", selection: $limit, options: [UInt64(1), 2, 5, 10, 20].map { ($0 << 30, "\($0) GB") })
                     .onChange(of: limit) { _, new in
                         try? model.engine?.setCacheLimit(bytes: new)
                         usage = (try? model.engine?.cacheUsage()) ?? usage
                     }
             } footer: {
-                Text("Unread, starred, saved and in-progress articles are always kept.")
+                Text("Unread, starred, saved and in-progress articles are always kept. Clearing removes the rest now: articles already read, and the pictures and feed icons downloaded for them. They are fetched again when opened.")
             }
             Section("Search") {
                 LabeledContent("Search index") {

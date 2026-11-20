@@ -32,6 +32,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Add Feed… in the Add menu (and under File): subscribes to a feed from its address, or from a website's address when the site names its feed, into a folder chosen from the ones there are, a new one, or none. FreshRSS does the subscribing, through the sync server when Eddy is paired with one; while the server is offline the sheet says so. What FreshRSS answers (not a feed, subscribed already) is shown beside the address. The new subscription is listed at once and its articles follow.
 - Chrome extension 0.2.0: the popup lists the feeds the page names, each with a button that opens Add Feed in Eddy on that feed; a page that names none offers its own address to start from. `eddy://add-feed?url=…` opens the same sheet.
 - Subscriptions show their site's icon, in colour: in the sidebars of Three-Pane and the Gallery in place of the feed symbol, before the feed's name on each article in a list, and beside the title of a subscription opened in the Library. A subscription whose site has no icon keeps the symbol. Icons drawn in black or white alone are set on a small plate of the other tone where they would vanish into the background. They are fetched once from the sites themselves and then shown offline.
+- Settings → Storage → Clear Cache removes what the offline cache holds beyond what is always kept (unread, starred, saved and in-progress articles), and says how much it freed. A large cache takes a little while; Eddy stays usable meanwhile.
 
 ### Changed
 
@@ -80,6 +81,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Library and Gallery: Esc on the shelf or among the pictures brings the sidebar in where it was away (hidden, or off the edge of a narrow window), with the keys in it. Return or Right from a sidebar that lies over the shelf or the pictures sends it away again. Switching to either mode puts the keys in the sidebar only if it shows.
 - Chrome extension: the toolbar button no longer saves the page as soon as its popup opens. The popup shows the page's title and waits for Save (Return presses it), so ⌘⇧E followed by Return saves. The right-click menu's items still save at once. Reload the extension in `chrome://extensions` after updating.
 - Subscriptions that FreshRSS keeps in its default category are listed outside any folder, instead of in a folder named "Uncategorized".
+- Settings → Translation, Summaries and Video: the language is picked from a menu, Chinese (Simplified) or English for now, instead of typed. Video's can be left to follow Summaries. A language typed in earlier stays chosen until another is picked.
 
 ### Removed
 
@@ -109,5 +111,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - An article keeps its place when the window is resized: the line at the top stays at the top while the text wraps to the new width.
 - Articles from sites that guard their pictures against hotlinking (少数派 among them) show their images in Reader. A picture that can't be loaded is noted in the log.
 - Opening an unread article and turning to its web page straight away no longer stops in the middle of the slide. The lists used to be counted again on the main thread a moment after an article was marked read, a fifth of a second in a large library; they are now read in the background and redrawn once the slide is over. The first web page of a session no longer starts with a pause either.
+- Settings: the line between the categories and the page no longer shows the window behind the panel through it.
 
 [Unreleased]: https://github.com/WheheoHu/eddy/commits/dev

@@ -674,6 +674,13 @@ impl Engine {
     pub fn cache_usage(&self) -> Result<u64> {
         Ok(self.inner.store.blob_usage()?)
     }
+
+    /// Empties the offline cache now, whatever its limit: everything the
+    /// limit would let go of first. Unread, starred, saved and in-progress
+    /// content and imported files stay. Returns the bytes freed.
+    pub fn clear_cache(&self) -> Result<u64> {
+        Ok(self.inner.store.evict(0)?)
+    }
 }
 
 impl Inner {

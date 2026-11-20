@@ -461,6 +461,15 @@ fn blobs_round_trip_and_eviction_protects_unread_content() {
     assert!(s.has_blob(&keep).unwrap());
     assert!(s.has_blob(&pinned).unwrap());
     assert!(s.put_blob_keyed("../escape", b"x", "x", false).is_err());
+
+    // Clearing the cache is evicting down to nothing: a cached picture
+    // goes, what is unread or pinned stays however far over that is.
+    s.put_blob_keyed("img0123", &[4u8; 300], "image/png", false)
+        .unwrap();
+    assert_eq!(s.evict(0).unwrap(), 300);
+    assert!(!s.has_blob("img0123").unwrap());
+    assert!(s.has_blob(&keep).unwrap() && s.has_blob(&pinned).unwrap());
+    assert_eq!(s.evict(0).unwrap(), 0);
 }
 
 #[test]

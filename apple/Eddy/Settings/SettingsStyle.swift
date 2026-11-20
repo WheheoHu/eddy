@@ -175,6 +175,38 @@ struct SettingsPicker<Value: Hashable, Content: View>: View {
     }
 }
 
+/// The language an AI feature writes in: Chinese or English for now. What
+/// is kept is the name the model is told, as before, so a language typed in
+/// when this was a text field stays listed and chosen until another is.
+struct SettingsLanguage: View {
+    let title: LocalizedStringKey
+    @Binding var language: String
+    /// What choosing none means, on pages where a language may be left to
+    /// another setting.
+    var unset: LocalizedStringKey?
+
+    private static let offered: [(name: String, label: LocalizedStringKey)] = [
+        ("简体中文", "Chinese (Simplified)"),
+        ("English", "English"),
+    ]
+
+    init(_ title: LocalizedStringKey, language: Binding<String>, unset: LocalizedStringKey? = nil) {
+        self.title = title
+        _language = language
+        self.unset = unset
+    }
+
+    var body: some View {
+        SettingsPicker(title, selection: $language) {
+            if let unset { Text(unset).tag("") }
+            ForEach(Self.offered, id: \.name) { Text($0.label).tag($0.name) }
+            if !language.isEmpty || unset == nil, !Self.offered.contains(where: { $0.name == language }) {
+                Text(verbatim: language).tag(language)
+            }
+        }
+    }
+}
+
 /// An amount on a groove, with its value beside it.
 struct SettingsSlider: View {
     let title: LocalizedStringKey
