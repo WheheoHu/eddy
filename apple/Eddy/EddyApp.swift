@@ -14,6 +14,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             if !NSApp.isActive { Self.comeForward() }
         }
+        // After the window is up and its lists are drawn.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { WebWarmUp.begin() }
     }
 
     static func comeForward() {

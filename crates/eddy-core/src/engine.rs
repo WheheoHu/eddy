@@ -471,6 +471,13 @@ impl Engine {
         Ok(())
     }
 
+    /// Runs `f` with this thread's reads on a connection of their own, so
+    /// that a long count does not keep other callers waiting for the store.
+    /// For reading only: a write inside `f` fails.
+    pub fn read_aside<T>(&self, f: impl FnOnce() -> T) -> T {
+        self.inner.store.read_aside(f)
+    }
+
     pub fn sources(&self) -> Result<Vec<SourceInfo>> {
         let counts: std::collections::HashMap<String, u32> =
             self.inner.store.unread_counts()?.into_iter().collect();

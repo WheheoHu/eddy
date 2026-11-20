@@ -103,5 +103,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The Gallery scrolls without hitching: its list no longer reloads while the grid is moving, and thumbnails are decoded at the size they are shown.
 - An article keeps its place when the window is resized: the line at the top stays at the top while the text wraps to the new width.
 - Articles from sites that guard their pictures against hotlinking (少数派 among them) show their images in Reader. A picture that can't be loaded is noted in the log.
+- Opening an unread article and turning to its web page straight away no longer stops in the middle of the slide. The lists used to be counted again on the main thread a moment after an article was marked read, a fifth of a second in a large library; they are now read in the background and redrawn once the slide is over. The first web page of a session no longer starts with a pause either.
 
 [Unreleased]: https://github.com/WheheoHu/eddy/commits/dev

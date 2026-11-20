@@ -40,7 +40,24 @@ pub type Result<T> = std::result::Result<T, StoreError>;
 
 pub struct Store {
     conn: Mutex<Connection>,
+    /// A second connection that only reads, for `read_aside`.
+    reader: Mutex<Connection>,
     blobs_dir: PathBuf,
+}
+
+thread_local! {
+    /// Whether this thread's queries go to the reading connection.
+    static ASIDE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Puts the thread back on the main connection when `read_aside` ends,
+/// however it ends.
+struct AsideGuard(bool);
+
+impl Drop for AsideGuard {
+    fn drop(&mut self) {
+        ASIDE.set(self.0);
+    }
 }
 
 impl Store {
@@ -64,15 +81,37 @@ impl Store {
             });
         }
         schema::migrate(&mut conn)?;
+        let reader = Connection::open_with_flags(
+            dir.join("eddy.sqlite3"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        reader.busy_timeout(std::time::Duration::from_secs(5))?;
         Ok(Store {
             conn: Mutex::new(conn),
+            reader: Mutex::new(reader),
             blobs_dir,
         })
     }
 
     pub(crate) fn with<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
-        let mut conn = self.conn.lock();
+        let mut conn = if ASIDE.get() {
+            self.reader.lock()
+        } else {
+            self.conn.lock()
+        };
         f(&mut conn)
+    }
+
+    /// Runs `f` with every query this thread makes going to a second,
+    /// read-only connection. Counting a large library takes a while, and on
+    /// the one connection it would keep every other caller waiting for the
+    /// lock: this is for reading an overview in the background while the
+    /// interface goes on asking for single items. The journal is a WAL, so
+    /// neither connection waits for the other, and what was written before
+    /// `f` started is seen. Anything in `f` that writes fails.
+    pub fn read_aside<T>(&self, f: impl FnOnce() -> T) -> T {
+        let _back = AsideGuard(ASIDE.replace(true));
+        f()
     }
 
     pub fn meta_get(&self, key: &str) -> Result<Option<String>> {

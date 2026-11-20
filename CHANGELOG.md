@@ -22,6 +22,8 @@ Sync protocol 2. Servers and devices on protocol 1 must be updated together.
 - Signing a device out and erasing it (`sign_out_and_erase`, `eddy-cli sign-out`): changes not sent yet are sent first, and when some cannot be nothing happens unless losing them is accepted; the server forgets the device; library, downloaded content, search index, rule packs, accounts and every stored secret are erased the next time the data directory is opened.
 - Server: `DELETE /v1/device` lets a device remove itself. This needs no protocol change; a device leaving an older server is simply not removed from its list.
 - `eddy-cli`: `status`, `disconnect`, `freshrss`, `server-account`, `tag`, `tags`, `star`, `--version`.
+- Engine: `overview` reads what the sidebars and shelves are drawn from (status, sources and their counts, series, collection, tags, Gallery folders) in one call, on a read-only connection of its own, so counting a large library in the background no longer keeps other calls waiting.
+- `eddy-cli image URL [PAGE]` fetches one image the way the reader does.
 - Engine: `mark_read` marks items read and finished by hand, leaving the reading position; it is what the apps' Mark as Read does. Opening an item still only marks it read. A Continue Reading query lists the items named in `keep` even once they are finished.
 
 ### Changed

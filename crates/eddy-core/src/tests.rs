@@ -3307,3 +3307,40 @@ async fn images_refused_without_a_referer_are_asked_for_again_with_one() {
     );
     assert_eq!(other.received_requests().await.unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn an_overview_read_aside_matches_the_library() {
+    let pages = mock_pages().await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    engine
+        .save_url(&format!("{}/essay", pages.uri()))
+        .await
+        .unwrap();
+    engine.create_tag("later").unwrap();
+
+    let unread = |sources: Vec<SourceInfo>| -> Vec<(String, u32)> {
+        sources
+            .into_iter()
+            .map(|s| (s.source.id, s.unread))
+            .collect()
+    };
+    let (sources, stats, collection, tags, status) = engine.read_aside(|| {
+        (
+            engine.sources().unwrap(),
+            engine.source_overview().unwrap(),
+            engine.collection().unwrap(),
+            engine.tags().unwrap(),
+            engine.status().unwrap(),
+        )
+    });
+    assert_eq!(unread(sources), unread(engine.sources().unwrap()));
+    assert_eq!(stats, engine.source_overview().unwrap());
+    assert_eq!(collection, engine.collection().unwrap());
+    assert_eq!(collection.len(), 1);
+    assert_eq!(tags.len(), engine.tags().unwrap().len());
+    assert_eq!(
+        status.pending_uploads,
+        engine.status().unwrap().pending_uploads
+    );
+}
