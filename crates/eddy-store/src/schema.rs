@@ -128,6 +128,12 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX video_jobs_created ON video_jobs(created_at DESC);
     "#,
+    // 8: The icon found for a feed's site, or that none was (blob_key NULL),
+    // and when that was looked for. Local and derivable, so it is not synced.
+    r#"
+    CREATE TABLE source_icons(
+        source_id TEXT PRIMARY KEY, blob_key TEXT, checked_at INTEGER NOT NULL);
+    "#,
 ];
 
 /// How many migrations this build knows: the schema version it writes.

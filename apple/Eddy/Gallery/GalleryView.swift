@@ -771,7 +771,7 @@ private struct GallerySidebar: View {
             if !feeds.isEmpty {
                 SideHeading(title: "Subscriptions")
                 ForEach(feeds) { feed in
-                    row(GalleryScopeView.source(id: feed.id).key, "dot.radiowaves.up.forward", Text(verbatim: feed.title), model.galleryUnread(.source(id: feed.id)))
+                    row(GalleryScopeView.source(id: feed.id).key, "dot.radiowaves.up.forward", Text(verbatim: feed.title), model.galleryUnread(.source(id: feed.id)), feed: feed.id)
                         .contextMenu {
                             if feed.gallery {
                                 Button("Remove from Gallery") { model.setGallery(source: feed, false) }
@@ -790,8 +790,8 @@ private struct GallerySidebar: View {
         }
     }
 
-    private func row(_ key: String, _ symbol: String, _ title: Text, _ count: Int = 0) -> some View {
-        SideRow(symbol: symbol, title: title, count: count, chosen: scopeKey == key)
+    private func row(_ key: String, _ symbol: String, _ title: Text, _ count: Int = 0, feed: String? = nil) -> some View {
+        SideRow(symbol: symbol, title: title, count: count, chosen: scopeKey == key, feed: feed)
             .flatRow(chosen: scopeKey == key, active: focus.wrappedValue == .sidebar)
             .tag(key)
     }

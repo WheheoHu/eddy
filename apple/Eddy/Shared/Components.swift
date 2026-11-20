@@ -47,6 +47,77 @@ struct ProgressRing: View {
     }
 }
 
+/// The icon of a subscription's site, in colour, over whatever stands in
+/// for it until it is here (or for good, when the site has none).
+///
+/// Both are always in the view and trade opacity: a list's rows must not
+/// change the kind of their views as state changes. The icon is this
+/// view's own state, so one arriving redraws the icon and not the list.
+struct FeedIcon<Placeholder: View>: View {
+    @Environment(AppModel.self) private var model
+    /// `nil` for a row that is not a subscription's: only the placeholder.
+    let sourceID: String?
+    var size: CGFloat = 16
+    /// Without an icon the view takes no room, and `gap` after it none:
+    /// for a line of text that an icon may or may not lead.
+    var collapses = false
+    var gap: CGFloat = 0
+    @ViewBuilder var placeholder: Placeholder
+    @State private var loaded: Loaded?
+
+    @Environment(\.colorScheme) private var scheme
+
+    private struct Loaded {
+        let id: String
+        let icon: SiteIcon?
+    }
+
+    private struct Ask: Hashable {
+        let id: String?
+        let epoch: Int
+    }
+
+    private static var blank: NSImage { NSImage(size: NSSize(width: 1, height: 1)) }
+
+    var body: some View {
+        // A row reused for another feed shows that feed's icon or none,
+        // never the last one's.
+        let icon = sourceID.flatMap { id in loaded?.id == id ? loaded?.icon : model.cachedFeedIcon(id) }
+        let away = collapses && icon == nil
+        // A black drawing on a dark sidebar, a white one on a light page.
+        let plate: Color? = switch (icon?.ink, scheme) {
+        case (.dark, .dark): Color.white.opacity(0.88)
+        case (.light, .light): Color.black.opacity(0.72)
+        default: nil
+        }
+        ZStack {
+            placeholder.opacity(icon == nil ? 1 : 0)
+            Image(nsImage: icon?.image ?? Self.blank)
+                .resizable()
+                .interpolation(.high)
+                .aspectRatio(contentMode: .fit)
+                .padding(plate == nil ? 0 : size * 0.1)
+                .frame(width: away ? 0 : size, height: size)
+                .background(plate ?? Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: size * 0.22, style: .continuous))
+                .opacity(icon == nil ? 0 : 1)
+        }
+        .padding(.trailing, away ? 0 : gap)
+        .accessibilityHidden(true)
+        .task(id: Ask(id: sourceID, epoch: model.feedIconEpoch)) {
+            guard let sourceID else { return }
+            let icon = await model.feedIcon(sourceID)
+            if !Task.isCancelled { loaded = Loaded(id: sourceID, icon: icon) }
+        }
+    }
+}
+
+extension FeedIcon where Placeholder == EmptyView {
+    init(sourceID: String?, size: CGFloat = 16, collapses: Bool = false, gap: CGFloat = 0) {
+        self.init(sourceID: sourceID, size: size, collapses: collapses, gap: gap) { EmptyView() }
+    }
+}
+
 struct ArticleRow: View {
     let item: ItemView
     /// A finished article shows a check where its progress was: in
@@ -62,7 +133,11 @@ struct ArticleRow: View {
                 .padding(.top, 5)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(item.sourceName).font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.text2).lineLimit(1)
+                    HStack(spacing: 0) {
+                        // The feed's icon, when its site has one.
+                        FeedIcon(sourceID: item.kind == .feed ? item.sourceId : nil, size: 14, collapses: true, gap: 5)
+                        Text(item.sourceName).font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.text2).lineLimit(1)
+                    }
                     if item.starred { Image(systemName: "star.fill").font(.system(size: 10)).foregroundStyle(Theme.star) }
                     let done = marksFinished && item.finished
                     if item.inProgress || done {

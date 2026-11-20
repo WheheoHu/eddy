@@ -31,6 +31,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Three-Pane: Space on a subscription folds the folder it is in. Going from the sidebar to the list with Return or Right scrolls the list to the article open, if it had been scrolled away.
 - Add Feed… in the Add menu (and under File): subscribes to a feed from its address, or from a website's address when the site names its feed, into a folder chosen from the ones there are, a new one, or none. FreshRSS does the subscribing, through the sync server when Eddy is paired with one; while the server is offline the sheet says so. What FreshRSS answers (not a feed, subscribed already) is shown beside the address. The new subscription is listed at once and its articles follow.
 - Chrome extension 0.2.0: the popup lists the feeds the page names, each with a button that opens Add Feed in Eddy on that feed; a page that names none offers its own address to start from. `eddy://add-feed?url=…` opens the same sheet.
+- Subscriptions show their site's icon, in colour: in the sidebars of Three-Pane and the Gallery in place of the feed symbol, before the feed's name on each article in a list, and beside the title of a subscription opened in the Library. A subscription whose site has no icon keeps the symbol. Icons drawn in black or white alone are set on a small plate of the other tone where they would vanish into the background. They are fetched once from the sites themselves and then shown offline.
 
 ### Changed
 

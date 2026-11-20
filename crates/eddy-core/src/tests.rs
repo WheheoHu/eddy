@@ -3344,3 +3344,174 @@ async fn an_overview_read_aside_matches_the_library() {
         engine.status().unwrap().pending_uploads
     );
 }
+
+fn feed_at(engine: &Engine, id: &str, site: Option<String>) {
+    engine
+        .inner
+        .store
+        .upsert_source(&eddy_model::Source {
+            id: id.into(),
+            account_id: None,
+            upstream_id: None,
+            kind: eddy_model::SourceKind::Feed,
+            title: id.into(),
+            category: None,
+            site_url: site,
+            full_text: eddy_model::FullTextMode::Auto,
+            truncated: false,
+            gallery: false,
+        })
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_feeds_icon_is_its_sites_favicon_found_once_and_kept() {
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\nicon";
+    const ICO: &[u8] = &[0, 0, 1, 0, 1, 0, 16, 16];
+    let page = |body: &str| {
+        ResponseTemplate::new(200)
+            .insert_header("content-type", "text/html")
+            .set_body_string(body.to_string())
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+
+    // A site that names its icon: the first named one is not an image (a
+    // page served for a missing file), so the next is taken.
+    let named = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/blog/"))
+        .respond_with(page(
+            r#"<html><head><link rel="icon" sizes="32x32" href="/gone.png">
+               <link rel="icon" href="../static/icon.png"></head></html>"#,
+        ))
+        .mount(&named)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/gone.png"))
+        .respond_with(page("<html>Not found</html>"))
+        .mount(&named)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/static/icon.png"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(PNG))
+        .mount(&named)
+        .await;
+    feed_at(&engine, "named", Some(format!("{}/blog/", named.uri())));
+    let (bytes, mime) = engine.feed_icon("named").await.unwrap().unwrap();
+    assert_eq!((bytes.as_slice(), mime.as_str()), (PNG, "image/png"));
+    // Kept: asking again asks the site nothing.
+    let asked = named.received_requests().await.unwrap().len();
+    assert_eq!(asked, 3);
+    assert_eq!(engine.feed_icon("named").await.unwrap().unwrap().0, PNG);
+    assert_eq!(named.received_requests().await.unwrap().len(), asked);
+
+    // A site that names none, and one that turns the page request away:
+    // /favicon.ico at the site's root.
+    let plain = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(page("<html><head><title>Plain</title></head></html>"))
+        .mount(&plain)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/feeds/"))
+        .respond_with(ResponseTemplate::new(403))
+        .mount(&plain)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/favicon.ico"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(ICO))
+        .mount(&plain)
+        .await;
+    feed_at(&engine, "plain", Some(plain.uri()));
+    feed_at(&engine, "guarded", Some(format!("{}/feeds/", plain.uri())));
+    for id in ["plain", "guarded"] {
+        let (bytes, mime) = engine.feed_icon(id).await.unwrap().unwrap();
+        assert_eq!(
+            (bytes.as_slice(), mime.as_str()),
+            (ICO, "image/x-icon"),
+            "{id}"
+        );
+    }
+
+    // A feed that gives its own address as its site's (少数派 does): the
+    // icon is the one the site's front page names.
+    let fronted = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/feed"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/xml")
+                .set_body_string("<?xml version=\"1.0\"?><rss><channel/></rss>"),
+        )
+        .mount(&fronted)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(page(
+            r#"<html><head><link rel="shortcut icon" href="/assets/site.ico"></head></html>"#,
+        ))
+        .mount(&fronted)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/assets/site.ico"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(ICO))
+        .mount(&fronted)
+        .await;
+    feed_at(&engine, "fronted", Some(format!("{}/feed", fronted.uri())));
+    assert_eq!(engine.feed_icon("fronted").await.unwrap().unwrap().0, ICO);
+
+    // A site with no icon at all is remembered as having none.
+    let bare = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(page("<html></html>"))
+        .mount(&bare)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/favicon.ico"))
+        .respond_with(page("<html>Not found</html>"))
+        .mount(&bare)
+        .await;
+    feed_at(&engine, "bare", Some(bare.uri()));
+    assert!(engine.feed_icon("bare").await.unwrap().is_none());
+    assert_eq!(bare.received_requests().await.unwrap().len(), 2);
+    assert!(engine.feed_icon("bare").await.unwrap().is_none());
+    assert_eq!(bare.received_requests().await.unwrap().len(), 2);
+    // After a week it is asked again.
+    engine
+        .inner
+        .store
+        .set_source_icon("bare", None, eddy_model::now_ms() - 8 * 24 * 60 * 60 * 1000)
+        .unwrap();
+    assert!(engine.feed_icon("bare").await.unwrap().is_none());
+    assert_eq!(bare.received_requests().await.unwrap().len(), 4);
+
+    // A site that can't be reached is not written off: asked again next time.
+    // (A port nothing listens on any more.)
+    let down = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("http://{}", listener.local_addr().unwrap())
+    };
+    feed_at(&engine, "down", Some(down));
+    assert!(engine.feed_icon("down").await.unwrap().is_none());
+    assert!(engine.inner.store.source_icon("down").unwrap().is_none());
+
+    // No site, no feed: nothing, and no error.
+    feed_at(&engine, "siteless", None);
+    assert!(engine.feed_icon("siteless").await.unwrap().is_none());
+    assert!(engine.feed_icon("unknown").await.unwrap().is_none());
+
+    // An icon dropped from the cache is fetched again.
+    let key = engine
+        .inner
+        .store
+        .source_icon("named")
+        .unwrap()
+        .unwrap()
+        .0
+        .unwrap();
+    std::fs::remove_file(engine.inner.store.blob_file(&key).unwrap().unwrap()).unwrap();
+    assert_eq!(engine.feed_icon("named").await.unwrap().unwrap().0, PNG);
+}

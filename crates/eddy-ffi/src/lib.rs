@@ -396,6 +396,16 @@ impl EddyEngine {
         Ok(ImageData { bytes, mime })
     }
 
+    /// The icon of a subscription's site, looked for once and then kept;
+    /// `None` when the site has none or it can't be looked for just now.
+    pub async fn feed_icon(&self, source_id: String) -> R<Option<ImageData>> {
+        Ok(self
+            .engine
+            .feed_icon(&source_id)
+            .await?
+            .map(|(bytes, mime)| ImageData { bytes, mime }))
+    }
+
     pub fn cache_limit(&self) -> R<u64> {
         Ok(self.engine.cache_limit()?)
     }

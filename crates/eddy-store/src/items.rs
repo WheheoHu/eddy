@@ -640,6 +640,31 @@ impl Store {
         })
     }
 
+    /// What was found when a feed's icon was last looked for: the blob it
+    /// is kept in (`None` when its site has none) and when (ms).
+    pub fn source_icon(&self, source_id: &str) -> Result<Option<(Option<String>, i64)>> {
+        self.with(|c| {
+            Ok(c.query_row(
+                "SELECT blob_key, checked_at FROM source_icons WHERE source_id=?",
+                [source_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
+        })
+    }
+
+    pub fn set_source_icon(&self, source_id: &str, blob_key: Option<&str>, at: i64) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "INSERT INTO source_icons(source_id,blob_key,checked_at) VALUES(?,?,?)
+                 ON CONFLICT(source_id) DO UPDATE SET blob_key=excluded.blob_key,
+                   checked_at=excluded.checked_at",
+                params![source_id, blob_key, at],
+            )?;
+            Ok(())
+        })
+    }
+
     /// Resolved media of an item: (json, status, resolved_at ms).
     pub fn media_set(&self, item_id: &str) -> Result<Option<(String, String, i64)>> {
         self.with(|c| {

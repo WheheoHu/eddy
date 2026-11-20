@@ -164,6 +164,8 @@ pub(crate) struct Inner {
     pub media_pending: parking_lot::Mutex<std::collections::HashSet<String>>,
     /// PDFs whose figures are being rendered into the image cache.
     pub pdf_warming: parking_lot::Mutex<std::collections::HashSet<String>>,
+    /// Caps how many sites are asked for their icon at once.
+    pub icon_gate: tokio::sync::Semaphore,
     /// Image hosts that refused a request without a `Referer` and served it
     /// with one; the rest of this run asks them that way the first time.
     pub referer_hosts: parking_lot::Mutex<std::collections::HashSet<String>>,
@@ -240,6 +242,7 @@ impl Engine {
             media_gate: tokio::sync::Semaphore::new(4),
             media_pending: parking_lot::Mutex::new(Default::default()),
             pdf_warming: parking_lot::Mutex::new(Default::default()),
+            icon_gate: tokio::sync::Semaphore::new(4),
             referer_hosts: parking_lot::Mutex::new(Default::default()),
             video_cancels: parking_lot::Mutex::new(Default::default()),
             video_listener: RwLock::new(None),

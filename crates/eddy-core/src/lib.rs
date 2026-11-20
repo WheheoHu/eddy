@@ -8,6 +8,7 @@ mod engine;
 mod epub_export;
 mod erase;
 mod export;
+mod favicon;
 mod fulltext;
 mod hub;
 mod images;
