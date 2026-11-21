@@ -1678,14 +1678,19 @@ q 200 0 0 50 72 250 cm /Im1 Do Q";
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// A directory of the test's own. Tests run in parallel and the clock
+    /// does not tell two of them apart (macOS counts in microseconds), so
+    /// a counter does: sharing one, a test deleted the other's file.
     fn tempdir() -> std::path::PathBuf {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "eddy-pdf-{}-{}",
+            "eddy-pdf-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
