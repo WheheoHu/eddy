@@ -118,8 +118,14 @@ for (const field of [rsshub, key]) {
   field.addEventListener("input", () => say(""));
 }
 
-chrome.storage.local.get({ rsshub: FALLBACK, key: "" }).then((stored) => {
+// The number on the toolbar icon: kept as soon as it is switched, and the
+// worker hears of it from the storage itself.
+const badge = document.getElementById("badge");
+badge.onchange = () => chrome.storage.local.set({ badge: badge.checked });
+
+chrome.storage.local.get({ rsshub: FALLBACK, key: "", badge: true }).then((stored) => {
   rsshub.value = stored.rsshub;
   key.value = stored.key;
+  badge.checked = stored.badge;
 });
 describeRules();
