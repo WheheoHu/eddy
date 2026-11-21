@@ -257,13 +257,18 @@ private struct FeedContents: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             List(selection: Binding(get: { currentID }, set: { if let id = $0 { select(id) } })) {
-                Text(verbatim: title)
-                    .font(Theme.title(20))
-                    .foregroundStyle(Theme.text1)
-                    .lineLimit(2)
-                    .padding(.vertical, 6)
-                    .flatRow(chosen: false)
-                    .selectionDisabled()
+                HStack(alignment: .firstTextBaseline, spacing: 0) {
+                    // One feed's articles: its icon leads its name.
+                    FeedIcon(sourceID: items.first.flatMap { $0.kind == .feed ? $0.sourceId : nil }, size: 18, collapses: true, gap: 8)
+                        .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 2 }
+                    Text(verbatim: title)
+                        .font(Theme.title(20))
+                        .foregroundStyle(Theme.text1)
+                        .lineLimit(2)
+                }
+                .padding(.vertical, 6)
+                .flatRow(chosen: false)
+                .selectionDisabled()
                 Group {
                     ForEach(items.filter { $0.title.matches(filter: query) }) { item in
                         VStack(alignment: .leading, spacing: 3) {

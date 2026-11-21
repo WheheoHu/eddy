@@ -199,19 +199,25 @@ struct FlatMenu<Content: View>: View {
     }
 }
 
-/// A row of a sidebar: a line icon, a name, and a count at the end.
+/// A row of a sidebar: a line icon, a name, and a count at the end. A
+/// subscription's row (`feed`) shows its site's icon in the line icon's
+/// place once there is one.
 struct SideRow<Mark: View>: View {
     let symbol: String
     let title: Text
     var count = 0
     let chosen: Bool
+    /// The subscription the row is for, if it is for one.
+    var feed: String?
     @ViewBuilder var mark: Mark
 
     var body: some View {
         HStack(spacing: 0) {
-            Image(systemName: symbol)
-                .font(.system(size: 14, weight: chosen ? .semibold : .regular))
-                .frame(width: 20)
+            FeedIcon(sourceID: feed, size: 16) {
+                Image(systemName: symbol)
+                    .font(.system(size: 14, weight: chosen ? .semibold : .regular))
+            }
+            .frame(width: 20)
             title
                 .font(.system(size: 14, weight: chosen ? .semibold : .regular))
                 .lineLimit(1)
@@ -230,8 +236,8 @@ struct SideRow<Mark: View>: View {
 }
 
 extension SideRow where Mark == EmptyView {
-    init(symbol: String, title: Text, count: Int = 0, chosen: Bool) {
-        self.init(symbol: symbol, title: title, count: count, chosen: chosen) { EmptyView() }
+    init(symbol: String, title: Text, count: Int = 0, chosen: Bool, feed: String? = nil) {
+        self.init(symbol: symbol, title: title, count: count, chosen: chosen, feed: feed) { EmptyView() }
     }
 }
 

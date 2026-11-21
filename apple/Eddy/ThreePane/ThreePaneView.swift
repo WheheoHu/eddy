@@ -930,7 +930,7 @@ private struct ThreePaneSidebar: View, Equatable {
     private func feedRows(_ feeds: [SourceView], _ lead: CGFloat) -> some View {
         ForEach(feeds) { feed in
             let tag = ThreePaneView.Selection.feed(feed.id)
-            SideRow(symbol: "dot.radiowaves.up.forward", title: Text(verbatim: feed.title), count: Int(feed.unread), chosen: selection == tag) {
+            SideRow(symbol: "dot.radiowaves.up.forward", title: Text(verbatim: feed.title), count: Int(feed.unread), chosen: selection == tag, feed: feed.id) {
                 if let reason = model.galleryReason(feed) { GalleryMark(throughFolder: reason.isEmpty ? nil : reason) }
             }
             .flatRow(chosen: selection == tag, active: active, lead: lead)

@@ -324,6 +324,52 @@ pub fn page_title_of(html: &str) -> Option<String> {
     page_title(&Html::parse_document(html))
 }
 
+/// The icons a page names for its site (`<link rel="icon">` and the like),
+/// as absolute addresses, the likeliest to suit a small square first: an
+/// icon of 32 to 192 pixels, then icons of unstated or other sizes, then
+/// the large touch icons. Icons given inline (`data:`) are left out.
+pub fn icon_links(html: &str, base: &str) -> Vec<String> {
+    let Ok(base) = Url::parse(base) else {
+        return Vec::new();
+    };
+    let Ok(links) = Selector::parse("link[rel][href]") else {
+        return Vec::new();
+    };
+    let mut found: Vec<(u8, String)> = Vec::new();
+    for link in Html::parse_document(html).select(&links) {
+        let rel = link.value().attr("rel").unwrap_or_default().to_lowercase();
+        let rels: Vec<&str> = rel.split_whitespace().collect();
+        let touch = rels.iter().any(|r| r.starts_with("apple-touch-icon"));
+        if !touch && !rels.contains(&"icon") {
+            continue;
+        }
+        let Some(url) = link
+            .value()
+            .attr("href")
+            .and_then(|href| base.join(href.trim()).ok())
+            .filter(|url| matches!(url.scheme(), "http" | "https"))
+        else {
+            continue;
+        };
+        // The first number of `sizes="32x32 64x64"`; `any` (an SVG) is none.
+        let size = link
+            .value()
+            .attr("sizes")
+            .and_then(|s| s.split(['x', 'X', ' ']).next()?.parse::<u32>().ok());
+        let rank = match (touch, size) {
+            (false, Some(32..=192)) => 0,
+            (false, _) => 1,
+            (true, _) => 2,
+        };
+        let url = String::from(url);
+        if !found.iter().any(|(_, known)| *known == url) {
+            found.push((rank, url));
+        }
+    }
+    found.sort_by_key(|(rank, _)| *rank);
+    found.into_iter().map(|(_, url)| url).collect()
+}
+
 fn select_text(doc: &Html, selector: &str) -> Option<String> {
     let sel = Selector::parse(selector).ok()?;
     let t: String = doc.select(&sel).next()?.text().collect();

@@ -322,3 +322,28 @@ fn main(px: Pixel) -> Color {
     assert!(!extracted.content_html.contains("needs JavaScript"));
     assert!(extracted.text_len > 100);
 }
+
+#[test]
+fn icon_links_are_ordered_for_a_small_square() {
+    let html = r#"<html><head>
+        <link rel="apple-touch-icon" sizes="180x180" href="/touch.png">
+        <link rel="stylesheet" href="/site.css">
+        <link rel="icon" href="data:image/png;base64,AAAA">
+        <link rel="shortcut icon" href="favicon.ico">
+        <link rel="ICON" type="image/png" sizes="32x32" href="//cdn.example.com/icon-32.png">
+        <link rel="icon" sizes="any" href="/icon.svg">
+        <link rel="icon" sizes="32x32" href="//cdn.example.com/icon-32.png">
+        <link rel="alternate" type="application/rss+xml" href="/feed">
+        </head><body></body></html>"#;
+    assert_eq!(
+        icon_links(html, "https://example.com/blog/"),
+        [
+            "https://cdn.example.com/icon-32.png",
+            "https://example.com/blog/favicon.ico",
+            "https://example.com/icon.svg",
+            "https://example.com/touch.png",
+        ]
+    );
+    assert!(icon_links("<html></html>", "https://example.com/").is_empty());
+    assert!(icon_links(html, "not an address").is_empty());
+}

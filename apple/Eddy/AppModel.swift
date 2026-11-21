@@ -22,6 +22,44 @@ enum AppMode: String, CaseIterable, Identifiable {
 
 /// Something picked in the command palette, for the view that can do it.
 /// The token makes picking the same thing twice a change.
+/// A site's icon, and whether it is a dark or a light drawing on nothing:
+/// such an icon is made for a browser's tab and vanishes on a background
+/// of its own tone, so it is set on a plate of the other.
+struct SiteIcon: @unchecked Sendable {
+    enum Ink {
+        case dark, light, mixed
+    }
+
+    let image: NSImage
+    let ink: Ink
+
+    /// Read from a 16 by 16 copy: icons with see-through parts whose solid
+    /// pixels are all nearly black, or all nearly white.
+    static func ink(of image: CGImage?) -> Ink {
+        let side = 16
+        var pixels = [UInt8](repeating: 0, count: side * side * 4)
+        guard let image,
+              let context = CGContext(data: &pixels, width: side, height: side, bitsPerComponent: 8, bytesPerRow: side * 4,
+                                      space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return .mixed }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: side, height: side))
+        var solid = 0.0, dark = 0.0, light = 0.0
+        for index in stride(from: 0, to: pixels.count, by: 4) {
+            let alpha = Double(pixels[index + 3]) / 255
+            guard alpha > 0.5 else { continue }
+            // Premultiplied: back to the colour itself.
+            let luminance = (0.2126 * Double(pixels[index]) + 0.7152 * Double(pixels[index + 1]) + 0.0722 * Double(pixels[index + 2])) / 255 / alpha
+            solid += 1
+            if luminance < 0.25 { dark += 1 } else if luminance > 0.85 { light += 1 }
+        }
+        // A square full of colour is its own background.
+        guard solid > 0, solid < Double(side * side) * 0.9 else { return .mixed }
+        if dark / solid > 0.9 { return .dark }
+        if light / solid > 0.9 { return .light }
+        return .mixed
+    }
+}
+
 /// What the bottom banner says, and what it offers to do about it.
 struct Notice: Equatable {
     enum Kind: Equatable {
@@ -541,6 +579,74 @@ final class AppModel {
         }
     }
 
+    // MARK: Feed icons
+
+    /// The icons of subscriptions' sites, as decided this session: `nil`
+    /// inside for a site without one, or one that could not be asked.
+    @ObservationIgnored private var feedIcons: [String: SiteIcon?] = [:]
+    @ObservationIgnored private var feedIconsLoading: [String: Task<SiteIcon?, Never>] = [:]
+    /// Goes up when sites that gave no icon are worth asking again; the
+    /// icons on screen ask again when it does.
+    private(set) var feedIconEpoch = 0
+
+    /// A subscription's icon if it is in hand: what a row can show in its
+    /// first frame, so that scrolling doesn't make icons blink.
+    func cachedFeedIcon(_ sourceID: String) -> SiteIcon? {
+        feedIcons[sourceID] ?? nil
+    }
+
+    /// The icon of a subscription's site. The core looks for it once and
+    /// keeps it; every row of the same feed waits on the one request.
+    func feedIcon(_ sourceID: String) async -> SiteIcon? {
+        if let known = feedIcons[sourceID] { return known }
+        if let loading = feedIconsLoading[sourceID] { return await loading.value }
+        guard let engine else { return nil }
+        let loading = Task<SiteIcon?, Never> {
+            guard let found = try? await engine.feedIcon(sourceId: sourceID) else { return nil }
+            let bytes = Data(found.bytes)
+            return await Task.detached(priority: .utility) { Self.decodedIcon(bytes) }.value
+        }
+        feedIconsLoading[sourceID] = loading
+        let image = await loading.value
+        feedIconsLoading[sourceID] = nil
+        feedIcons[sourceID] = .some(image)
+        return image
+    }
+
+    /// After a refresh that reached the network: the sites that gave no
+    /// icon (the Mac may have been offline) are asked once more.
+    private func retryMissingFeedIcons() {
+        let missing = feedIcons.filter { $0.value == nil }.map(\.key)
+        guard !missing.isEmpty else { return }
+        for id in missing { feedIcons[id] = nil }
+        feedIconEpoch += 1
+    }
+
+    /// An icon file often holds several sizes, smallest first: the largest
+    /// is taken, and drawn down to what a row needs at twice its size.
+    private nonisolated static func decodedIcon(_ data: Data) -> SiteIcon? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil), CGImageSourceGetCount(source) >= 1 else {
+            // SVG, which ImageIO does not read.
+            guard let image = NSImage(data: data), image.isValid else { return nil }
+            image.size = NSSize(width: 64, height: 64)
+            return SiteIcon(image: image, ink: SiteIcon.ink(of: image.cgImage(forProposedRect: nil, context: nil, hints: nil)))
+        }
+        var best = 0, bestWidth = 0
+        for index in 0 ..< CGImageSourceGetCount(source) {
+            let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any]
+            let width = properties?[kCGImagePropertyPixelWidth] as? Int ?? 0
+            if width > bestWidth { (best, bestWidth) = (index, width) }
+        }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: 64,
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, best, options as CFDictionary) else { return nil }
+        return SiteIcon(image: NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height)), ink: SiteIcon.ink(of: image))
+    }
+
     /// A picture that is decoded already, without waiting for it: what a
     /// view can show in its very first frame, so that one taking the place
     /// of another with the same picture doesn't blink.
@@ -803,6 +909,7 @@ final class AppModel {
                 message = "\(s.newItems) new articles"
             }
             loadHistory()
+            retryMissingFeedIcons()
         } catch EddyError.Offline {
             if !quiet {
                 message = "The sync server is offline. Everything on this Mac still works and syncs when it is back."
