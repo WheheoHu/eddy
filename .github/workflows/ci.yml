@@ -31,8 +31,8 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all --check
-      # The browser extension's own logic: rule matching and the popup.
-      - run: node extensions/tests/radar.test.js && node extensions/tests/popup.test.js
+      # The browser extension's own logic: rule matching, the popup, its settings.
+      - run: node extensions/tests/radar.test.js && node extensions/tests/popup.test.js && node extensions/tests/options.test.js
 
   core:
     # The whole workspace builds on macOS: eddy-pdf links the static pdfium

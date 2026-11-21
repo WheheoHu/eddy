@@ -165,4 +165,28 @@ function countRules(rules) {
   return count;
 }
 
-if (typeof module !== "undefined") module.exports = { compileSource, matchSource, fillTarget, radarFeeds, countRules };
+// Asks an instance for its rules. Throws with a few words on what went
+// wrong: not reached, an HTTP status, an answer that is not a rule list.
+async function fetchRules(base, key) {
+  const root = String(base || "").replace(/\/+$/, "");
+  let response;
+  try {
+    response = await fetch(`${root}/api/radar/rules${key ? "?key=" + encodeURIComponent(key) : ""}`, {
+      credentials: "omit",
+      signal: AbortSignal.timeout(20000),
+    });
+  } catch (e) {
+    throw new Error(e?.name === "TimeoutError" ? "No answer after 20 seconds" : "Couldn’t reach the instance");
+  }
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  let rules;
+  try {
+    rules = await response.json();
+  } catch (e) {
+    throw new Error("The answer is not a list of rules");
+  }
+  if (!rules || typeof rules !== "object" || Array.isArray(rules)) throw new Error("The answer is not a list of rules");
+  return rules;
+}
+
+if (typeof module !== "undefined") module.exports = { compileSource, matchSource, fillTarget, radarFeeds, countRules, fetchRules };

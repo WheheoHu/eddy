@@ -20,10 +20,7 @@ function refreshRules() {
     const { rsshub, key } = await settings();
     const base = rsshub.replace(/\/+$/, "");
     try {
-      const response = await fetch(`${base}/api/radar/rules${key ? "?key=" + encodeURIComponent(key) : ""}`, { credentials: "omit" });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const rules = await response.json();
-      if (!rules || typeof rules !== "object" || Array.isArray(rules)) throw new Error("不是规则列表");
+      const rules = await fetchRules(base, key);
       await chrome.storage.local.set({ rules, rulesAt: Date.now(), rulesFrom: base, rulesError: "" });
       return { ok: true, count: countRules(rules) };
     } catch (e) {
@@ -69,7 +66,7 @@ function send(message) {
 async function flash(tabId, ok, error) {
   await chrome.action.setBadgeBackgroundColor({ tabId, color: ok ? "#2f9e44" : "#c92a2a" });
   await chrome.action.setBadgeText({ tabId, text: ok ? "✓" : "!" });
-  await chrome.action.setTitle({ tabId, title: ok ? "已保存到 Eddy" : `保存失败：${error || "未知错误"}` });
+  await chrome.action.setTitle({ tabId, title: ok ? "Saved to Eddy" : `Couldn’t save: ${error || "unknown error"}` });
   setTimeout(() => chrome.action.setBadgeText({ tabId, text: "" }), 2500);
 }
 
@@ -80,7 +77,7 @@ function isPdf(tab) {
 // Hands the tab to Eddy; the reply carries the address saved, for "Show".
 async function capture(tab) {
   if (!tab || !/^https?:/.test(tab.url || "")) {
-    return { ok: false, error: "只能保存网页" };
+    return { ok: false, error: "Only web pages can be saved." };
   }
   // Chrome's PDF viewer has no page DOM; Eddy downloads the file itself.
   if (isPdf(tab)) {
@@ -134,6 +131,7 @@ function feedsOnPage() {
     if (!/^https?:$/.test(url.protocol)) continue;
     const text = (anchor.textContent || anchor.title || anchor.getAttribute("aria-label") || "").trim();
     const same = url.hostname.split(".").slice(-2).join(".") === location.hostname.split(".").slice(-2).join(".");
+    // What a page calls such a link, in English or in Chinese.
     const says = /^(rss|atom|rss ?订阅|订阅 ?rss|rss feed|feed)$/i.test(text);
     if ((same && looks.test(url.pathname + url.search)) || says) {
       feeds.push({ url: url.href, title: says || !text || text.length > 40 ? "" : text });
@@ -147,7 +145,7 @@ function feedsOnPage() {
 // on, the feeds the page names, and the ones RSSHub can make for it.
 async function inspect(tab) {
   if (!tab || !/^https?:/.test(tab.url || "")) {
-    return { ok: false, error: "只能保存网页" };
+    return { ok: false, error: "Only web pages can be saved." };
   }
   const page = { ok: true, url: tab.url, title: tab.title || tab.url, feeds: [], radar: [], radarLoaded: false };
   const found = radar(tab.url);
@@ -201,8 +199,8 @@ chrome.runtime.onMessage.addListener((message, _sender, respond) => {
 
 chrome.runtime.onInstalled.addListener(() => {
   refreshRules();
-  chrome.contextMenus.create({ id: "eddy-save-link", title: "用 Eddy 稍后阅读这个链接", contexts: ["link"] });
-  chrome.contextMenus.create({ id: "eddy-save-page", title: "保存这个页面到 Eddy", contexts: ["page"] });
+  chrome.contextMenus.create({ id: "eddy-save-link", title: "Read This Link Later in Eddy", contexts: ["link"] });
+  chrome.contextMenus.create({ id: "eddy-save-page", title: "Save This Page to Eddy", contexts: ["page"] });
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
