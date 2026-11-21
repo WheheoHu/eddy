@@ -9,6 +9,7 @@
 pub mod dto;
 mod execute;
 mod protocol;
+pub mod skill;
 
 #[cfg(unix)]
 mod client;
@@ -22,6 +23,7 @@ pub use protocol::{
     CONTROL_VERSION, ControlError, DocFormat, Envelope, Frame, Mark, Progress, ProgressTarget,
     Request, Scope,
 };
+pub use skill::GUIDE;
 
 #[cfg(unix)]
 pub use client::call;

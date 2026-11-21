@@ -127,6 +127,17 @@ pub enum Command {
     Export(ExportCommand),
     /// How to use this command, written for an agent
     Guide,
+    /// Tell agents such as Claude Code and Codex that this command exists
+    #[command(
+        subcommand,
+        long_about = "Tell agents such as Claude Code and Codex that this command exists.\n\n\
+A skill is installed where agents look for them: the shared ~/.agents/skills, which Codex, \
+Gemini CLI, Cursor, GitHub Copilot, opencode and most others read, and Claude Code's own \
+~/.claude/skills. It is a few lines that send the agent to `eddy guide`, so what agents are \
+told always matches the installed Eddy. Agents pick it up in their next session.\n\n\
+The same is done by Set Up Agents in Eddy's Settings."
+    )]
+    Skill(SkillCommand),
 
     /// Pair this data directory with a server (only with --data)
     Connect { url: String, code: String },
@@ -496,6 +507,25 @@ pub enum ExportCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum SkillCommand {
+    /// Which agents are on this Mac and whether the skill is installed for them
+    Status,
+    /// Install the skill for the agents on this Mac, or bring it up to date
+    Setup {
+        /// Say what would change without changing anything
+        #[arg(long)]
+        dry_run: bool,
+        /// Replace a skill named eddy that Eddy did not install
+        #[arg(long)]
+        force: bool,
+    },
+    /// Remove the skill wherever Eddy installed it
+    Remove,
+    /// Print the skill that is installed
+    Show,
+}
+
+#[derive(Debug, Subcommand)]
 pub enum DevCommand {
     /// Fetch one image the way the reader does
     Image { url: String, page: Option<String> },
@@ -531,6 +561,8 @@ pub enum Action {
     /// Work on an engine in this process only.
     Local(Local),
     Guide,
+    /// The skill for agents: no engine and no app involved.
+    Skill(SkillCommand),
 }
 
 #[derive(Debug)]
@@ -702,6 +734,7 @@ impl Command {
                 Ok(Action::ExportEpub { id, output })
             }
             Command::Guide => Ok(Action::Guide),
+            Command::Skill(command) => Ok(Action::Skill(command)),
             Command::Star { id } => mark(vec![id], Mark::Star),
             Command::Text { id } => request(Request::Doc {
                 id,

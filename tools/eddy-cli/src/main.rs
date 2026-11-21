@@ -15,6 +15,7 @@ mod launch;
 mod local;
 mod mode;
 mod render;
+mod skill;
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -100,15 +101,32 @@ async fn main() -> ExitCode {
         Ok(action) => action,
         Err(message) => return usage(message),
     };
-    if let Action::Guide = action {
-        print!("{}", include_str!("guide.md"));
-        return ExitCode::SUCCESS;
-    }
-    let mode = match mode::choose(cli.data.as_deref(), cli.app, &Surroundings::current()) {
+    let around = Surroundings::current();
+    // These two are about the command itself: no engine, no app.
+    let action = match action {
+        Action::Guide => {
+            print!("{}", eddy_control::GUIDE);
+            return ExitCode::SUCCESS;
+        }
+        Action::Skill(command) => {
+            return finish(skill::run(command, output.json, &around), &output);
+        }
+        other => other,
+    };
+    let mode = match mode::choose(cli.data.as_deref(), cli.app, &around) {
         Ok(mode) => mode,
         Err(message) => return usage(message),
     };
-    match run(mode, action, Duration::from_secs(cli.timeout), &output).await {
+    finish(
+        run(mode, action, Duration::from_secs(cli.timeout), &output).await,
+        &output,
+    )
+}
+
+/// Reports a failure the way the output was asked for, and turns the
+/// result into the exit status.
+fn finish(result: Result<(), ControlError>, output: &Output) -> ExitCode {
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             if output.json {
@@ -157,7 +175,7 @@ async fn run(
         }
     };
     match action {
-        Action::Guide => Ok(()),
+        Action::Guide | Action::Skill(_) => Ok(()),
         Action::Local(command) => match &backend {
             Backend::Here(engine) => Ok(local::run(engine, command).await?),
             #[cfg(unix)]

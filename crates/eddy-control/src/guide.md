@@ -23,6 +23,10 @@ change shows up in the app at once.
   cannot be undone. Ask the user first. `items read-all` takes `--dry-run`.
 - `summary --generate` spends the user's AI quota. Everything else is free.
 - Progress of long commands goes to standard error; `--quiet` silences it.
+- `eddy` reaches the app through a local socket and may have to start it. If
+  you run commands in a sandbox and get exit status 3 (`app_unreachable`), the
+  sandbox is in the way: run `eddy` outside it, asking the user for permission
+  if you need to.
 
 ## Finding things
 
