@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use eddy_model::{ids::sha256_hex, now_ms};
 use rusqlite::{OptionalExtension, params};
@@ -50,9 +51,19 @@ impl Store {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, bytes)?;
-        std::fs::rename(&tmp, &path)?;
+        // A name of this writer's own: two threads storing the same bytes
+        // at once (the key is their hash) would otherwise share the file,
+        // and the second rename would find it gone.
+        static WRITES: AtomicU64 = AtomicU64::new(0);
+        let tmp = path.with_extension(format!(
+            "{}-{}.tmp",
+            std::process::id(),
+            WRITES.fetch_add(1, Ordering::Relaxed)
+        ));
+        if let Err(e) = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, &path)) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e.into());
+        }
         self.with(|c| {
             c.execute(
                 "INSERT INTO blobs(key,size,mime,pinned,last_access) VALUES(?,?,?,?,?)

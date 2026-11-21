@@ -73,14 +73,14 @@ jobs:
         run: scripts/fetch-pdfium.sh windows
       - name: Test
         shell: bash
-        run: cargo test --locked -p eddy-core -p eddy-store -p eddy-pdf
+        run: cargo test --locked -p eddy-core -p eddy-store -p eddy-pdf -p eddy-control
       - name: Build CLI
         run: cargo build --locked -p eddy-cli
       # The core job owns linting the whole workspace on macOS, but the code
       # compiled only on Windows would otherwise never be linted.
       - name: Clippy (Windows-only crates)
         shell: bash
-        run: cargo clippy --locked -p eddy-cli -p eddy-pdf --all-targets -- -D warnings
+        run: cargo clippy --locked -p eddy-cli -p eddy-control -p eddy-pdf --all-targets -- -D warnings
 
   server:
     # The server ships as a Linux image, so what it is made of is also
@@ -96,7 +96,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Test
-        run: cargo test --locked -p eddy-server -p eddy-core -p eddy-store -p eddy-sync -p eddy-model
+        run: cargo test --locked -p eddy-server -p eddy-core -p eddy-control -p eddy-store -p eddy-sync -p eddy-model
       - name: Build image
         run: docker build -f deploy/Dockerfile --build-arg "EDDY_GIT_HASH=${GITHUB_SHA::7}" -t eddy-server:ci .
       - name: Image starts and reports its version

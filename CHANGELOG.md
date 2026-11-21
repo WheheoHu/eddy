@@ -49,6 +49,7 @@ Sync protocol 3. Servers and devices on protocol 1 must be updated together; one
 
 ### Fixed
 
+- Storing the same content from two threads at once no longer fails one of them with a file error: each write of a blob uses a temporary file of its own.
 - A read/star change that loses to a newer one is no longer pushed to FreshRSS, where it used to come back as the newest state.
 - Removing a rule pack on one device removes it on the others.
 - Revoking a device closes its open live connection.
