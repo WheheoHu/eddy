@@ -60,8 +60,8 @@ struct TranslationSettingsPage: View {
             }
 
             Section {
-                SettingsField("Translate into", text: $target)
-                    .focused($focus, equals: .target)
+                // Saved when chosen, not when the page fills it in.
+                SettingsLanguage("Translate into", language: Binding(get: { target }, set: { target = $0; save() }))
                 SettingsField("Glossary", text: $glossary, prompt: Text("term = translation, one per line"), lines: 2...4, width: 320)
                     .focused($focus, equals: .glossary)
                 Toggle("Sync translations across devices", isOn: $syncTranslations)
@@ -307,8 +307,7 @@ struct SummariesSettingsPage: View {
             }
 
             Section {
-                SettingsField("Summary language", text: $summaryLanguage)
-                    .focused($focus, equals: .summaryLanguage)
+                SettingsLanguage("Summary language", language: Binding(get: { summaryLanguage }, set: { summaryLanguage = $0; save() }))
                 Toggle("Sync summaries across devices", isOn: $syncSummaries)
                     .onChange(of: syncSummaries) { _, _ in save() }
                 rulesList(for: .summarize)

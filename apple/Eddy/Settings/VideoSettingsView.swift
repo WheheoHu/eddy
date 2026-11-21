@@ -150,8 +150,7 @@ struct VideoSettingsPage: View {
             }
             .onChange(of: transcriptPolicy) { _, _ in save() }
 
-            SettingsField("Book language", text: $targetLanguage, prompt: Text("English / 简体中文"), note: "Blank uses the Summaries language")
-                .focused($focus, equals: .targetLanguage)
+            SettingsLanguage("Book language", language: Binding(get: { targetLanguage }, set: { targetLanguage = $0; save() }), unset: "Same as Summaries")
 
             SettingsStepper("Concurrent chapters", value: $chapterConcurrency, in: 1...6)
                 .onChange(of: chapterConcurrency) { _, _ in save() }

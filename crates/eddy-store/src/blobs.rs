@@ -181,14 +181,69 @@ impl Store {
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })?;
         let mut freed = 0;
+        let mut going = Vec::new();
         for (key, size) in candidates {
             if usage <= limit {
                 break;
             }
-            self.remove_blob(&key)?;
+            going.push(key);
             usage = usage.saturating_sub(size);
             freed += size;
         }
+        // Some hundreds at a time: one transaction for a whole cache of
+        // two hundred thousand files would keep every other caller waiting
+        // for as long as emptying it takes.
+        for batch in going.chunks(400) {
+            self.remove_blobs(batch)?;
+        }
         Ok(freed)
+    }
+
+    /// Deletes the files, then forgets them in one transaction. Deleting
+    /// is most of the time it takes, so a few threads share it.
+    fn remove_blobs(&self, keys: &[String]) -> Result<()> {
+        let paths = keys
+            .iter()
+            .map(|key| self.blob_path(key))
+            .collect::<Result<Vec<_>>>()?;
+        let share = paths.len().div_ceil(4).max(1);
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = paths
+                .chunks(share)
+                .map(|paths| {
+                    scope.spawn(move || {
+                        for path in paths {
+                            match std::fs::remove_file(path) {
+                                Ok(()) => {}
+                                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                                Err(e) => return Err(e),
+                            }
+                        }
+                        Ok(())
+                    })
+                })
+                .collect();
+            for worker in workers {
+                worker
+                    .join()
+                    .unwrap_or_else(|_| Err(std::io::Error::other("deleting stopped")))?;
+            }
+            Ok::<(), std::io::Error>(())
+        })?;
+        self.with(|c| {
+            let tx = c.transaction()?;
+            {
+                let mut forget = tx.prepare_cached("DELETE FROM blobs WHERE key=?")?;
+                let mut unlink = tx.prepare_cached(
+                    "UPDATE content_versions SET doc_blob=NULL, doc_schema=NULL WHERE doc_blob=?",
+                )?;
+                for key in keys {
+                    forget.execute([key])?;
+                    unlink.execute([key])?;
+                }
+            }
+            tx.commit()?;
+            Ok(())
+        })
     }
 }

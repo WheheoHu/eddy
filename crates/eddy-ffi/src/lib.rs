@@ -418,6 +418,13 @@ impl EddyEngine {
         Ok(self.engine.cache_usage()?)
     }
 
+    /// Removes from the offline cache everything that can be fetched again
+    /// and is not being kept (unread, starred, saved, in progress). Returns
+    /// the bytes freed. It deletes files: call it off the main thread.
+    pub fn clear_cache(&self) -> R<u64> {
+        Ok(self.engine.clear_cache()?)
+    }
+
     /// Full-text rules, top (highest priority) first.
     pub fn full_text_rules(&self) -> R<Vec<FullTextRuleView>> {
         Ok(self
