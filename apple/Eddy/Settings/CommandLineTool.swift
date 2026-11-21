@@ -97,7 +97,7 @@ enum CommandLineTool {
     }
 }
 
-/// Settings → Saving: puts the `eddy` command on the `PATH` and takes it
+/// Settings → Agents: puts the `eddy` command on the `PATH` and takes it
 /// off again. Nothing is installed unless the button is pressed.
 struct CommandLineSection: View {
     @State private var state = CommandLineTool.state()

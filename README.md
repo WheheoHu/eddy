@@ -99,7 +99,7 @@ Feeds come from three places: the links in a page's head that name a feed, links
 
 ### Command line
 
-`eddy` works on your library from a terminal, and is how an agent works on it: add pages, files and text, manage subscriptions, look up items and read their text, read and set reading positions. It ships inside the app; **Settings → Saving → Install Command Line Tool** puts it on your `PATH` as `/usr/local/bin/eddy`.
+`eddy` works on your library from a terminal, and is how an agent works on it: add pages, files and text, manage subscriptions, look up items and read their text, read and set reading positions. It ships inside the app. In **Settings → Agents**, Install Command Line Tool puts it on your `PATH` as `/usr/local/bin/eddy`, and Set Up Agents tells Claude Code, Codex, Gemini CLI, Cursor, GitHub Copilot and other agents that it is there, by installing a skill where they look for them (`eddy skill setup` does the same from a terminal).
 
 ```sh
 eddy items --unread --limit 20          # newest unread
