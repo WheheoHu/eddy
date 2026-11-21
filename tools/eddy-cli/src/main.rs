@@ -1,409 +1,303 @@
-//! Headless developer tool around the engine. Uses its own data directory
-//! (default `./build/cli-data`) with a plain-file keychain inside it, so it
-//! never touches the app's data or the system keychain.
+//! `eddy`: Eddy from the terminal, for people and for agents.
 //!
-//! eddy-cli [--data DIR] save URL
-//! eddy-cli [--data DIR] items
-//! eddy-cli [--data DIR] doc ITEM_ID
-//! eddy-cli [--data DIR] text ITEM_ID
-//! eddy-cli [--data DIR] fulltext ITEM_ID
-//! eddy-cli [--data DIR] import FILE.epub|FILE.pdf
-//! eddy-cli [--data DIR] connect URL CODE | disconnect | sync | status
-//! eddy-cli [--data DIR] sign-out [--discard-unsent]
-//! eddy-cli [--data DIR] freshrss URL USER PASSWORD
-//! eddy-cli [--data DIR] server-account URL USER PASSWORD
-//! eddy-cli [--data DIR] tag NAME | tags | star ITEM_ID
-//! eddy-cli --version
+//! The copy inside Eddy.app works on the user's library, by asking the app:
+//! the app is the only process that opens that data directory, and it is
+//! started in the background when it is not running. With `--data DIR` (and
+//! always for a copy built in the repository, whose default is
+//! `build/cli-data`) the engine runs in this process on a directory of its
+//! own, with its secrets in a file there, apart from the app's data and the
+//! system keychain. Either way a command becomes a request that
+//! `eddy-control` carries out. See docs/adr/0011.
 
-use std::path::PathBuf;
-use std::sync::Arc;
+mod cli;
+#[cfg(unix)]
+mod launch;
+mod local;
+mod mode;
+mod render;
 
-use eddy_core::{Engine, EngineOptions, GalleryScope, ItemFilter, ItemQuery, Platform};
-use eddy_model::{BlockKind, Document};
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-/// Development-only keychain: secrets in `cli-secrets.json` inside the CLI's
-/// own data directory. The file is mode 0600 on Unix; on Windows it inherits
-/// the data directory's ACL, which is fine for a development tool.
-struct FileSecrets(PathBuf);
+use clap::{CommandFactory, FromArgMatches};
+use eddy_control::{ControlError, Progress, Request, execute};
+use eddy_core::Engine;
+use serde_json::Value;
 
-impl FileSecrets {
-    fn load(&self) -> std::collections::HashMap<String, String> {
-        std::fs::read(&self.0)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
-    }
+use cli::{Action, Cli};
+use mode::{Mode, Surroundings};
 
-    fn save(&self, map: &std::collections::HashMap<String, String>) -> bool {
-        let Ok(bytes) = serde_json::to_vec(map) else {
-            return false;
+/// Not understood: the arguments, or what they ask for where they ask it.
+const USAGE: u8 = 2;
+/// The app did not answer.
+const UNREACHABLE: u8 = 3;
+
+struct Output {
+    json: bool,
+    quiet: bool,
+}
+
+enum Backend {
+    Here(Engine),
+    #[cfg(unix)]
+    App(launch::App),
+}
+
+impl Backend {
+    async fn send(&self, request: &Request, quiet: bool) -> Result<Value, ControlError> {
+        // A long sync says how far it is, about once a second.
+        let printed = Mutex::new(None::<Instant>);
+        let report = move |p: Progress| {
+            let mut printed = printed.lock().unwrap();
+            if quiet || printed.is_some_and(|at| at.elapsed() < Duration::from_secs(1)) {
+                return;
+            }
+            *printed = Some(Instant::now());
+            eprintln!("{}", render::progress(&p));
         };
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
+        match self {
+            Backend::Here(engine) => execute(engine, request.clone(), Arc::new(report)).await,
+            #[cfg(unix)]
+            Backend::App(app) => app.send(request, report).await,
         }
-        options
-            .open(&self.0)
-            .and_then(|mut f| std::io::Write::write_all(&mut f, &bytes))
-            .is_ok()
-    }
-}
-
-impl Platform for FileSecrets {
-    fn secret_get(&self, key: &str) -> Option<String> {
-        self.load().get(key).cloned()
     }
 
-    fn secret_set(&self, key: &str, value: &str) -> bool {
-        let mut map = self.load();
-        map.insert(key.into(), value.into());
-        self.save(&map)
+    /// A directory the other side can read and write, when the other side
+    /// is the app; `None` when the work happens in this process.
+    fn staging(&self) -> Result<Option<PathBuf>, ControlError> {
+        match self {
+            Backend::Here(_) => Ok(None),
+            #[cfg(unix)]
+            Backend::App(app) => app.staging().map(Some),
+        }
     }
-
-    fn secret_delete(&self, key: &str) {
-        let mut map = self.load();
-        map.remove(key);
-        self.save(&map);
-    }
-
-    fn secret_clear(&self) {
-        self.save(&Default::default());
-    }
-}
-
-fn summarize(doc: &Document) {
-    let mut counts = std::collections::BTreeMap::new();
-    for b in &doc.blocks {
-        *counts.entry(b.kind.tag()).or_insert(0) += 1;
-    }
-    println!("blocks: {counts:?}, text_len: {}", doc.text_len());
-    for b in doc
-        .blocks
-        .iter()
-        .filter(|b| matches!(b.kind, BlockKind::Math { .. }))
-        .take(3)
-    {
-        println!("  math block: {}", b.plain_text());
-    }
-    let inline: Vec<_> = doc
-        .blocks
-        .iter()
-        .flat_map(|b| {
-            b.kind
-                .runs()
-                .unwrap_or(&[])
-                .iter()
-                .filter(|r| r.math)
-                .map(|r| r.text.clone())
-        })
-        .take(3)
-        .collect();
-    if !inline.is_empty() {
-        println!("  inline math: {inline:?}");
-    }
-    println!("  excerpt: {}", doc.excerpt(160));
 }
 
 #[tokio::main]
-async fn main() {
-    let mut args: Vec<String> = std::env::args().skip(1).collect();
-    if matches!(args.first().map(String::as_str), Some("--version" | "-V")) {
-        println!(
-            "eddy-cli {} (sync protocol {})",
+async fn main() -> ExitCode {
+    let version: &'static str = Box::leak(
+        format!(
+            "{} (sync protocol {})",
             eddy_core::core_version(),
             eddy_core::SYNC_PROTOCOL_VERSION
-        );
-        return;
+        )
+        .into_boxed_str(),
+    );
+    let matches = Cli::command().version(version).get_matches();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    let output = Output {
+        json: cli.json,
+        quiet: cli.quiet,
+    };
+    let usage = |message: String| {
+        eprintln!("error: {message}");
+        ExitCode::from(USAGE)
+    };
+    let action = match cli.command.action() {
+        Ok(action) => action,
+        Err(message) => return usage(message),
+    };
+    if let Action::Guide = action {
+        print!("{}", include_str!("guide.md"));
+        return ExitCode::SUCCESS;
     }
-    let mut data = PathBuf::from("build/cli-data");
-    if args.first().map(String::as_str) == Some("--data") && args.len() > 1 {
-        data = PathBuf::from(args.remove(1));
-        args.remove(0);
-    }
-    std::fs::create_dir_all(&data).expect("data dir");
-    let secrets = Arc::new(FileSecrets(data.join("cli-secrets.json")));
-    let engine = Engine::open(&data, secrets, EngineOptions::default()).expect("open engine");
-    // A long sync says how far it is, about once a second.
-    let watched = engine.clone();
-    let printed = std::sync::Mutex::new(None::<std::time::Instant>);
-    engine.set_progress_listener(Some(Arc::new(move || {
-        let Ok(Some(p)) = watched.status().map(|s| s.sync) else {
-            return;
-        };
-        let mut printed = printed.lock().unwrap();
-        if printed.is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(1)) {
-            return;
-        }
-        *printed = Some(std::time::Instant::now());
-        let phase = match p.phase {
-            eddy_core::SyncPhase::Uploading => "uploading",
-            eddy_core::SyncPhase::Downloading => "downloading",
-            eddy_core::SyncPhase::FetchingContent => "fetching articles",
-        };
-        match p.total {
-            Some(total) => eprintln!("{phase}: {} of {total}", p.done),
-            None => eprintln!("{phase}: {}", p.done),
-        }
-    })));
-    engine.set_pdf_reader(Some(Arc::new(eddy_pdf::PdfiumReader::new())));
-    let result = match args
-        .iter()
-        .map(String::as_str)
-        .collect::<Vec<_>>()
-        .as_slice()
-    {
-        ["save", url] => engine.save_url(url).await.map(|row| {
-            println!("saved {} — {}", row.item.id, row.item.title);
-        }),
-        ["items"] => engine.items(&ItemQuery::default()).map(|rows| {
-            for r in rows {
-                println!("{}  {}  {}", r.item.id, r.item.kind.as_str(), r.item.title);
+    let mode = match mode::choose(cli.data.as_deref(), cli.app, &Surroundings::current()) {
+        Ok(mode) => mode,
+        Err(message) => return usage(message),
+    };
+    match run(mode, action, Duration::from_secs(cli.timeout), &output).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            if output.json {
+                println!("{}", serde_json::json!({ "error": e }));
+            } else {
+                eprintln!("error: {e}");
             }
-        }),
-        ["doc", id] => engine.document(id).await.map(|d| match d {
-            Some(d) => summarize(&d.document),
-            None => println!("no content"),
-        }),
-        // Subscribes to a feed, optionally into a folder; through the server
-        // when the data directory is paired with one.
-        ["feed", "add", url] | ["feed", "add", url, _] => {
-            let folder = args.get(3).map(String::as_str);
-            engine.add_feed(url, folder).await.map(|added| {
-                println!(
-                    "subscribed {} — {}{}",
-                    added.source_id,
-                    added.title,
-                    added
-                        .folder
-                        .map(|f| format!(" (in {f})"))
-                        .unwrap_or_default()
-                );
+            ExitCode::from(if e.code == "app_unreachable" {
+                UNREACHABLE
+            } else {
+                1
             })
         }
-        // Unsubscribes from a feed by its source ID (`feed list` shows them).
-        ["feed", "remove", id] => engine.remove_feed(id).await.map(|()| {
-            println!("unsubscribed {id}");
-        }),
-        ["feed", "list"] => engine.sources().map(|sources| {
-            for s in sources {
-                if s.source.kind == eddy_model::SourceKind::Feed {
-                    println!(
-                        "{}  {}  [{}]  unread {}",
-                        s.source.id,
-                        s.source.title,
-                        s.source.category.as_deref().unwrap_or("-"),
-                        s.unread
-                    );
-                }
+    }
+}
+
+async fn run(
+    mode: Mode,
+    action: Action,
+    timeout: Duration,
+    output: &Output,
+) -> Result<(), ControlError> {
+    let backend = match mode {
+        Mode::Standalone { data } => {
+            if app_has_open(&data).await {
+                return Err(ControlError::invalid(format!(
+                    "Eddy is running on {}, and only one process opens a data directory. Use --app with EDDY_DATA_DIR set to it.",
+                    data.display()
+                )));
             }
-        }),
-        // Fetches one image the way the reader does, optionally as part of
-        // the article at PAGE; for checking hosts that guard their pictures.
-        ["image", url] | ["image", url, _] => {
-            let page = args.get(2).map(String::as_str);
-            engine.image(url, page).await.map(|(bytes, mime)| {
-                println!("{mime}  {} bytes", bytes.len());
-            })
+            Backend::Here(local::open(&data).map_err(|e| ControlError::new("store", e))?)
         }
-        // Every block as text, one per line prefixed with its kind; for
-        // checking how a PDF or page reflowed.
-        ["text", id] => engine.document(id).await.map(|d| match d {
-            Some(d) => {
-                for b in &d.document.blocks {
-                    let tag = match &b.kind {
-                        BlockKind::Heading { level, .. } => format!("h{level}"),
-                        BlockKind::Image { src, .. } => format!("image {src}"),
-                        other => other.tag().to_string(),
-                    };
-                    println!("[{tag}] {}", b.plain_text());
-                }
-            }
-            None => println!("no content"),
+        #[cfg(unix)]
+        Mode::App { data, launch } => Backend::App(launch::App {
+            data,
+            launch,
+            timeout,
+            quiet: output.quiet,
         }),
-        ["fulltext", id] => engine
-            .fetch_full_text(id)
-            .await
-            .map(|d| summarize(&d.document)),
-        ["connect", url, code] => engine.connect_server(url, code, "eddy-cli").await.map(|s| {
-            println!(
-                "connected to {} (server {}), cursor {}",
-                s.url, s.server_id, s.cursor
-            );
-        }),
-        ["disconnect"] => engine.disconnect_server().await,
-        // `--discard-unsent` also gives up changes that could not be sent.
-        ["sign-out", rest @ ..] => engine
-            .sign_out_and_erase(rest.contains(&"--discard-unsent"))
-            .await
-            .map(|outcome| match outcome {
-                eddy_core::SignOut::Erased => println!("signed out and erased"),
-                eddy_core::SignOut::Unsent(n) => println!(
-                    "not signed out: {n} changes could not be sent (sign-out --discard-unsent loses them)"
-                ),
-            }),
-        // Standalone: this device's FreshRSS account. Server mode: the same
-        // account, kept here for refreshing while the server is offline.
-        ["freshrss", url, user, password] => engine
-            .configure_freshrss(url, user, password)
-            .await
-            .map(|a| println!("FreshRSS {} @ {}", a.username, a.base_url)),
-        // The FreshRSS account the server manages.
-        ["server-account", url, user, password] => engine
-            .configure_server_freshrss(url, user, password)
-            .await
-            .map(|_| println!("server account set")),
-        ["status"] => {
-            // Asking the server first is what tells the engine whether it
-            // is reachable.
-            let server = engine.server_status().await;
-            match engine.status() {
-                Ok(s) => {
-                    println!("mode {:?}", s.mode);
-                    if s.mode == eddy_core::Mode::Server {
-                        println!(
-                            "server {}",
-                            if s.server_online { "online" } else { "offline" }
-                        );
-                        match server {
-                            Ok(Some(server)) => println!(
-                                "server version {}, cursor {}",
-                                server.version, server.cursor
-                            ),
-                            Ok(None) => {}
-                            Err(e) => println!("server error: {e}"),
-                        }
-                        println!("pending uploads {}", s.pending_uploads);
-                        println!("refused uploads {}", s.rejected_uploads);
-                        println!("offline refresh {}", s.offline_refresh);
-                    }
-                    if let Some(e) = s.last_error {
-                        println!("last error {e}");
-                    }
-                    Ok(())
-                }
-                Err(e) => Err(e),
-            }
-        }
-        ["tag", name] => engine.create_tag(name).map(|id| println!("tag {id}")),
-        ["tags"] => engine.tags().map(|tags| {
-            for t in tags {
-                println!("{}", t.name);
-            }
-        }),
-        ["star", id] => engine.set_starred(id, true).await,
-        ["series", url] => engine.detect_series_at(url).await.map(|p| match p {
-            Some(p) => {
-                println!("{} — {} chapters", p.title, p.chapters.len());
-                for c in &p.chapters {
-                    let indent = "  ".repeat(c.level as usize + 1);
-                    println!("{indent}{}  {}", c.title, c.url);
-                }
-            }
-            None => println!("no table of contents found"),
-        }),
-        ["sync"] => match engine.refresh().await {
-            Ok(s) => {
-                println!(
-                    "new items {}, state changes {}{}",
-                    s.new_items,
-                    s.state_changes,
-                    if s.offline {
-                        " (server offline: fetched from FreshRSS)"
-                    } else {
-                        ""
-                    }
-                );
-                let progress: eddy_core::HistoryCallback =
-                    Arc::new(|added| println!("history: {added} older articles"));
-                engine.backfill_history(Some(progress)).await.map(|_| ())
-            }
-            Err(e) => Err(e),
-        },
-        ["search", query] => engine.search_all(query, 10).await.map(|hits| {
-            for h in hits {
-                println!("{}  {}  …{}…", h.item.item.id, h.item.item.title, h.snippet);
-            }
-        }),
-        ["import", path] => match engine.import_file(std::path::Path::new(path)).await {
-            Ok(imported) => {
-                let verb = if imported.existing {
-                    "already imported"
-                } else {
-                    "imported"
-                };
-                println!("{verb} {} — {}", imported.item_id, imported.title);
-                let chapters = match &imported.series_id {
-                    Some(series) => engine.items(&ItemQuery {
-                        filter: ItemFilter::Series(series.clone()),
-                        limit: 10_000,
-                        ..Default::default()
-                    }),
-                    None => Ok(Vec::new()),
-                };
-                chapters.map(|rows| {
-                    for r in rows {
-                        println!("  {:>6} chars  {}", r.item.text_len, r.item.title);
-                    }
-                })
-            }
-            Err(e) => Err(e),
-        },
-        ["media", id] => engine.resolve_media(id, true).await.map(|set| {
-            println!("{:?}  thumbnail {:?}", set.status, set.thumbnail);
-            for m in set.items {
-                println!(
-                    "  {:?} {}  poster {:?}  {:?}x{:?}  {:?}s",
-                    m.kind, m.src, m.poster, m.width, m.height, m.duration
-                );
-            }
-        }),
-        ["gallery", folder, count] => {
-            let count: u32 = count.parse().unwrap_or(20);
-            match engine.set_folder_gallery(folder, true).and_then(|_| {
-                engine.gallery_items(&GalleryScope::Folder(folder.to_string()), false, count, 0)
-            }) {
-                Ok(entries) => {
-                    let mut tally = std::collections::BTreeMap::new();
-                    for e in entries {
-                        let host = e
-                            .row
-                            .item
-                            .url
-                            .as_deref()
-                            .and_then(|u| url::Url::parse(u).ok())
-                            .and_then(|u| u.host_str().map(String::from))
-                            .unwrap_or_default();
-                        let set = engine.resolve_media(&e.row.item.id, true).await;
-                        let key = match &set {
-                            Ok(s) => format!(
-                                "{host:<22} {:?} {:?}",
-                                s.status,
-                                s.items.first().map(|m| m.kind)
-                            ),
-                            Err(err) => format!("{host:<22} error {err}"),
-                        };
-                        *tally.entry(key).or_insert(0) += 1;
-                    }
-                    for (k, n) in tally {
-                        println!("{n:>4}  {k}");
-                    }
-                    Ok(())
-                }
-                Err(e) => Err(e),
-            }
-        }
-        _ => {
-            eprintln!(
-                "usage: eddy-cli [--data DIR] save URL | items | doc ID | text ID | image URL [PAGE] | feed add URL [FOLDER] | feed list | feed remove ID | fulltext ID | connect URL CODE | disconnect | sign-out [--discard-unsent] | sync | status | freshrss URL USER PASSWORD | server-account URL USER PASSWORD | tag NAME | tags | star ID | search QUERY | import FILE | media ID | gallery FOLDER COUNT | --version"
-            );
-            std::process::exit(2);
+        #[cfg(not(unix))]
+        Mode::App { .. } => {
+            let _ = timeout;
+            return Err(ControlError::invalid(
+                "working through the app is not available on this platform; use --data DIR",
+            ));
         }
     };
-    if let Err(e) = result {
-        eprintln!("error: {e}");
-        std::process::exit(1);
+    match action {
+        Action::Guide => Ok(()),
+        Action::Local(command) => match &backend {
+            Backend::Here(engine) => Ok(local::run(engine, command).await?),
+            #[cfg(unix)]
+            Backend::App(_) => Err(ControlError::invalid(
+                "this command works on a data directory given with --data. Your library's accounts are set up in Eddy's Settings.",
+            )),
+        },
+        Action::Request(request) => {
+            let value = backend.send(&request, output.quiet).await?;
+            print(&request, value, output)
+        }
+        Action::AddText {
+            title,
+            html,
+            url,
+            file,
+        } => {
+            let unread =
+                |e: std::io::Error| ControlError::invalid(format!("cannot read the text: {e}"));
+            let body = match &file {
+                Some(path) => std::fs::read_to_string(path).map_err(unread)?,
+                None => {
+                    let mut text = String::new();
+                    std::io::stdin().read_to_string(&mut text).map_err(unread)?;
+                    text
+                }
+            };
+            let request = Request::AddText {
+                title,
+                body,
+                html,
+                url,
+            };
+            let value = backend.send(&request, output.quiet).await?;
+            print(&request, value, output)
+        }
+        Action::AddFile(path) => {
+            let unread = |e: std::io::Error| {
+                ControlError::invalid(format!("cannot read {}: {e}", path.display()))
+            };
+            let mut path = std::path::absolute(&path).map_err(unread)?;
+            let staging = backend.staging()?;
+            if let Some(dir) = &staging {
+                let staged = dir.join(path.file_name().unwrap_or("file".as_ref()));
+                if let Err(e) = std::fs::copy(&path, &staged) {
+                    let _ = std::fs::remove_dir_all(dir);
+                    return Err(unread(e));
+                }
+                path = staged;
+            }
+            let request = Request::AddFile {
+                path: path.to_string_lossy().into_owned(),
+            };
+            let answer = backend.send(&request, output.quiet).await;
+            if let Some(dir) = &staging {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+            print(&request, answer?, output)
+        }
+        Action::ExportEpub { id, output: wanted } => {
+            let unwritten = |e: std::io::Error| {
+                ControlError::invalid(format!("cannot write {}: {e}", wanted.display()))
+            };
+            let wanted_full = std::path::absolute(&wanted).map_err(unwritten)?;
+            let staging = backend.staging()?;
+            let written = match &staging {
+                Some(dir) => dir.join(wanted_full.file_name().unwrap_or("export.epub".as_ref())),
+                None => wanted_full.clone(),
+            };
+            let request = Request::ExportEpub {
+                id,
+                path: written.to_string_lossy().into_owned(),
+            };
+            let answer = backend.send(&request, output.quiet).await;
+            let moved = match (&answer, &staging) {
+                (Ok(_), Some(_)) => move_file(&written, &wanted_full).map_err(unwritten),
+                _ => Ok(()),
+            };
+            if let Some(dir) = &staging {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+            let mut value = answer?;
+            moved?;
+            value["path"] = Value::String(wanted_full.to_string_lossy().into_owned());
+            print(&request, value, output)
+        }
     }
+}
+
+/// Whether an app answers on the control socket of `data`.
+async fn app_has_open(data: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        let socket = eddy_control::socket_path(data);
+        socket.exists()
+            && eddy_control::call(&socket, &Request::Hello, |_| {})
+                .await
+                .is_ok()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = data;
+        false
+    }
+}
+
+/// Renames, or copies when the two are on different volumes.
+fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    if std::fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    std::fs::copy(from, to)?;
+    std::fs::remove_file(from)
+}
+
+fn print(request: &Request, value: Value, output: &Output) -> Result<(), ControlError> {
+    if output.json {
+        let text = serde_json::to_string_pretty(&value)
+            .map_err(|e| ControlError::new("internal", e.to_string()))?;
+        println!("{text}");
+        return Ok(());
+    }
+    // A list that goes on says so, where it does not get in the way of
+    // reading the lines.
+    let more = match request {
+        Request::ItemsList { offset, .. } => {
+            let shown = value["items"].as_array().map_or(0, Vec::len) as u64;
+            let total = value["total"].as_u64().unwrap_or(0);
+            let next = u64::from(*offset) + shown;
+            (shown > 0 && next < total)
+                .then(|| format!("{shown} of {total}; --offset {next} for the next ones"))
+        }
+        _ => None,
+    };
+    let text = render::text(request, value)?;
+    if !text.is_empty() {
+        println!("{text}");
+    }
+    if let Some(more) = more.filter(|_| !output.quiet) {
+        eprintln!("{more}");
+    }
+    Ok(())
 }

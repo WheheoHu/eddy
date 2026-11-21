@@ -12,7 +12,9 @@ Eddy 是本地优先的个人阅读器：Rust 内核（`crates/`）通过 UniFFI
 - 服务端：`deploy/compose.yaml`，端口只映射到 `127.0.0.1`；部署步骤见 `deploy/README.md`。
 - 服务端改动除了 `cargo test -p eddy-server`，再跑 `scripts/test-server-smoke.sh`：它在 OrbStack/Docker 里起一个临时服务端，用两个 `eddy-cli` 数据目录走一遍配对、停机、离线改动、恢复、收敛、登出。
 - 推到 GitHub 的每个提交都会跑 `.github/workflows/ci.yml`：`cargo fmt --all --check`、浏览器插件的 Node 测试（`extensions/tests/`，改了 `extensions/chrome/` 的逻辑本地先跑 `for t in extensions/tests/*.test.js; do node "$t" || break; done`）、clippy 和测试（macOS 上整个 workspace，警告即失败）、Linux 上的服务端测试和镜像构建、Windows 上的内核测试和 `eddy-cli` 构建、Mac 应用构建。每次运行会把顺带编译出来的服务端二进制（linux/amd64）和 Mac 应用（Release 配置，未公证）作为 artifact 保留 14 天。`dev` 和 `main` 的服务端镜像（linux/amd64）还会推到 `ghcr.io/wheheohu/eddy/eddy-server`，标签是分支名和 `sha-<提交>`；`:latest` 和版本号标签只由发布流程打。提交前本地先跑 `cargo fmt --all` 和 clippy，别让 CI 替你发现。
-- 不开界面验证真实网络行为（保存网页、连服务端、搜索）用 `tools/eddy-cli`，它的数据和密钥都在 `build/` 下自己的目录里，和应用数据隔离。
+- 不开界面验证真实网络行为（保存网页、连服务端、搜索）用 `tools/eddy-cli`：仓库里构建出来的副本在自己的进程里打开 `build/` 下自己的数据目录（默认 `build/cli-data`，或 `--data DIR`），密钥也在那里，和应用数据隔离。
+- 同一个程序装在应用包里叫 `eddy`，是给用户和 Agent 的命令行，经过运行中的应用操作用户的数据（[ADR 0011](docs/adr/0011-cli-through-the-app.md)）：数据目录只由应用打开，新功能不要让第二个进程去打开它。命令在 `crates/eddy-control` 的 `execute` 里只实现一次，结果类型在它的 `dto` 里，只加字段不改含义；加了命令或改了输出，同步改 `tools/eddy-cli/src/guide.md`（`eddy guide` 打印给 Agent 的说明）。`scripts/test-server-smoke.sh` 按整行匹配 `status`、`tags`、`sign-out` 的输出，`render.rs` 的测试钉着这些行。
+- 测命令行经过应用的这条路，一律对着用 `EDDY_DATA_DIR` 启动的测试应用：`EDDY_DATA_DIR=$PWD/build/app-test target/debug/eddy-cli --app items`。仓库里构建的副本不设这个变量就走不了应用模式，这是有意的。
 - 调试 Mac 应用时不要往用户的真实数据目录里写测试内容：用 `open --env EDDY_DATA_DIR=$PWD/build/app-test apple/DerivedData/Build/Products/Debug/Eddy.app` 指向 `build/` 下的测试目录。设了 `EDDY_DATA_DIR` 的应用用自己的钥匙串条目（`EddyPaths.keychainService`），不会读写真实安装的密钥。
 - 阅读视图用 TextKit 2（`NSTextView`），不要改回 SwiftUI 的 `LazyVStack` 拼文章：UX demo 阶段两次卡死都是它在滚动时的布局反馈循环。
 - 界面只有一套设计语言，定义在 `apple/Eddy/Shared/Design.swift`（`Theme` 的颜色、圆角和扁平控件：`FlatButtonStyle`、`KeyButtonStyle`、`SwitchBar`、`FlatToggleStyle` 等）：平面、两级色调、方形圆角，不用渐变、内阴影和系统的材质背景。新界面用这些，不直接用系统的 `.secondary`、`.separator`、分段选择器和分组表单。

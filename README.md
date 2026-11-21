@@ -97,14 +97,29 @@ The toolbar button (⌘⇧E) opens a popup that shows the page and waits: **Save
 
 Feeds come from three places: the links in a page's head that name a feed, links in its text that look like one, and RSSHub's rules for the site (the same rules RSSHub Radar uses), which the extension fetches from an RSSHub instance once a day. The instance is `https://rsshub.app` until you set your own on the extension's settings page (the Settings link in the popup, or Options on its card in `chrome://extensions`), where Test asks the instance for its rules without saving anything; the public one is meant for trying things out. The toolbar icon shows how many feeds the page in a tab has; to count them the extension looks for feed links in every page as it loads, which is why Chrome lists it as able to read all sites. The count can be switched off on the settings page. The extension's logic has tests that run with Node: `for t in extensions/tests/*.test.js; do node "$t" || break; done`.
 
-### Headless CLI
+### Command line
 
-`tools/eddy-cli` drives the engine without the UI, for checking real network behaviour. It keeps its data and secrets in its own directory under `build/`, separate from the app.
+`eddy` works on your library from a terminal, and is how an agent works on it: add pages, files and text, manage subscriptions, look up items and read their text, read and set reading positions. It ships inside the app; **Settings → Saving → Install Command Line Tool** puts it on your `PATH` as `/usr/local/bin/eddy`.
 
 ```sh
-cargo run -p eddy-cli -- save https://example.com/article
+eddy items --unread --limit 20          # newest unread
+eddy search "path tracing"
+eddy doc ID                             # an item's text as Markdown
+eddy add url https://example.com/article
+eddy add text notes.md --title "Reading notes"
+eddy feeds add https://example.com/feed --folder Tech
+eddy progress get ID
+eddy guide                              # the whole thing, written for an agent
+```
+
+Every command prints text, or one JSON object with `--json`. It works through the app, which it starts in the background when it is not running, so the app is the only process that opens your data and shows changes at once ([ADR 0011](docs/adr/0011-cli-through-the-app.md)).
+
+The same program built from the repository (`tools/eddy-cli`) runs the engine in its own process on a directory of its own, for checking real network behaviour without the UI. It keeps its data and secrets under `build/`, separate from the app, and cannot reach your library:
+
+```sh
+cargo run -p eddy-cli -- add url https://example.com/article
 cargo run -p eddy-cli -- items
-cargo run -p eddy-cli -- search "query"
+cargo run -p eddy-cli -- --data build/other search "query"
 ```
 
 ### Server (optional)

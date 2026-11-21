@@ -6,9 +6,16 @@ license.workspace = true
 publish = false
 
 [dependencies]
+chrono = { workspace = true }
+clap = { version = "4.6", features = ["derive"] }
+eddy-control = { workspace = true }
 eddy-core = { workspace = true }
 eddy-model = { workspace = true }
 eddy-pdf = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 url = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

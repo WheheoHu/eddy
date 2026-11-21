@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use eddy_core::{
     CollectionEntry, CollectionKind, ItemRow, ResumePoint, SeriesInfo, SourceInfo, SourceStats,
 };
-use eddy_model::{ContentFormat, Position};
+use eddy_model::{ContentFormat, ItemKind, Position};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -24,6 +24,7 @@ pub struct ItemDto {
     pub title: String,
     pub url: Option<String>,
     pub author: Option<String>,
+    /// The subscription a `feed` item came from, and its title.
     pub feed_id: Option<String>,
     pub feed: Option<String>,
     pub series_id: Option<String>,
@@ -48,6 +49,9 @@ pub struct ItemDto {
 impl From<&ItemRow> for ItemDto {
     fn from(row: &ItemRow) -> Self {
         let item = &row.item;
+        // Saved pages and chapters have a source of their own inside the
+        // engine; it is not a subscription anyone can list or filter by.
+        let subscribed = item.kind == ItemKind::Feed;
         ItemDto {
             id: item.id.clone(),
             kind: item.kind.as_str().to_string(),
@@ -59,8 +63,8 @@ impl From<&ItemRow> for ItemDto {
             title: item.title.clone(),
             url: item.url.clone(),
             author: item.author.clone(),
-            feed_id: item.source_id.clone(),
-            feed: row.source_title.clone(),
+            feed_id: subscribed.then(|| item.source_id.clone()).flatten(),
+            feed: subscribed.then(|| row.source_title.clone()).flatten(),
             series_id: item.series_id.clone(),
             chapter_index: item.chapter_index,
             published_at: item.published_at,
