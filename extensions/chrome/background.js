@@ -51,8 +51,47 @@ async function capture(tab) {
   return { ...reply, url: page.url };
 }
 
-// The popup saves the tab it was opened on, and asks for "Show".
+// What the popup offers before anything is saved: the page it was opened
+// on, and the feeds the page names in its head.
+async function inspect(tab) {
+  if (!tab || !/^https?:/.test(tab.url || "")) {
+    return { ok: false, error: "只能保存网页" };
+  }
+  const page = { ok: true, url: tab.url, title: tab.title || tab.url, feeds: [] };
+  if (isPdf(tab)) return page;
+  try {
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () =>
+        [...document.querySelectorAll('link[rel~="alternate" i][href]')]
+          .filter((link) => /(rss|atom)\+xml|feed\+json/i.test(link.type))
+          .map((link) => ({ url: link.href, title: link.title || "" })),
+    });
+    const seen = new Set();
+    for (const feed of result.result || []) {
+      if (!/^https?:/.test(feed.url) || seen.has(feed.url)) continue;
+      seen.add(feed.url);
+      page.feeds.push(feed);
+    }
+    page.feeds = page.feeds.slice(0, 8);
+  } catch (e) {
+    // A page scripts can't run on (the Web Store, a viewer): saving its
+    // address still works.
+  }
+  return page;
+}
+
+// The popup asks what is here, then saves the tab it was opened on or hands
+// one of its feeds to Eddy, as its buttons are pressed; and asks for "Show".
 chrome.runtime.onMessage.addListener((message, _sender, respond) => {
+  if (message.type === "inspect") {
+    chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => inspect(tab)).then(respond);
+    return true;
+  }
+  if (message.type === "subscribe") {
+    send({ feed: message.url, title: message.title }).then(respond);
+    return true;
+  }
   if (message.type === "capture") {
     chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => capture(tab)).then(respond);
     return true;

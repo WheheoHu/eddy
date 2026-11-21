@@ -10,13 +10,13 @@ Eddy is in early development (0.1.0). The macOS app is the only interface so far
 
 ## Features
 
-- **Feeds** — a three-pane reader for FreshRSS subscriptions, with read state, stars and reading position kept per article.
+- **Feeds** — a three-pane reader for FreshRSS subscriptions, with read state, stars and reading position kept per article. Feeds are added from Eddy, into a folder or none; FreshRSS does the subscribing.
 - **Collection** — saved web pages, web series built from a table of contents, imported EPUB books and PDFs, side by side with your feeds.
 - **Reflowed reading** — articles, EPUB chapters and PDF text are converted into one block-based document model and laid out with TextKit 2: formulas, code, tables, images, bilingual text, and Chinese typography.
 - **Gallery** — a separate view for image- and video-heavy feeds and saved media links.
 - **AI on the client** — paragraph translation, summaries and tags from a controlled vocabulary, against any OpenAI-compatible or Gemini-native endpoint you configure.
 - **Video to book** — turns a talk or presentation (an online link or a local file) into a multi-chapter illustrated EPUB in your Collection.
-- **Save from Chrome** — a browser extension hands the page you are looking at, including pages you are signed in to, over to Eddy, even while Eddy is closed.
+- **Save from Chrome** — a browser extension hands the page you are looking at, including pages you are signed in to, over to Eddy, even while Eddy is closed. It also lists the feeds a page names and opens Eddy's Add Feed sheet on the one you pick.
 - **Search** — full-text search with Chinese word segmentation; local data on the client, the whole history on the server.
 
 ## Repository layout
@@ -92,6 +92,8 @@ On Windows pdfium is a shared library: copy `build/pdfium/windows/release/lib/x6
 ### Chrome extension
 
 Open `chrome://extensions`, turn on Developer mode and load the `extensions/chrome/` folder unpacked. Then click **Connect Chrome** in Eddy's settings.
+
+The toolbar button (⌘⇧E) opens a popup that shows the page and waits: **保存页面到 Eddy** saves it (Return does too), and each feed the page names has a button that opens Eddy's Add Feed sheet on it, where the folder is chosen and the subscription confirmed. The two items in the page's right-click menu save at once. After updating Eddy, press the reload button on the extension's card in `chrome://extensions` so Chrome picks up the new version.
 
 ### Headless CLI
 

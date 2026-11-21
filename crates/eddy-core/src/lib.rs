@@ -22,6 +22,7 @@ mod progress;
 mod rules;
 mod search;
 mod server;
+mod subscribe;
 mod upstream;
 mod video;
 
@@ -67,6 +68,7 @@ pub use progress::{ResumePoint, SeriesInfo};
 pub use rules::RulePackSummary;
 pub use search::SearchResult;
 pub use server::{AppliedOps, OpsPage, ServerOverview};
+pub use subscribe::AddedFeed;
 pub use upstream::HistoryCallback;
 pub use video::{
     StartVideoJobOptions, VideoJobCallback, VideoJobInfo, VideoJobTarget, record_to_remote,

@@ -30,6 +30,8 @@ struct Notice: Equatable {
         case error
         /// A page was saved; "Show" brings it into view.
         case saved(itemID: String)
+        /// A feed was subscribed to; "Show" lists it.
+        case subscribed(sourceID: String)
         /// A file was exported; "Show in Finder" reveals it.
         case exported(path: String)
     }
@@ -215,6 +217,8 @@ final class AppModel {
     var pendingMarkAll: MarkAllRequest?
 
     var savingURL = false
+    /// The Add Feed sheet, while it is up.
+    var addingFeed: AddFeedRequest?
     var importing = false
     var mediaRequest: MediaRequest?
     var pendingVideoConvert: VideoConvertRequest?
@@ -846,6 +850,32 @@ final class AppModel {
         }
     }
 
+    /// Subscribes to a feed, in a folder or in none. Throws what went wrong,
+    /// for the sheet to say beside the address. The feed is listed at once;
+    /// its articles come with the refresh started here.
+    func addFeed(url: String, folder: String?) async throws {
+        guard let engine else { throw EddyError.NotConfigured(message: "") }
+        let added = try await engine.addFeed(url: url, folder: folder)
+        reload()
+        notice = Notice(text: String(localized: "Subscribed to “\(added.title)”"), kind: .subscribed(sourceID: added.sourceId))
+        Task { await refresh(quiet: true) }
+    }
+
+    /// Lists a subscription where the current mode lists them; the Gallery
+    /// hands over to the three panes, as it does for a saved page.
+    func show(feed sourceID: String) {
+        let defaults = UserDefaults.standard
+        switch defaults.string(forKey: "app.mode") {
+        case AppMode.library.rawValue:
+            navigation = PaletteRequest(value: .libraryFeed(sourceID: sourceID))
+        case AppMode.gallery.rawValue:
+            chose(.feed(sourceID))
+            defaults.set(AppMode.threePane.rawValue, forKey: "app.mode")
+        default:
+            navigation = PaletteRequest(value: .threePane(.feed(sourceID)))
+        }
+    }
+
     /// A table of contents found in a page just saved, waiting for the user.
     var pendingSeries: SeriesProposalView?
 
@@ -939,11 +969,20 @@ final class AppModel {
 
     /// `eddy://show?url=…`, from the browser extension: the page saved from
     /// that address, once anything still waiting in the spool is in.
+    /// `eddy://add-feed?url=…&title=…` opens the Add Feed sheet on a feed the
+    /// extension found; nothing is subscribed to until it is confirmed there.
     func open(_ link: URL) async {
-        guard link.scheme == "eddy", link.host() == "show",
-              let page = URLComponents(url: link, resolvingAgainstBaseURL: false)?
-                  .queryItems?.first(where: { $0.name == "url" })?.value
-        else { return }
+        guard link.scheme == "eddy" else { return }
+        let query = URLComponents(url: link, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        func value(_ name: String) -> String? { query.first { $0.name == name }?.value }
+        if link.host() == "add-feed" {
+            guard let feed = value("url"), let scheme = URL(string: feed)?.scheme?.lowercased(),
+                  ["http", "https"].contains(scheme) else { return }
+            AppDelegate.comeForward()
+            addingFeed = AddFeedRequest(url: feed, title: value("title"))
+            return
+        }
+        guard link.host() == "show", let page = value("url") else { return }
         AppDelegate.comeForward()
         await importCaptures()
         if let id = (try? engine?.savedItemForUrl(url: page)) ?? nil {

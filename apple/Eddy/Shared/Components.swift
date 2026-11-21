@@ -198,6 +198,12 @@ struct MessageBanner: View {
                         model.reveal(itemID: itemID)
                     }
                     .help("Show it in Saved")
+                case let .subscribed(sourceID):
+                    Button("Show") {
+                        model.notice = nil
+                        model.show(feed: sourceID)
+                    }
+                    .help("Show the subscription")
                 case let .exported(path):
                     Button("Show in Finder") {
                         model.notice = nil

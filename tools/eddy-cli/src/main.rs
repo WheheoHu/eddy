@@ -167,6 +167,22 @@ async fn main() {
             Some(d) => summarize(&d.document),
             None => println!("no content"),
         }),
+        // Subscribes to a feed, optionally into a folder; through the server
+        // when the data directory is paired with one.
+        ["feed", "add", url] | ["feed", "add", url, _] => {
+            let folder = args.get(3).map(String::as_str);
+            engine.add_feed(url, folder).await.map(|added| {
+                println!(
+                    "subscribed {} — {}{}",
+                    added.source_id,
+                    added.title,
+                    added
+                        .folder
+                        .map(|f| format!(" (in {f})"))
+                        .unwrap_or_default()
+                );
+            })
+        }
         // Fetches one image the way the reader does, optionally as part of
         // the article at PAGE; for checking hosts that guard their pictures.
         ["image", url] | ["image", url, _] => {
@@ -364,7 +380,7 @@ async fn main() {
         }
         _ => {
             eprintln!(
-                "usage: eddy-cli [--data DIR] save URL | items | doc ID | text ID | image URL [PAGE] | fulltext ID | connect URL CODE | disconnect | sign-out [--discard-unsent] | sync | status | freshrss URL USER PASSWORD | server-account URL USER PASSWORD | tag NAME | tags | star ID | search QUERY | import FILE | media ID | gallery FOLDER COUNT | --version"
+                "usage: eddy-cli [--data DIR] save URL | items | doc ID | text ID | image URL [PAGE] | feed add URL [FOLDER] | fulltext ID | connect URL CODE | disconnect | sign-out [--discard-unsent] | sync | status | freshrss URL USER PASSWORD | server-account URL USER PASSWORD | tag NAME | tags | star ID | search QUERY | import FILE | media ID | gallery FOLDER COUNT | --version"
             );
             std::process::exit(2);
         }

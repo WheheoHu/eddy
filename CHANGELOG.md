@@ -24,6 +24,7 @@ Sync protocol 2. Servers and devices on protocol 1 must be updated together.
 - `eddy-cli`: `status`, `disconnect`, `freshrss`, `server-account`, `tag`, `tags`, `star`, `--version`.
 - Engine: `overview` reads what the sidebars and shelves are drawn from (status, sources and their counts, series, collection, tags, Gallery folders) in one call, on a read-only connection of its own, so counting a large library in the background no longer keeps other calls waiting.
 - `eddy-cli image URL [PAGE]` fetches one image the way the reader does.
+- Subscribing to a feed (`add_feed`, `eddy-cli feed add URL [FOLDER]`): FreshRSS subscribes to the address, or to the feed the page there names, and files it in the folder given, making the folder if there is none by that name. A device paired with a server asks the server, which is the one that writes to FreshRSS (`POST /v1/subscriptions`); with the server out of reach the answer is that it is offline, and nothing is queued. The feed reaches every device as a source like any other. This needs no protocol change: a device asking an older server is told the server must be updated.
 - Engine: `mark_read` marks items read and finished by hand, leaving the reading position; it is what the apps' Mark as Read does. Opening an item still only marks it read. A Continue Reading query lists the items named in `keep` even once they are finished.
 
 ### Changed
@@ -36,6 +37,8 @@ Sync protocol 2. Servers and devices on protocol 1 must be updated together.
 - Disconnecting from a server asks it to forget the device, so the device no longer stays listed with a token that still works.
 - A first sync is several times faster: pages are larger and compressed, each is stored in one step, and the next downloads while the current one is applied. Pulled pages now say how many changes the server has; this needs no protocol change, and older servers and devices ignore it.
 - After a long sync the articles fetched for offline reading are the newest, several at a time.
+- Feeds that FreshRSS keeps in its default category ("Uncategorized", or its name in the language FreshRSS is set to) are in no folder, instead of in a folder of that name. The name in another language is learned the first time a feed is added without a folder.
+- Refreshing from FreshRSS while the server is offline takes only feeds not listed yet; what the server said of the others stands.
 
 ### Fixed
 

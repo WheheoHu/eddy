@@ -64,6 +64,7 @@ struct EddyApp: App {
             }
             CommandGroup(after: .newItem) {
                 Button("Save Page…") { model.savingURL = true }.keyboardShortcut("l", modifiers: .command)
+                Button("Add Feed…") { model.addingFeed = AddFeedRequest() }
                 Button("Convert Video to Book…") { model.requestVideoConvert() }.keyboardShortcut("L", modifiers: [.command, .shift])
                 Button("Import EPUB, PDF, or Video…") { model.importing = true }.keyboardShortcut("o", modifiers: .command)
                 Divider()
@@ -214,6 +215,7 @@ struct RootView: View {
             return true
         }
         .sheet(isPresented: $model.savingURL) { SavePageSheet() }
+        .sheet(item: $model.addingFeed) { request in AddFeedSheet(request: request) }
         .sheet(item: $model.pendingVideoConvert) { req in
             VideoConvertSheet(request: req)
         }

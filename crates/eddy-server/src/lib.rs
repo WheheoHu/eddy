@@ -249,6 +249,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/info", get(info))
         .route("/v1/account", post(set_account))
         .route("/v1/refresh", post(refresh))
+        .route("/v1/subscriptions", post(add_feed))
         .route("/v1/ops", post(push).get(pull))
         .route(
             "/v1/blobs/{key}",
@@ -387,6 +388,43 @@ async fn set_account(
         .await
         .map_err(ApiError::bad)?;
     Ok(Json(s.info()?))
+}
+
+/// Subscribes to a feed in the server's FreshRSS account, for a device:
+/// only the server writes to FreshRSS. The new source goes out to every
+/// device as an op; its articles follow from a refresh started here.
+async fn add_feed(
+    State(s): State<Arc<AppState>>,
+    _d: Device,
+    Json(req): Json<eddy_sync::AddFeedRequest>,
+) -> Result<Json<eddy_sync::AddFeedResponse>, ApiError> {
+    use eddy_core::EngineError;
+    let added = s
+        .engine
+        .add_feed(&req.url, req.folder.as_deref())
+        .await
+        .map_err(|e| match e {
+            // The request itself: no feed there, subscribed already, no
+            // account to subscribe with.
+            EngineError::Invalid(_) | EngineError::NotConfigured => {
+                ApiError(StatusCode::UNPROCESSABLE_ENTITY, e.to_string())
+            }
+            // FreshRSS out of reach or failing. Not 502: devices read that
+            // as this server being offline.
+            other => ApiError::internal(other),
+        })?;
+    s.announce();
+    let state = s.clone();
+    tokio::spawn(async move {
+        if let Err(e) = state.refresh().await {
+            tracing::warn!("refresh after adding a feed failed: {e}");
+        }
+    });
+    Ok(Json(eddy_sync::AddFeedResponse {
+        source_id: added.source_id,
+        title: added.title,
+        folder: added.folder,
+    }))
 }
 
 async fn refresh(State(s): State<Arc<AppState>>, _d: Device) -> Result<StatusCode, ApiError> {

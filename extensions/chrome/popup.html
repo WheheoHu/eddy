@@ -7,10 +7,25 @@
     body {
       margin: 0;
       padding: 14px 16px;
-      width: 260px;
+      width: 280px;
       font: 13px -apple-system, BlinkMacSystemFont, sans-serif;
     }
+    [hidden] { display: none !important; }
     .row { display: flex; align-items: center; gap: 10px; }
+    #title {
+      font-weight: 600;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    #host, .label { color: GrayText; font-size: 12px; }
+    #host { margin: 2px 0 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #save { width: 100%; padding: 6px 12px; }
+    #feeds { margin-top: 14px; }
+    .label { margin-bottom: 6px; }
+    .feed { margin-top: 6px; }
+    .feed span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     #status { flex: 1; font-weight: 500; }
     #detail {
       margin-top: 8px;
@@ -29,18 +44,32 @@
       background: color-mix(in srgb, CanvasText 6%, transparent);
       color: inherit;
       cursor: pointer;
+      flex: none;
     }
     button.primary { background: #0a84ff; border-color: #0a84ff; color: white; }
-    button[hidden] { display: none; }
+    button:disabled { opacity: 0.5; cursor: default; }
   </style>
 </head>
 <body>
-  <div class="row">
-    <span id="status">正在保存到 Eddy…</span>
-    <button id="show" class="primary" hidden>Show</button>
-    <button id="copy" hidden>复制错误</button>
+  <!-- What is here, and what can be done with it: nothing is saved or
+       subscribed to until one of the buttons is pressed. -->
+  <div id="ask" hidden>
+    <div id="title"></div>
+    <div id="host"></div>
+    <button id="save" class="primary">保存页面到 Eddy</button>
+    <div id="feeds" hidden>
+      <div class="label">订阅源</div>
+    </div>
   </div>
-  <div id="detail" title="点击复制"></div>
+  <!-- What came of it. -->
+  <div id="result" hidden>
+    <div class="row">
+      <span id="status"></span>
+      <button id="show" class="primary" hidden>Show</button>
+      <button id="copy" hidden>复制错误</button>
+    </div>
+    <div id="detail" title="点击复制"></div>
+  </div>
   <script src="popup.js"></script>
 </body>
 </html>
