@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-Sync protocol 2. Servers and devices on protocol 1 must be updated together.
+Sync protocol 3. Servers and devices on protocol 1 must be updated together; one on protocol 2 still syncs with one on 3 (see Changed).
 
 ### Added
 
@@ -28,6 +28,7 @@ Sync protocol 2. Servers and devices on protocol 1 must be updated together.
 - Engine: `mark_read` marks items read and finished by hand, leaving the reading position; it is what the apps' Mark as Read does. Opening an item still only marks it read. A Continue Reading query lists the items named in `keep` even once they are finished.
 - Engine: `feed_icon` gives the icon of a subscription's site. It is looked for on the device, from the site's address the feed carries: the icons the page names (or the site's front page, when the feed gives its own address as its site's), then `/favicon.ico`; what comes back is only taken if it is an image. The icon is kept in the cache and found again if evicted; a site without one is asked again after a week, and one that can't be reached, the next time. Nothing about icons is synced. The local data format goes to 8.
 - Engine: `clear_cache` empties the offline cache now, whatever its limit: articles already read, cached pictures and feed icons go; unread, starred, saved and in-progress content and imported files stay.
+- Unsubscribing from a feed (`remove_feed`, `eddy-cli feed remove ID`, with `feed list` for the IDs): FreshRSS unsubscribes, and the feed leaves Eddy with its articles. A device paired with a server asks the server (`DELETE /v1/subscriptions/{id}`); with the server out of reach the answer is that it is offline. A feed FreshRSS no longer has is simply removed here.
 
 ### Changed
 
@@ -42,6 +43,7 @@ Sync protocol 2. Servers and devices on protocol 1 must be updated together.
 - Feeds that FreshRSS keeps in its default category ("Uncategorized", or its name in the language FreshRSS is set to) are in no folder, instead of in a folder of that name. The name in another language is learned the first time a feed is added without a folder.
 - Refreshing from FreshRSS while the server is offline takes only feeds not listed yet; what the server said of the others stands.
 - Trimming the offline cache deletes files several at a time and records them in batches: emptying a cache of two hundred thousand files took a minute and now takes about half that.
+- Sync protocol 3: a source that is deleted takes its articles out of every list, starred ones included, as FreshRSS deletes them with the feed; before, they stayed listed as articles of no feed, marked read and unstarred by the next refresh. This holds for a feed unsubscribed from in Eddy and for one removed in FreshRSS itself. Pages saved from such articles stay. A device or server still on protocol 2 syncs as before and goes on listing those articles until it is updated.
 
 ### Fixed
 

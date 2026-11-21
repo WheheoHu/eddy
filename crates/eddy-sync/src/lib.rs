@@ -15,7 +15,10 @@ use serde::{Deserialize, Serialize};
 /// Version of the wire protocol this build speaks. Raise it whenever an
 /// older peer would misread the exchange: a new entity or field, or a field
 /// whose meaning changes. See docs/adr/0009.
-pub const PROTOCOL_VERSION: u32 = 2;
+///
+/// 3: a source's `deleted` takes the source's articles out of the lists
+/// too. A peer on 2 still syncs, and goes on listing them.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Oldest protocol this build still talks to, as a server (clients below it
 /// get 426) and as a client (servers below it are refused).
@@ -500,6 +503,19 @@ impl SyncClient {
                 .json(req),
         )
         .await
+    }
+
+    /// Has the server unsubscribe from a feed in its FreshRSS account. A
+    /// server from before this answers 404 or 405; one that does not have
+    /// the source, 422.
+    pub async fn remove_feed(&self, source_id: &str) -> Result<()> {
+        self.send(
+            self.http
+                .delete(self.url(&format!("subscriptions/{source_id}")))
+                .timeout(Duration::from_secs(120)),
+        )
+        .await?;
+        Ok(())
     }
 
     pub async fn video_jobs(&self) -> Result<Vec<RemoteVideoJob>> {

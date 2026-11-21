@@ -943,6 +943,8 @@ private struct ThreePaneSidebar: View, Equatable {
                     Button(feed.gallery ? "Remove from Gallery" : "Show in Gallery") { model.setGallery(source: feed, !feed.gallery) }
                 }
                 FullTextMenu(feed: feed)
+                Divider()
+                Button("Unsubscribe…", role: .destructive) { model.pendingUnsubscribe = feed }
             }
         }
     }

@@ -325,6 +325,19 @@ impl GReaderClient {
             .await?;
         Ok(())
     }
+
+    /// Unsubscribes from a feed (`feed/…`). FreshRSS deletes the feed's
+    /// articles with it, and answers 400 for a feed it does not have.
+    pub async fn unsubscribe(&self, stream_id: &str) -> Result<()> {
+        let form = vec![
+            ("ac".to_string(), "unsubscribe".to_string()),
+            ("s".to_string(), stream_id.to_string()),
+            ("T".to_string(), self.token().await?),
+        ];
+        self.request(Method::POST, "subscription/edit", Some(&form))
+            .await?;
+        Ok(())
+    }
 }
 
 fn check_redirect(status: StatusCode) -> Result<()> {

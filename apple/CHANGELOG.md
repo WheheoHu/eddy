@@ -33,6 +33,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Chrome extension 0.2.0: the popup lists the feeds the page names, each with a button that opens Add Feed in Eddy on that feed; a page that names none offers its own address to start from. `eddy://add-feed?url=…` opens the same sheet.
 - Subscriptions show their site's icon, in colour: in the sidebars of Three-Pane and the Gallery in place of the feed symbol, before the feed's name on each article in a list, and beside the title of a subscription opened in the Library. A subscription whose site has no icon keeps the symbol. Icons drawn in black or white alone are set on a small plate of the other tone where they would vanish into the background. They are fetched once from the sites themselves and then shown offline.
 - Settings → Storage → Clear Cache removes what the offline cache holds beyond what is always kept (unread, starred, saved and in-progress articles), and says how much it freed. A large cache takes a little while; Eddy stays usable meanwhile.
+- Unsubscribe… on a subscription, in Three-Pane's sidebar and on the Library's shelf. After a question, FreshRSS unsubscribes (through the sync server when Eddy is paired with one; not while it is offline) and the feed leaves with its articles, starred ones included. Pages saved from it stay.
 
 ### Changed
 
@@ -82,6 +83,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Chrome extension: the toolbar button no longer saves the page as soon as its popup opens. The popup shows the page's title and waits for Save (Return presses it), so ⌘⇧E followed by Return saves. The right-click menu's items still save at once. Reload the extension in `chrome://extensions` after updating.
 - Subscriptions that FreshRSS keeps in its default category are listed outside any folder, instead of in a folder named "Uncategorized".
 - Settings → Translation, Summaries and Video: the language is picked from a menu, Chinese (Simplified) or English for now, instead of typed. Video's can be left to follow Summaries. A language typed in earlier stays chosen until another is picked.
+- A feed that is removed in FreshRSS itself now takes its articles out of the lists too, instead of leaving them behind as read articles of no feed.
 
 ### Removed
 

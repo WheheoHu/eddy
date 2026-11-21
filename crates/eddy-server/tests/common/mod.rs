@@ -28,6 +28,9 @@ pub struct FreshState {
     /// Feeds subscribed to through the API, after `feed/1`: the address
     /// asked for and the folder each was filed in.
     pub added: Vec<(String, Option<String>)>,
+    /// Feeds unsubscribed from, by number (`feed/1` is the one it starts
+    /// with). Unsubscribing takes a feed's articles with it.
+    pub removed: HashSet<usize>,
 }
 
 /// FreshRSS mock whose read/starred state changes with edit-tag calls.
@@ -78,8 +81,14 @@ pub async fn stateful_freshrss() -> (MockServer, Arc<Mutex<FreshState>>) {
         .and(path("/api/greader.php/reader/api/0/subscription/list"))
         .respond_with(move |_: &Request| {
             let s = st.lock().unwrap();
-            let mut subscriptions = vec![json!({"id": "feed/1", "title": "Graphics Blog", "categories": [{"label": "Tech"}]})];
+            let mut subscriptions = Vec::new();
+            if !s.removed.contains(&1) {
+                subscriptions.push(json!({"id": "feed/1", "title": "Graphics Blog", "categories": [{"label": "Tech"}]}));
+            }
             for (n, (url, folder)) in s.added.iter().enumerate() {
+                if s.removed.contains(&(n + 2)) {
+                    continue;
+                }
                 // No feed is in no category: the default one takes the rest,
                 // named in the user's language.
                 let categories = [json!({"label": folder.as_deref().unwrap_or(DEFAULT_CATEGORY)})];
@@ -136,9 +145,22 @@ pub async fn stateful_freshrss() -> (MockServer, Arc<Mutex<FreshState>>) {
                 .and_then(|n| n.parse::<usize>().ok());
             let folder = form.get("a").and_then(|a| a.strip_prefix("user/-/label/"));
             let mut s = st.lock().unwrap();
+            let known = |s: &FreshState, n: usize| {
+                (n == 1 || n - 2 < s.added.len()) && !s.removed.contains(&n)
+            };
             match (form.get("ac").map(String::as_str), feed, folder) {
-                (Some("edit"), Some(n), Some(folder)) if n >= 2 && n - 2 < s.added.len() => {
+                (Some("edit"), Some(n), Some(folder)) if n >= 2 && known(&s, n) => {
                     s.added[n - 2].1 = Some(folder.to_string());
+                    ResponseTemplate::new(200).set_body_string("OK")
+                }
+                (Some("unsubscribe"), Some(n), _) if n >= 1 && known(&s, n) => {
+                    s.removed.insert(n);
+                    if n == 1 {
+                        // Its articles go with it.
+                        s.listed.clear();
+                        s.unread.clear();
+                        s.starred.clear();
+                    }
                     ResponseTemplate::new(200).set_body_string("OK")
                 }
                 _ => ResponseTemplate::new(400),

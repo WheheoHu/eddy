@@ -282,6 +282,13 @@ impl EddyEngine {
         })
     }
 
+    /// Unsubscribes from a feed, which leaves with its articles (starred
+    /// ones too; saved pages stay). In server mode the server does it, and
+    /// `Offline` says it could not be reached.
+    pub async fn remove_feed(&self, source_id: String) -> R<()> {
+        Ok(self.engine.remove_feed(&source_id).await?)
+    }
+
     /// Status, sources, their counts, series, collection, tags and Gallery
     /// folders at once, read on a connection of their own: counting a large
     /// library takes a while, and this way it can be done on a background
