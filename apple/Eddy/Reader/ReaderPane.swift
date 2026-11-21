@@ -173,6 +173,8 @@ struct ReaderPane: View {
         // The translation follows the view: the page's when the page shows,
         // the text's when the text does.
         .onChange(of: rendererID) { old, new in
+            // Lists wait for the slide between text and page to finish.
+            model.holdLists(for: 0.4)
             guard mode != .original else { return }
             if new == RendererRegistry.web.id {
                 cancelTranslation()
@@ -267,7 +269,7 @@ struct ReaderPane: View {
                     version: version,
                     style: style,
                     scrollTarget: scrollTarget,
-                    loadImage: { url in await model.image(url) },
+                    loadImage: { [page = item.url] url in await model.image(url, page: page) },
                     onPosition: { block, offset, atEnd in
                         lastPosition = (block, offset, atEnd)
                         model.recordProgress(itemID, blockID: block, offset: offset, atEnd: atEnd)
@@ -822,6 +824,8 @@ struct ReaderPane: View {
     /// right, and the reader comes back from the left. The edge is set first
     /// so the outgoing view leaves the same way.
     private func slide(to renderer: String) {
+        // Lists keep still from now, not from when the view hears of it.
+        model.holdLists(for: 0.5)
         // From here on text comes in with the slide, not as an arrival.
         _ = arriving.claim()
         rendererArrival = renderer == RendererRegistry.web.id ? .trailing : .leading

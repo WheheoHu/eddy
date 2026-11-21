@@ -14,7 +14,9 @@ const MAX_GIF_BYTES: usize = 120 * 1024 * 1024;
 
 impl Inner {
     /// Image bytes for `url`, cached as a blob so articles render offline.
-    pub(crate) async fn image(&self, url: &str) -> Result<(Vec<u8>, String)> {
+    /// `page` is the article showing it, used as the `Referer` for hosts that
+    /// turn away requests without one.
+    pub(crate) async fn image(&self, url: &str, page: Option<&str>) -> Result<(Vec<u8>, String)> {
         let parsed =
             url::Url::parse(url).map_err(|_| EngineError::Invalid("图片地址无效。".into()))?;
         if !matches!(parsed.scheme(), "http" | "https" | EPUB_SCHEME | PDF_SCHEME) {
@@ -42,20 +44,7 @@ impl Inner {
             self.store.put_blob_keyed(&key, &bytes, mime, false)?;
             return Ok((bytes, mime.to_string()));
         }
-        let response = self
-            .http
-            .get(parsed)
-            // Room for a large GIF on a slow connection.
-            .timeout(std::time::Duration::from_secs(180))
-            .send()
-            .await
-            .map_err(|e| EngineError::Network(e.to_string()))?;
-        if !response.status().is_success() {
-            return Err(EngineError::Network(format!(
-                "HTTP {}",
-                response.status().as_u16()
-            )));
-        }
+        let response = self.fetch_image(&parsed, page).await?;
         let mime = response
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
@@ -76,6 +65,53 @@ impl Inner {
         }
         self.store.put_blob_keyed(&key, &bytes, &mime, false)?;
         Ok((bytes.to_vec(), mime))
+    }
+
+    /// Asks the image's host for it. The first request names no `Referer`,
+    /// which is what hosts serving feed readers expect (some refuse any page
+    /// but their own). A host that answers 401 or 403 is asked once more with
+    /// one, the way a browser showing the article would, and remembered.
+    async fn fetch_image(&self, url: &url::Url, page: Option<&str>) -> Result<reqwest::Response> {
+        let host = url.host_str().unwrap_or_default().to_string();
+        let referer = referer_for(url, page);
+        let wants_referer = self.referer_hosts.lock().contains(&host);
+        let first = self
+            .send_image_request(url, wants_referer.then_some(&referer))
+            .await?;
+        if first.status().is_success() {
+            return Ok(first);
+        }
+        let refused = matches!(first.status().as_u16(), 401 | 403);
+        if refused && !wants_referer {
+            let second = self.send_image_request(url, Some(&referer)).await?;
+            if second.status().is_success() {
+                self.referer_hosts.lock().insert(host);
+                return Ok(second);
+            }
+        }
+        Err(EngineError::Network(format!(
+            "HTTP {}",
+            first.status().as_u16()
+        )))
+    }
+
+    async fn send_image_request(
+        &self,
+        url: &url::Url,
+        referer: Option<&String>,
+    ) -> Result<reqwest::Response> {
+        let mut request = self
+            .http
+            .get(url.clone())
+            // Room for a large GIF on a slow connection.
+            .timeout(std::time::Duration::from_secs(180));
+        if let Some(referer) = referer {
+            request = request.header(reqwest::header::REFERER, referer);
+        }
+        request
+            .send()
+            .await
+            .map_err(|e| EngineError::Network(e.to_string()))
     }
 
     /// Renders the figures of a PDF document into the image cache in the
@@ -167,6 +203,17 @@ impl Inner {
             tokio::task::yield_now().await;
         }
     }
+}
+
+/// What a browser showing `page` would name as the `Referer` of a picture
+/// on another site: the page's origin, no path. Without a page (or with one
+/// that is not on the web) the image's own site stands in.
+fn referer_for(image: &url::Url, page: Option<&str>) -> String {
+    let page = page
+        .and_then(|p| url::Url::parse(p).ok())
+        .filter(|p| matches!(p.scheme(), "http" | "https"));
+    let origin = page.as_ref().unwrap_or(image).origin();
+    format!("{}/", origin.ascii_serialization())
 }
 
 /// Blob key of a cached image. What a PDF image address shows (which strips

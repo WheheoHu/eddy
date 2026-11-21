@@ -2,6 +2,7 @@ import AppKit
 import EddyKit
 import ImageIO
 import Observation
+import os
 import PDFKit
 import SwiftUI
 
@@ -268,39 +269,118 @@ final class AppModel {
 
     // MARK: Lists
 
+    /// Reads everything the lists are drawn from and shows it, before
+    /// returning: for a change the user just made and is looking at. It
+    /// holds the main thread for as long as the library takes to count
+    /// (a fifth of a second for a hundred thousand articles), so what can
+    /// wait a moment goes through `reloadSoon`.
     func reload() {
         itemsCache.removeAll()
         guard let engine else { return }
-        status = try? engine.status()
-        sources = (try? engine.sources()) ?? []
-        stats = Dictionary(uniqueKeysWithValues: ((try? engine.sourceOverview()) ?? []).map { ($0.sourceId, $0) })
-        series = (try? engine.seriesList()) ?? []
-        collection = (try? engine.collection()) ?? []
-        tags = (try? engine.tags()) ?? []
-        galleryFolders = (try? engine.galleryFolders()) ?? []
+        reloadTicket += 1
+        show(Self.overview(engine))
+    }
+
+    /// What `reload` reads, in one piece so it can be read off the main thread.
+    private struct Overview: Sendable {
+        var status: StatusView?
+        var sources: [SourceView]
+        var stats: [String: SourceStatsView]
+        var series: [SeriesView]
+        var collection: [CollectionEntryView]
+        var tags: [TagView]
+        var galleryFolders: [String]
+        var continueReadingCount: Int
+    }
+
+    /// The core reads it all on a connection of its own, so the calls the
+    /// interface goes on making meanwhile don't wait for it.
+    private nonisolated static func overview(_ engine: EddyEngine) -> Overview {
+        if let read = try? engine.overview() {
+            return Overview(
+                status: read.status,
+                sources: read.sources,
+                stats: Dictionary(uniqueKeysWithValues: read.stats.map { ($0.sourceId, $0) }),
+                series: read.series,
+                collection: read.collection,
+                tags: read.tags,
+                galleryFolders: read.galleryFolders,
+                continueReadingCount: Int(read.continueReading)
+            )
+        }
+        // One piece failed: the others still show.
         let started = ItemQueryView(filter: .continueReading, unreadOnly: false, keep: [], limit: 0, offset: 0)
-        continueReadingCount = Int((try? engine.itemCount(query: started)) ?? 0)
+        return Overview(
+            status: try? engine.status(),
+            sources: (try? engine.sources()) ?? [],
+            stats: Dictionary(uniqueKeysWithValues: ((try? engine.sourceOverview()) ?? []).map { ($0.sourceId, $0) }),
+            series: (try? engine.seriesList()) ?? [],
+            collection: (try? engine.collection()) ?? [],
+            tags: (try? engine.tags()) ?? [],
+            galleryFolders: (try? engine.galleryFolders()) ?? [],
+            continueReadingCount: Int((try? engine.itemCount(query: started)) ?? 0)
+        )
+    }
+
+    /// Only what differs is set: a view that reads the tags is not drawn
+    /// again because an article was read.
+    private func show(_ overview: Overview) {
+        if status != overview.status { status = overview.status }
+        if sources != overview.sources { sources = overview.sources }
+        if stats != overview.stats { stats = overview.stats }
+        if series != overview.series { series = overview.series }
+        if collection != overview.collection { collection = overview.collection }
+        if tags != overview.tags { tags = overview.tags }
+        if galleryFolders != overview.galleryFolders { galleryFolders = overview.galleryFolders }
+        if continueReadingCount != overview.continueReadingCount { continueReadingCount = overview.continueReadingCount }
         revision += 1
     }
 
     private var pendingReload: Task<Void, Never>?
+    /// Counts the reloads asked for, so that one read in the background is
+    /// dropped when a later one has been shown, or is on its way.
+    @ObservationIgnored private var reloadTicket = 0
+    /// Until when lists keep still: the reader is sliding between an
+    /// article's text and its web page.
+    @ObservationIgnored private var listsHeldUntil = Date.distantPast
+
+    /// The reader calls this as its text and web page start trading places.
+    func holdLists(for seconds: TimeInterval) {
+        listsHeldUntil = max(listsHeldUntil, Date().addingTimeInterval(seconds))
+    }
 
     /// Reading changes things in bursts (opening marks read, leaving saves
     /// the position, the end finishes it); one reload after the switch's
     /// animation covers them all instead of redrawing every list three times
-    /// while it plays.
+    /// while it plays. The reading is done off the main thread, which only
+    /// puts the answers in place: an article opened and at once turned to
+    /// its web page used to stop mid-slide while the library was counted.
     func reloadSoon() {
         // What is listed has changed already; the rest follows shortly.
         itemsCache.removeAll()
         guard pendingReload == nil else { return }
         pendingReload = Task {
             try? await Task.sleep(for: .milliseconds(350))
-            // Not while the fingers are moving the reader or the Gallery.
-            while EdgeGestureTracker.anyActive || galleryScrolling {
-                try? await Task.sleep(for: .milliseconds(100))
-            }
+            await listsAtRest()
             pendingReload = nil
-            reload()
+            guard let engine else { return }
+            reloadTicket += 1
+            let ticket = reloadTicket
+            let overview = await Task.detached(priority: .userInitiated) { Self.overview(engine) }.value
+            // Something may have started moving while the library was read.
+            await listsAtRest()
+            guard ticket == reloadTicket else { return }
+            itemsCache.removeAll()
+            show(overview)
+        }
+    }
+
+    /// Returns once nothing is moving that redrawing the lists would stop:
+    /// fingers on the reader or the Gallery, the reader sliding between an
+    /// article's text and its web page.
+    private func listsAtRest() async {
+        while EdgeGestureTracker.anyActive || galleryScrolling || Date() < listsHeldUntil {
+            try? await Task.sleep(for: .milliseconds(50))
         }
     }
 
@@ -429,16 +509,32 @@ final class AppModel {
     static let readerPixels = 2400
 
     /// `maxPixelSize` bounds the longer side of the decoded picture; a grid
-    /// of thumbnails asks for no more than its tiles show.
-    func image(_ url: String, maxPixelSize: Int = AppModel.readerPixels) async -> NSImage? {
+    /// of thumbnails asks for no more than its tiles show. `page` is the
+    /// address of the article the picture is in, for hosts that only serve
+    /// pictures to their own pages.
+    func image(_ url: String, page: String? = nil, maxPixelSize: Int = AppModel.readerPixels) async -> NSImage? {
         let key = (maxPixelSize == Self.readerPixels ? url : "\(maxPixelSize):\(url)") as NSString
         if let cached = imageCache.object(forKey: key) { return cached }
-        guard let engine, let data = try? await engine.image(url: url) else { return nil }
-        let bytes = Data(data.bytes)
+        guard let bytes = await imageData(url, page: page) else { return nil }
         guard let image = await Task.detached(priority: .userInitiated, operation: { Self.decoded(bytes, maxPixelSize: maxPixelSize) }).value else { return nil }
         let pixels = image.representations.first.map { $0.pixelsWide * $0.pixelsHigh } ?? 0
         imageCache.setObject(image, forKey: key, cost: pixels * 4)
         return image
+    }
+
+    private static let imageLog = Logger(subsystem: EddyPaths.keychainService, category: "images")
+
+    /// The picture's bytes from the core. One that can't be had is noted in
+    /// the log, by host and reason: the reader shows only an empty frame.
+    private func imageData(_ url: String, page: String?) async -> Data? {
+        guard let engine else { return nil }
+        do {
+            return Data(try await engine.image(url: url, page: page).bytes)
+        } catch {
+            let host = URL(string: url)?.host ?? "?"
+            Self.imageLog.info("image from \(host, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+            return nil
+        }
     }
 
     /// A picture that is decoded already, without waiting for it: what a
@@ -453,8 +549,7 @@ final class AppModel {
     func animatedImage(_ url: String) async -> NSImage? {
         let key = "animated:\(url)" as NSString
         if let cached = imageCache.object(forKey: key) { return cached }
-        guard let engine, let data = try? await engine.image(url: url) else { return nil }
-        let bytes = Data(data.bytes)
+        guard let bytes = await imageData(url, page: nil) else { return nil }
         guard let image = await Task.detached(priority: .userInitiated, operation: { NSImage(data: bytes) }).value else { return nil }
         imageCache.setObject(image, forKey: key)
         return image
@@ -805,7 +900,7 @@ final class AppModel {
         guard let applied = try? await engine?.applyRules(itemId: id) else { return nil }
         if applied.document != nil {
             leadImages[id] = nil
-            reload()
+            reloadSoon()
         }
         return applied
     }

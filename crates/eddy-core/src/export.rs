@@ -396,7 +396,7 @@ impl Engine {
                 idx as u32,
                 total_imgs,
             );
-            match self.inner.image(src).await {
+            match self.inner.image(src, None).await {
                 Ok((bytes, declared_mime)) => {
                     let (mime, ext) = sniff_image_mime_and_ext(&bytes, &declared_mime);
                     let archive_path = format!("images/img_{:04}.{ext}", idx + 1);
@@ -523,7 +523,7 @@ impl Engine {
                 idx as u32,
                 total_imgs,
             );
-            let _ = self.inner.image(src).await;
+            let _ = self.inner.image(src, None).await;
         }
 
         self.inner.check_export_cancelled(&request.job_id)?;

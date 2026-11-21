@@ -269,6 +269,31 @@ impl EddyEngine {
         Ok(self.engine.backfill_history(callback).await?)
     }
 
+    /// Status, sources, their counts, series, collection, tags and Gallery
+    /// folders at once, read on a connection of their own: counting a large
+    /// library takes a while, and this way it can be done on a background
+    /// thread without making the calls the interface goes on making wait.
+    pub fn overview(&self) -> R<OverviewView> {
+        self.engine.read_aside(|| {
+            Ok(OverviewView {
+                status: self.status()?,
+                sources: self.sources()?,
+                stats: self.source_overview()?,
+                series: self.series_list()?,
+                collection: self.collection()?,
+                tags: self.tags()?,
+                gallery_folders: self.gallery_folders()?,
+                continue_reading: self.engine.item_count(&eddy_core::ItemQuery {
+                    filter: eddy_core::ItemFilter::ContinueReading,
+                    unread_only: false,
+                    keep: Vec::new(),
+                    limit: 0,
+                    offset: 0,
+                })?,
+            })
+        })
+    }
+
     pub fn sources(&self) -> R<Vec<SourceView>> {
         let rules = self.engine.full_text_rules()?;
         Ok(self
@@ -351,8 +376,10 @@ impl EddyEngine {
         Ok(self.engine.set_starred(&item_id, starred).await?)
     }
 
-    pub async fn image(&self, url: String) -> R<ImageData> {
-        let (bytes, mime) = self.engine.image(&url).await?;
+    /// `page` is the address of the article showing the image, if any.
+    #[uniffi::method(default(page = None))]
+    pub async fn image(&self, url: String, page: Option<String>) -> R<ImageData> {
+        let (bytes, mime) = self.engine.image(&url, page.as_deref()).await?;
         Ok(ImageData { bytes, mime })
     }
 

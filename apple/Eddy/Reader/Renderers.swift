@@ -42,6 +42,31 @@ enum RendererRegistry {
     }
 }
 
+/// The first web view of a session loads WebKit and starts its helper
+/// processes: some 40 ms on the main thread, which fell in the middle of the
+/// slide from an article's text to its page. One made at a quiet moment
+/// after launch pays that ahead; it is let go when a real one is made.
+@MainActor
+enum WebWarmUp {
+    private static var view: WKWebView?
+    private static var done = false
+
+    static func begin() {
+        guard !done else { return }
+        done = true
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .default()
+        let view = WKWebView(frame: .zero, configuration: config)
+        view.loadHTMLString("", baseURL: nil)
+        self.view = view
+    }
+
+    static func finish() {
+        done = true
+        view = nil
+    }
+}
+
 /// The original page, for content the reflowed reader cannot express.
 /// A sideways swipe goes back to the reader, so WebKit's own back and
 /// forward swipes are off.
@@ -66,6 +91,7 @@ struct WebPageView: NSViewRepresentable {
     var onLoad: (() -> Void)?
 
     func makeNSView(context: Context) -> GestureContainer {
+        WebWarmUp.finish()
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
         config.userContentController.addUserScript(WebTranslator.script)

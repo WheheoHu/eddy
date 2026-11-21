@@ -651,7 +651,7 @@ struct GalleryTile: View {
             .help(entry.item.title)
             .task(id: Picture(url: thumbnail, pixels: pixels)) {
                 guard let thumbnail else { return }
-                let loaded = await model.image(thumbnail, maxPixelSize: pixels)
+                let loaded = await model.image(thumbnail, page: entry.item.url, maxPixelSize: pixels)
                 // A picture at another size stays until this one is in.
                 if loaded != nil || !Task.isCancelled { image = loaded }
                 if let size = loaded?.size, size.height > 0 {

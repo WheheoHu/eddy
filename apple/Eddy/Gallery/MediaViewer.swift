@@ -647,7 +647,7 @@ private struct NeighborPreview: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .task(id: entry.id) { await media.resolve(entry.item.id, known: entry.media) }
             .task(id: src) {
-                if let src { image = await model.image(src) }
+                if let src { image = await model.image(src, page: entry.item.url) }
             }
     }
 }

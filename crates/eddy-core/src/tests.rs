@@ -2201,7 +2201,7 @@ async fn epub_import_creates_a_publication_of_readable_chapters() {
         "{cover}"
     );
     assert_eq!(
-        engine.image(&cover).await.unwrap(),
+        engine.image(&cover, None).await.unwrap(),
         (PNG.to_vec(), "image/png".to_string())
     );
 
@@ -2248,7 +2248,7 @@ async fn epub_import_creates_a_publication_of_readable_chapters() {
         })
         .unwrap();
     assert!(image.ends_with("/OEBPS/images/fig.png"), "{image}");
-    assert_eq!(engine.image(&image).await.unwrap().1, "image/png");
+    assert_eq!(engine.image(&image, None).await.unwrap().1, "image/png");
     let link = doc
         .document
         .blocks
@@ -2454,12 +2454,17 @@ async fn pdf_import_reads_text_through_the_platform_and_tracks_pages() {
         engine.inner.store.has_blob(&cached).unwrap(),
         "figure warmed on import"
     );
-    let (bytes, mime) = engine.image(&figure).await.unwrap();
+    let (bytes, mime) = engine.image(&figure, None).await.unwrap();
     assert_eq!(
         (bytes.as_slice(), mime.as_str()),
         (&b"\x89PNG figure"[..], "image/png")
     );
-    assert!(engine.image(&figure.replace("/1/4", "/1/5")).await.is_err());
+    assert!(
+        engine
+            .image(&figure.replace("/1/4", "/1/5"), None)
+            .await
+            .is_err()
+    );
     assert_eq!(
         engine.search("integrand", 5).unwrap()[0].item.item.id,
         imported.item_id
@@ -3221,4 +3226,121 @@ async fn export_handles_eligibility_passthrough_bilingual_epub_and_unfetched_web
         }
         crate::PdfExportOutcome::CopiedOriginal => panic!("expected prepared WebSeries PDF"),
     }
+}
+
+#[tokio::test]
+async fn images_refused_without_a_referer_are_asked_for_again_with_one() {
+    // A host that guards against hotlinking the way sspai's CDN does.
+    let cdn = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path_regex("^/img/"))
+        .respond_with(|req: &wiremock::Request| {
+            if req.headers.contains_key("referer") {
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "image/png")
+                    .set_body_bytes(b"\x89PNG".to_vec())
+            } else {
+                ResponseTemplate::new(403)
+            }
+        })
+        .mount(&cdn)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/gone.png"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&cdn)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let referers = |requests: &[wiremock::Request]| -> Vec<Option<String>> {
+        requests
+            .iter()
+            .map(|r| {
+                r.headers
+                    .get("referer")
+                    .map(|v| v.to_str().unwrap().to_string())
+            })
+            .collect()
+    };
+
+    // Asked plainly first, then as a browser on the article would.
+    let first = format!("{}/img/1.png", cdn.uri());
+    let (bytes, mime) = engine
+        .image(&first, Some("https://example.com/post/1?from=feed"))
+        .await
+        .unwrap();
+    assert_eq!(
+        (bytes.as_slice(), mime.as_str()),
+        (&b"\x89PNG"[..], "image/png")
+    );
+    assert_eq!(
+        referers(&cdn.received_requests().await.unwrap()),
+        [None, Some("https://example.com/".to_string())]
+    );
+
+    // The host is remembered: its next image costs one request. With no
+    // article to name, the image's own site stands in.
+    engine
+        .image(&format!("{}/img/2.png", cdn.uri()), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        referers(&cdn.received_requests().await.unwrap())[2..],
+        [Some(format!("{}/", cdn.uri()))]
+    );
+
+    // Cached: nothing is asked again.
+    engine.image(&first, None).await.unwrap();
+    assert_eq!(cdn.received_requests().await.unwrap().len(), 3);
+
+    // Other failures are not retried.
+    let other = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&other)
+        .await;
+    assert!(
+        engine
+            .image(&format!("{}/gone.png", other.uri()), None)
+            .await
+            .is_err()
+    );
+    assert_eq!(other.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn an_overview_read_aside_matches_the_library() {
+    let pages = mock_pages().await;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    engine
+        .save_url(&format!("{}/essay", pages.uri()))
+        .await
+        .unwrap();
+    engine.create_tag("later").unwrap();
+
+    let unread = |sources: Vec<SourceInfo>| -> Vec<(String, u32)> {
+        sources
+            .into_iter()
+            .map(|s| (s.source.id, s.unread))
+            .collect()
+    };
+    let (sources, stats, collection, tags, status) = engine.read_aside(|| {
+        (
+            engine.sources().unwrap(),
+            engine.source_overview().unwrap(),
+            engine.collection().unwrap(),
+            engine.tags().unwrap(),
+            engine.status().unwrap(),
+        )
+    });
+    assert_eq!(unread(sources), unread(engine.sources().unwrap()));
+    assert_eq!(stats, engine.source_overview().unwrap());
+    assert_eq!(collection, engine.collection().unwrap());
+    assert_eq!(collection.len(), 1);
+    assert_eq!(tags.len(), engine.tags().unwrap().len());
+    assert_eq!(
+        status.pending_uploads,
+        engine.status().unwrap().pending_uploads
+    );
 }

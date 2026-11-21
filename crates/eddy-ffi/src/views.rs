@@ -17,6 +17,20 @@ pub struct AccountView {
     pub username: String,
 }
 
+/// What the sidebars and shelves are drawn from, read in one go.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct OverviewView {
+    pub status: StatusView,
+    pub sources: Vec<SourceView>,
+    pub stats: Vec<crate::SourceStatsView>,
+    pub series: Vec<crate::SeriesView>,
+    pub collection: Vec<crate::CollectionEntryView>,
+    pub tags: Vec<crate::TagView>,
+    pub gallery_folders: Vec<String>,
+    /// How many items Continue Reading lists.
+    pub continue_reading: u32,
+}
+
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct StatusView {
     pub mode: EngineMode,

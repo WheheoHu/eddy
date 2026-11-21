@@ -787,3 +787,50 @@ fn a_pulled_page_applies_like_its_ops_one_by_one_and_all_or_nothing() {
     assert!(broken.item("b").unwrap().is_none());
     assert_eq!(broken.meta_get("cursor").unwrap(), None);
 }
+
+#[test]
+fn reading_aside_sees_what_is_written_and_cannot_write() {
+    let (_dir, s) = store();
+    s.insert_item(&item("a", 1)).unwrap();
+    assert_eq!(
+        s.read_aside(|| s.unread_counts()).unwrap(),
+        [("src".to_string(), 1)]
+    );
+
+    // Written since: the next look aside sees it.
+    s.insert_item(&item("b", 2)).unwrap();
+    assert_eq!(
+        s.read_aside(|| s.unread_counts()).unwrap(),
+        [("src".to_string(), 2)]
+    );
+
+    // Only reading is done there, and the thread is back on the main
+    // connection afterwards, even for a look aside inside another.
+    assert!(s.read_aside(|| s.meta_set("k", "v")).is_err());
+    s.read_aside(|| s.read_aside(|| s.unread_counts()).unwrap());
+    s.meta_set("k", "v").unwrap();
+    assert_eq!(
+        s.read_aside(|| s.meta_get("k")).unwrap().as_deref(),
+        Some("v")
+    );
+
+    // Another thread is not kept waiting by one that reads aside.
+    std::thread::scope(|scope| {
+        let (entered, wait) = std::sync::mpsc::channel();
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let s = &s;
+        scope.spawn(move || {
+            s.read_aside(|| {
+                s.with(|_| {
+                    entered.send(()).unwrap();
+                    held.recv().unwrap();
+                    Ok(())
+                })
+            })
+            .unwrap();
+        });
+        wait.recv().unwrap();
+        assert!(s.item("a").unwrap().is_some());
+        release.send(()).unwrap();
+    });
+}
