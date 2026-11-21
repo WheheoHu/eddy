@@ -16,7 +16,7 @@ Eddy is in early development (0.1.0). The macOS app is the only interface so far
 - **Gallery** — a separate view for image- and video-heavy feeds and saved media links.
 - **AI on the client** — paragraph translation, summaries and tags from a controlled vocabulary, against any OpenAI-compatible or Gemini-native endpoint you configure.
 - **Video to book** — turns a talk or presentation (an online link or a local file) into a multi-chapter illustrated EPUB in your Collection.
-- **Save from Chrome** — a browser extension hands the page you are looking at, including pages you are signed in to, over to Eddy, even while Eddy is closed. It also lists the feeds a page names and opens Eddy's Add Feed sheet on the one you pick.
+- **Save from Chrome** — a browser extension hands the page you are looking at, including pages you are signed in to, over to Eddy, even while Eddy is closed. It also lists the feeds a page has, and the ones [RSSHub](https://docs.rsshub.app) can make for it, and opens Eddy's Add Feed sheet on the one you pick.
 - **Search** — full-text search with Chinese word segmentation; local data on the client, the whole history on the server.
 
 ## Repository layout
@@ -94,6 +94,8 @@ On Windows pdfium is a shared library: copy `build/pdfium/windows/release/lib/x6
 Open `chrome://extensions`, turn on Developer mode and load the `extensions/chrome/` folder unpacked. Then click **Connect Chrome** in Eddy's settings.
 
 The toolbar button (⌘⇧E) opens a popup that shows the page and waits: **保存页面到 Eddy** saves it (Return does too), and each feed the page names has a button that opens Eddy's Add Feed sheet on it, where the folder is chosen and the subscription confirmed. The two items in the page's right-click menu save at once. After updating Eddy, press the reload button on the extension's card in `chrome://extensions` so Chrome picks up the new version.
+
+Feeds come from three places: the links in a page's head that name a feed, links in its text that look like one, and RSSHub's rules for the site (the same rules RSSHub Radar uses), which the extension fetches from an RSSHub instance once a day. The instance is `https://rsshub.app` until you set your own in the extension's options (the 设置 link in the popup); the public one is meant for trying things out. The rule matching and the popup have tests that run with Node: `node extensions/tests/radar.test.js && node extensions/tests/popup.test.js`.
 
 ### Headless CLI
 

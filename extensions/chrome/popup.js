@@ -95,10 +95,21 @@ chrome.runtime.sendMessage({ type: "inspect" }, (page) => {
   }
   // Many sites have a feed and don't say so in the page (少数派 is one).
   // Eddy's sheet opens on the page's own address, to try or to correct.
-  if (page.feeds.length === 0) {
+  if (page.feeds.length === 0 && !(page.radar || []).length) {
     feeds.append(feedRow("这个页面没有标明订阅源", "", "手动添加…", { url: page.url, title: "" }));
   }
-  feeds.hidden = false;
+  feeds.hidden = page.feeds.length === 0 && (page.radar || []).length > 0;
+  // Feeds the page does not have of its own, that RSSHub makes for it.
+  const radar = document.getElementById("radar");
+  for (const feed of page.radar || []) {
+    radar.append(feedRow(feed.title || feed.url, feed.url, "订阅…", feed));
+  }
+  radar.hidden = !(page.radar || []).length;
+  if (!page.radarLoaded) document.getElementById("radar-note").textContent = "RSSHub 规则未加载";
+  document.getElementById("options").onclick = (event) => {
+    event.preventDefault();
+    chrome.runtime.openOptionsPage();
+  };
   ask.hidden = false;
   saveButton.onclick = save;
   // ⌘⇧E, then Return, saves.

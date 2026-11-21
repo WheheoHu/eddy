@@ -35,6 +35,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Settings → Storage → Clear Cache removes what the offline cache holds beyond what is always kept (unread, starred, saved and in-progress articles), and says how much it freed. A large cache takes a little while; Eddy stays usable meanwhile.
 - Unsubscribe… on a subscription, in Three-Pane's sidebar and on the Library's shelf. After a question, FreshRSS unsubscribes (through the sync server when Eddy is paired with one; not while it is offline) and the feed leaves with its articles, starred ones included. Pages saved from it stay.
 - Library: a subscription's cover is made from its site's icon. The icon sits near its own size at the top, not blown up, on a soft field of its own colours, with the name below in dark or light type as the field asks. Subscriptions whose site has no icon keep the cover they had. In the list layout a subscription's row shows its icon too.
+- Chrome extension 0.3.0: it has Eddy's icon in the toolbar. It finds more feeds: those RSSHub can make for the page (by the rules RSSHub Radar uses, fetched daily from the RSSHub instance set in the extension's options, `rsshub.app` to begin with), links in a page's text that point to a feed, and a feed opened in a tab. Chrome asks to allow the new version, which may read `rsshub.app`; an instance of your own is allowed when you enter it.
 
 ### Changed
 
