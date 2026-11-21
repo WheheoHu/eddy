@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- The `eddy` command line comes inside the app, for working on your library from Terminal and for agents: listing and searching items, reading their text as Markdown, saving pages, files and text, managing subscriptions and tags, reading and setting reading positions. It asks the running app to do the work, so changes show at once, and starts Eddy in the background when it is not running. `eddy guide` explains it to an agent; every command takes `--json`.
+- Settings → Agents, a new page under Intelligence, sets Eddy up for agents such as Claude Code, Codex, Gemini CLI, Cursor and GitHub Copilot. Set Up Agents installs a skill that tells them how to use the `eddy` command on your library, in the places agents read skills from; the page lists the agents found on this Mac and how the skill stands with each, updates it after Eddy has moved, and removes it again. It needs no password and works whether or not the command is on your `PATH`.
+- Settings → Agents → Install Command Line Tool links the command into `/usr/local/bin` (macOS asks for an administrator's password), shows whether it is installed and for which copy of Eddy, and removes it again.
 - Settings → Accounts shows whether the sync server is online, its version, and how many changes are waiting to upload.
 - In server mode the FreshRSS section shows the server's account and lets this Mac keep it for refreshing while the server is offline; a server without an account can be given one here.
 - Settings → About shows the app version and the core version.

@@ -307,7 +307,7 @@ impl Inner {
             .or_else(|| title_hint.map(str::to_string))
             .filter(|t| !t.trim().is_empty())
             .unwrap_or_else(|| url.to_string());
-        self.insert_saved(&item_id, url, title, &ingested)
+        self.insert_saved(&item_id, Some(url), title, &ingested)
     }
 
     /// Saves a link to an image or video: there is no article to extract, so
@@ -349,7 +349,7 @@ impl Inner {
             serde_json::to_value(&ingested.version)?,
             false,
         )?;
-        let row = self.insert_saved(&item_id, url, title, &ingested)?;
+        let row = self.insert_saved(&item_id, Some(url), title, &ingested)?;
         self.store.put_media_set(
             &item_id,
             &serde_json::to_string(&set)?,
@@ -358,10 +358,12 @@ impl Inner {
         Ok(row)
     }
 
-    fn insert_saved(
+    /// `url` is the page the item was saved from; text saved as it is has
+    /// none.
+    pub(crate) fn insert_saved(
         &self,
         item_id: &str,
-        url: &str,
+        url: Option<&str>,
         title: String,
         ingested: &Ingested,
     ) -> Result<ItemRow> {
@@ -373,7 +375,7 @@ impl Inner {
             account_id: None,
             upstream_id: None,
             kind: ItemKind::Saved,
-            url: Some(url.to_string()),
+            url: url.map(str::to_string),
             title,
             author: None,
             published_at: now,

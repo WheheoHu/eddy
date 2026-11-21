@@ -21,6 +21,7 @@ eddy-search = { path = "crates/eddy-search" }
 eddy-sync = { path = "crates/eddy-sync" }
 eddy-video = { path = "crates/eddy-video" }
 eddy-core = { path = "crates/eddy-core" }
+eddy-control = { path = "crates/eddy-control" }
 eddy-pdf = { path = "crates/eddy-pdf" }
 
 anyhow = "1"

@@ -73,6 +73,16 @@ async fn standalone_client_migrates_and_a_second_device_joins() {
         .unwrap();
     let tag = a.create_tag("Sampling").unwrap();
     a.set_item_tag(&essay.item.id, &tag, true).unwrap();
+    let note = a
+        .save_text(
+            Some("Field notes"),
+            "Rays are *straight*: $L_o = L_e$.",
+            eddy_core::TextFormat::Markdown,
+            None,
+        )
+        .await
+        .unwrap();
+    let note_doc = a.document(&note.item.id).await.unwrap().unwrap().document;
     let book_file = dir_a.path().join("notes.epub");
     std::fs::write(&book_file, book()).unwrap();
     let imported = a.import_file(&book_file).await.unwrap();
@@ -111,7 +121,7 @@ async fn standalone_client_migrates_and_a_second_device_joins() {
     let b = client(dir_b.path());
     let code_b = create_pairing_code(&state.store, Duration::from_secs(60)).unwrap();
     b.connect_server(&url, &code_b, "Mac B").await.unwrap();
-    assert_eq!(b.items(&ItemQuery::default()).unwrap().len(), 4);
+    assert_eq!(b.items(&ItemQuery::default()).unwrap().len(), 5);
     assert!(find(&b, "New post").item.read, "read state from A");
     assert!(
         find(&b, "Old post").item.starred,
@@ -126,6 +136,19 @@ async fn standalone_client_migrates_and_a_second_device_joins() {
         .expect("blob fetched from the server")
         .document;
     assert_eq!(b_doc, essay_doc);
+    // Text saved as it is has no page to fetch again: it comes whole.
+    let b_note = find(&b, "Field notes");
+    assert_eq!(
+        (b_note.item.id.as_str(), &b_note.item.url),
+        (note.item.id.as_str(), &None)
+    );
+    let b_note_doc = b
+        .document(&b_note.item.id)
+        .await
+        .unwrap()
+        .expect("saved text from the server")
+        .document;
+    assert_eq!(b_note_doc, note_doc);
     let resume = b.resume_point(&b_essay.item.id).unwrap().unwrap();
     assert!(resume.from_other_device);
     assert_eq!(resume.block_id.as_deref(), Some(mid.as_str()));
@@ -247,7 +270,7 @@ async fn standalone_client_migrates_and_a_second_device_joins() {
     // Disconnecting keeps local data.
     b.disconnect_server().await.unwrap();
     assert_eq!(b.status().unwrap().mode, Mode::Unconfigured);
-    assert_eq!(b.items(&ItemQuery::default()).unwrap().len(), 5);
+    assert_eq!(b.items(&ItemQuery::default()).unwrap().len(), 6);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

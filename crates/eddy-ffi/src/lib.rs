@@ -1,6 +1,7 @@
 //! UniFFI surface of the Eddy engine for Swift and Kotlin.
 
 mod ai;
+mod control;
 mod export;
 mod media;
 mod progress;
@@ -206,6 +207,10 @@ pub fn core_protocol_version() -> u32 {
 #[derive(uniffi::Object)]
 pub struct EddyEngine {
     pub(crate) engine: Engine,
+    pub(crate) data_dir: PathBuf,
+    /// The socket the command line reaches this engine through, while it
+    /// is being answered.
+    pub(crate) control: std::sync::Mutex<Option<eddy_control::ServerHandle>>,
 }
 
 #[uniffi::export(async_runtime = "tokio")]
@@ -216,8 +221,9 @@ impl EddyEngine {
         platform: Arc<dyn PlatformServices>,
         default_cache_limit: u64,
     ) -> R<Arc<Self>> {
+        let data_dir = PathBuf::from(data_dir);
         let engine = Engine::open(
-            &PathBuf::from(data_dir),
+            &data_dir,
             Arc::new(PlatformAdapter(platform)),
             EngineOptions {
                 default_cache_limit,
@@ -225,7 +231,11 @@ impl EddyEngine {
             },
         )?;
         engine.set_pdf_reader(Some(Arc::new(eddy_pdf::PdfiumReader::new())));
-        Ok(Arc::new(EddyEngine { engine }))
+        Ok(Arc::new(EddyEngine {
+            engine,
+            data_dir,
+            control: Default::default(),
+        }))
     }
 
     pub fn device_id(&self) -> String {

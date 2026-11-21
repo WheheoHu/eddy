@@ -12,6 +12,7 @@ enum SettingsTab: CaseIterable, Identifiable, RawRepresentable {
     case translation
     case summaries
     case video
+    case agents
     case shortcuts
     case about
 
@@ -24,6 +25,7 @@ enum SettingsTab: CaseIterable, Identifiable, RawRepresentable {
         case "Translation", "AI": self = .translation
         case "Summaries": self = .summaries
         case "Video": self = .video
+        case "Agents": self = .agents
         case "Shortcuts": self = .shortcuts
         case "About": self = .about
         default: return nil
@@ -39,6 +41,7 @@ enum SettingsTab: CaseIterable, Identifiable, RawRepresentable {
         case .translation: "Translation"
         case .summaries: "Summaries"
         case .video: "Video"
+        case .agents: "Agents"
         case .shortcuts: "Shortcuts"
         case .about: "About"
         }
@@ -55,6 +58,7 @@ enum SettingsTab: CaseIterable, Identifiable, RawRepresentable {
         case .translation: "translate"
         case .summaries: "sparkles"
         case .video: "film.stack"
+        case .agents: "terminal"
         case .shortcuts: "keyboard"
         case .about: "info.circle"
         }
@@ -63,7 +67,7 @@ enum SettingsTab: CaseIterable, Identifiable, RawRepresentable {
     var group: SettingsGroup {
         switch self {
         case .accounts, .reading, .saving, .storage, .shortcuts, .about: .general
-        case .translation, .summaries, .video: .intelligence
+        case .translation, .summaries, .video, .agents: .intelligence
         }
     }
 }
@@ -169,6 +173,7 @@ struct SettingsPanel: View {
         case .translation: TranslationSettingsPage()
         case .summaries: SummariesSettingsPage()
         case .video: VideoSettingsPage()
+        case .agents: AgentsSettingsPage()
         case .reading: ReadingSettings()
         case .saving: SavingSettings()
         case .storage: StorageSettings()

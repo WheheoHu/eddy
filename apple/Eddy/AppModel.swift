@@ -377,6 +377,8 @@ final class AppModel {
             await refreshVideoJobs(initial: true)
             await refreshServerCapability()
         }
+        // The command line (`eddy`) works on this data by asking the app.
+        Task { _ = try? await engine.startControlServer() }
         observeActivation()
     }
 
@@ -1336,6 +1338,10 @@ final class AppModel {
         }
         center.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.engine?.stopLiveSync() }
+        }
+        // So the command line finds nobody here rather than a dead socket.
+        center.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.engine?.stopControlServer() }
         }
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 15 * 60, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.refresh(quiet: true) }

@@ -19,7 +19,7 @@ fi
 TARGET=aarch64-apple-darwin
 export MACOSX_DEPLOYMENT_TARGET=15.0
 
-cargo build -p eddy-ffi -p eddy-capture-host --target "$TARGET" ${CARGO_FLAGS[@]+"${CARGO_FLAGS[@]}"}
+cargo build -p eddy-ffi -p eddy-capture-host -p eddy-cli --target "$TARGET" ${CARGO_FLAGS[@]+"${CARGO_FLAGS[@]}"}
 OUT="target/$TARGET/$PROFILE"
 
 GEN="build/uniffi"
@@ -46,5 +46,7 @@ cp "$GEN"/*.swift "$KIT/Sources/EddyKit/Generated/"
 
 mkdir -p build/helpers
 cp "$OUT/eddy-capture-host" build/helpers/
+# The command line, named for what the user types.
+cp "$OUT/eddy-cli" build/helpers/eddy
 
 echo "EddyFFI.xcframework ($PROFILE) ready at $KIT"

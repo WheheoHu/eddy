@@ -549,6 +549,24 @@ fn deleted_items_hide_everywhere_and_release_files_only_they_use() {
 }
 
 #[test]
+fn the_same_bytes_stored_from_several_threads_at_once_all_succeed() {
+    let (dir, store) = store();
+    let store = std::sync::Arc::new(store);
+    let bytes = vec![7u8; 64 * 1024];
+    let keys: Vec<String> = std::thread::scope(|scope| {
+        let writers: Vec<_> = (0..8)
+            .map(|_| scope.spawn(|| store.put_blob(&bytes, "text/html", false).unwrap()))
+            .collect();
+        writers.into_iter().map(|w| w.join().unwrap()).collect()
+    });
+    assert!(keys.iter().all(|k| k == &keys[0]));
+    assert_eq!(store.get_blob(&keys[0]).unwrap().unwrap(), bytes);
+    // Nothing but the blob is left in its directory.
+    let shard = dir.path().join("blobs").join(&keys[0][keys[0].len() - 2..]);
+    assert_eq!(std::fs::read_dir(shard).unwrap().count(), 1);
+}
+
+#[test]
 fn freeing_files_never_scans_all_blobs_or_versions() {
     let (_d, s) = store();
     let plan: Vec<String> = s

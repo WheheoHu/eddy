@@ -27,6 +27,8 @@ const OWNED: &[&str] = &[
     "rulepacks",
     "spool",
     "video-jobs",
+    "control.sock",
+    "control.path",
 ];
 
 /// How long signing out waits for changes that have not been sent yet.

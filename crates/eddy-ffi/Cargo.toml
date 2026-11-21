@@ -11,6 +11,7 @@ name = "eddy_ffi"
 
 [dependencies]
 async-trait = { workspace = true }
+eddy-control = { workspace = true }
 eddy-core = { workspace = true }
 eddy-model = { workspace = true }
 eddy-pdf = { workspace = true }
