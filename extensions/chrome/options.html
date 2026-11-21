@@ -47,6 +47,10 @@
     #status.bad { color: var(--bad); }
     .rules { display: flex; align-items: center; gap: 10px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); }
     .rules span { flex: 1; }
+    section + section { margin-top: 18px; }
+    label.check { display: flex; align-items: center; gap: 9px; font-weight: 400; margin: 10px 0 0; cursor: pointer; }
+    label.check input { width: auto; margin: 0; }
+    .about.note { margin: 8px 0 0; font-size: 13px; }
   </style>
 </head>
 <body>
@@ -75,6 +79,11 @@
         <span id="rules"></span>
         <button id="update">Update Rules</button>
       </div>
+    </section>
+    <section>
+      <h2>Toolbar</h2>
+      <label class="check"><input id="badge" type="checkbox"> Show how many feeds a page has on the icon</label>
+      <p class="about note">To count them the extension looks for feed links in every page you open. Nothing it finds leaves this browser.</p>
     </section>
   </main>
   <script src="radar.js"></script>

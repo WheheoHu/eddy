@@ -1,4 +1,4 @@
-importScripts("radar.js");
+importScripts("radar.js", "page-feeds.js");
 
 const HOST = "dev.eddy.capture";
 
@@ -63,11 +63,48 @@ function send(message) {
   });
 }
 
+// The number on the toolbar icon: how many feeds the tab's page has, its
+// own (as its content script counted them) and RSSHub's together. No
+// number for none, or when the setting is off.
+async function showCount(tabId, url, pageFeeds) {
+  if (tabId === undefined) return 0;
+  const { badge } = await chrome.storage.local.get({ badge: true });
+  let count = 0;
+  if (badge) {
+    const made = await radar(url);
+    count = new Set([...pageFeeds, ...made.feeds.map((feed) => feed.url)]).size;
+  }
+  try {
+    await chrome.action.setBadgeBackgroundColor({ tabId, color: "#0a84ff" });
+    await chrome.action.setBadgeTextColor?.({ tabId, color: "#ffffff" });
+    await chrome.action.setBadgeText({ tabId, text: count ? String(count) : "" });
+    await chrome.action.setTitle({ tabId, title: count ? `Save to Eddy · ${count} feed${count === 1 ? "" : "s"} on this page` : "Save to Eddy" });
+  } catch (e) {
+    // The tab closed meanwhile.
+  }
+  return count;
+}
+
+// Has a tab's page count its feeds again; without a content script there
+// (a page from before the extension, one it can't run on) the number goes.
+function recount(tabId) {
+  if (tabId === undefined) return;
+  chrome.tabs.sendMessage(tabId, { type: "scan" }).catch(() => chrome.action.setBadgeText({ tabId, text: "" }).catch(() => {}));
+}
+
+// The setting switched: every tab's number goes, or is counted afresh.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local" || !("badge" in changes)) return;
+  chrome.tabs.query({}).then((tabs) => tabs.forEach((tab) => recount(tab.id)));
+});
+
+// A tick or a mark for a moment after saving from the right-click menu,
+// then back to the page's number.
 async function flash(tabId, ok, error) {
   await chrome.action.setBadgeBackgroundColor({ tabId, color: ok ? "#2f9e44" : "#c92a2a" });
   await chrome.action.setBadgeText({ tabId, text: ok ? "✓" : "!" });
   await chrome.action.setTitle({ tabId, title: ok ? "Saved to Eddy" : `Couldn’t save: ${error || "unknown error"}` });
-  setTimeout(() => chrome.action.setBadgeText({ tabId, text: "" }), 2500);
+  setTimeout(() => recount(tabId), 2500);
 }
 
 function isPdf(tab) {
@@ -102,45 +139,6 @@ async function capture(tab) {
   return { ...reply, url: page.url };
 }
 
-// What a page says of its own feeds, run in the page. Besides the links in
-// its head that name a feed, the links in its text that look like one, and
-// the page itself when it is a feed opened in a tab.
-function feedsOnPage() {
-  const feeds = [];
-  const kinds = /(rss|atom|rdf)\+xml|feed\+json|^application\/json\+feed/i;
-  for (const link of document.querySelectorAll('link[rel~="alternate" i][href], link[rel~="feed" i][href]')) {
-    if (kinds.test(link.type) || /\bfeed\b/i.test(link.rel)) feeds.push({ url: link.href, title: link.title || "" });
-  }
-  // A feed shown as a page: Chrome wraps the XML, or shows it as text.
-  const root = document.querySelector("rss, feed, rdf\\:RDF") || document.getElementById("webkit-xml-viewer-source-xml")?.firstElementChild;
-  if (/(rss|atom)\+xml/i.test(document.contentType) || (root && /^(rss|feed|rdf:RDF)$/i.test(root.nodeName))) {
-    feeds.push({ url: location.href, title: document.title || "" });
-  }
-  // Links a reader would take for a feed: by where they point, or by what
-  // they say. Only on this site, and only a few.
-  const looks = /(^|[\/.=_-])(rss|atom|feed)s?([\/.]?(xml|rss|atom|json))?\/?$|\/(rss|atom|feed)\.(xml|php|aspx?)$|\/index\.xml$/i;
-  let linked = 0;
-  for (const anchor of document.querySelectorAll("a[href]")) {
-    if (linked >= 4) break;
-    let url;
-    try {
-      url = new URL(anchor.href);
-    } catch (e) {
-      continue;
-    }
-    if (!/^https?:$/.test(url.protocol)) continue;
-    const text = (anchor.textContent || anchor.title || anchor.getAttribute("aria-label") || "").trim();
-    const same = url.hostname.split(".").slice(-2).join(".") === location.hostname.split(".").slice(-2).join(".");
-    // What a page calls such a link, in English or in Chinese.
-    const says = /^(rss|atom|rss ?订阅|订阅 ?rss|rss feed|feed)$/i.test(text);
-    if ((same && looks.test(url.pathname + url.search)) || says) {
-      feeds.push({ url: url.href, title: says || !text || text.length > 40 ? "" : text });
-      linked++;
-    }
-  }
-  return feeds;
-}
-
 // What the popup offers before anything is saved: the page it was opened
 // on, the feeds the page names, and the ones RSSHub can make for it.
 async function inspect(tab) {
@@ -173,7 +171,12 @@ async function inspect(tab) {
 
 // The popup asks what is here, then saves the tab it was opened on or hands
 // one of its feeds to Eddy, as its buttons are pressed; and asks for "Show".
-chrome.runtime.onMessage.addListener((message, _sender, respond) => {
+chrome.runtime.onMessage.addListener((message, sender, respond) => {
+  // A page's content script, saying which feeds the page has.
+  if (message.type === "feeds") {
+    showCount(sender.tab?.id, message.url, Array.isArray(message.feeds) ? message.feeds : []);
+    return false;
+  }
   if (message.type === "inspect") {
     chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => inspect(tab)).then(respond);
     return true;
