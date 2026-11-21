@@ -29,6 +29,11 @@ struct Book: Identifiable, Equatable {
     /// Articles of a subscription that are part read.
     var reading = 0
 
+    /// The subscription, when the book is one.
+    var feedID: String? {
+        if case let .feed(sourceID) = kind { sourceID } else { nil }
+    }
+
     var entry: CollectionEntryView? {
         if case let .entry(entry) = kind { entry } else { nil }
     }
@@ -365,7 +370,10 @@ struct LibraryView: View {
         return ScrollViewReader { proxy in
             Table(rows, selection: $tableSelection, sortOrder: $tableSort, columnCustomization: $columns) {
                 TableColumn("Title", value: \.title) { book in
-                    Label { Text(book.title).lineLimit(1) } icon: { Image(systemName: book.symbol).foregroundStyle(.secondary) }
+                    Label { Text(book.title).lineLimit(1) } icon: {
+                        // A subscription's own icon, once it has one.
+                        FeedIcon(sourceID: book.feedID, size: 15) { Image(systemName: book.symbol).foregroundStyle(.secondary) }
+                    }
                 }
                 .width(min: 180, ideal: 320)
                 .customizationID("title")
@@ -727,7 +735,7 @@ private struct BookTile: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            BookCover(title: book.title, subtitle: book.subtitle, imageItemID: book.coverItemID, imageURL: book.coverURL, pdfItemID: book.pdfItemID, symbol: book.symbol)
+            BookCover(title: book.title, subtitle: book.subtitle, imageItemID: book.coverItemID, imageURL: book.coverURL, pdfItemID: book.pdfItemID, symbol: book.symbol, feedID: book.feedID)
                 .aspectRatio(2 / 3, contentMode: .fit)
                 .shadow(color: .black.opacity(hovering ? 0.28 : 0.16), radius: hovering ? 9 : 5, y: hovering ? 5 : 3)
                 .overlay {
