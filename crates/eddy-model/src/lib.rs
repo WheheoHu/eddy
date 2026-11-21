@@ -6,12 +6,14 @@ pub mod hlc;
 pub mod ids;
 pub mod item;
 pub mod locator;
+pub mod markdown;
 pub mod op;
 
 pub use doc::*;
 pub use hlc::{Hlc, HlcClock};
 pub use item::*;
 pub use locator::*;
+pub use markdown::MarkdownOptions;
 pub use op::*;
 
 /// Milliseconds since the Unix epoch.
