@@ -7,6 +7,9 @@ use std::path::{Component, Path, PathBuf};
 /// directory it is run in: never the user's.
 pub const DEVELOPMENT_DATA: &str = "build/cli-data";
 
+// Where there is no app to ask (Windows), what the app mode holds is chosen
+// and then only reported as unavailable.
+#[cfg_attr(not(unix), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Mode {
     /// Open `data` in this process.
@@ -21,6 +24,7 @@ pub enum Mode {
 }
 
 /// The app to start, and the data directory to start it on.
+#[cfg_attr(not(unix), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Launch {
     pub bundle: PathBuf,
