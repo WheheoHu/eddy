@@ -1018,6 +1018,7 @@ private struct SavingSettings: View {
                 Text("In chrome://extensions, turn on Developer mode and load the extension folder unpacked. Pages you save from Chrome arrive here even while Eddy is closed.")
                     .foregroundStyle(.secondary)
             }
+            CommandLineSection()
             FullTextRulesSection()
             Section {
                 if let packs, !packs.packs.isEmpty || packs.ftrSites > 0 {
