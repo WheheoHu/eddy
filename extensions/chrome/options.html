@@ -1,39 +1,82 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Save to Eddy</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Save to Eddy — Settings</title>
+  <link rel="icon" href="icons/icon-32.png">
   <style>
-    :root { color-scheme: light dark; }
-    body { margin: 0; padding: 18px 20px; width: 420px; font: 13px -apple-system, BlinkMacSystemFont, sans-serif; }
-    h1 { font-size: 15px; margin: 0 0 4px; }
-    p { margin: 0 0 14px; color: GrayText; line-height: 1.45; }
-    label { display: block; margin: 12px 0 4px; font-weight: 500; }
+    :root {
+      color-scheme: light dark;
+      --page: #f6f6f7; --card: #ffffff; --text: #1c1c1e; --muted: #5f5f65; --line: rgba(0, 0, 0, 0.12);
+      --field: rgba(0, 0, 0, 0.05); --accent: #0a84ff; --good: #1f8a4c; --bad: #c23a2b;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --page: #19191b; --card: #202022; --text: #f2f2f4; --muted: #a6a6ac; --line: rgba(255, 255, 255, 0.14);
+        --field: rgba(255, 255, 255, 0.07); --good: #5fd08c; --bad: #ff7b6b;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--page); color: var(--text); font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    main { max-width: 620px; margin: 0 auto; padding: 48px 24px 64px; }
+    header { display: flex; align-items: center; gap: 14px; margin-bottom: 28px; }
+    header img { width: 44px; height: 44px; }
+    header h1 { font-size: 22px; margin: 0; }
+    header span { color: var(--muted); font-size: 13px; }
+    section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 22px 24px; }
+    h2 { font-size: 16px; margin: 0 0 4px; }
+    .about { color: var(--muted); margin: 0 0 18px; }
+    label { display: block; font-weight: 600; margin: 16px 0 6px; }
+    label small { font-weight: 400; color: var(--muted); }
     input {
-      box-sizing: border-box; width: 100%; font: inherit; padding: 6px 8px; border-radius: 6px;
-      border: 1px solid color-mix(in srgb, CanvasText 20%, transparent);
-      background: color-mix(in srgb, CanvasText 4%, transparent); color: inherit;
+      width: 100%; font: inherit; padding: 8px 10px; border-radius: 7px; color: inherit;
+      border: 1px solid transparent; background: var(--field); outline: none;
     }
-    .row { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
-    #status { flex: 1; color: GrayText; word-break: break-word; }
+    input:focus { border-color: var(--accent); }
+    .actions { display: flex; align-items: center; gap: 10px; margin-top: 20px; }
+    .actions .space { flex: 1; }
     button {
-      font: inherit; padding: 5px 14px; border-radius: 6px; cursor: pointer; flex: none;
-      border: 1px solid #0a84ff; background: #0a84ff; color: white;
+      font: inherit; font-weight: 500; padding: 7px 16px; border-radius: 7px; cursor: pointer;
+      border: 1px solid var(--line); background: transparent; color: inherit;
     }
+    button.primary { border-color: var(--accent); background: var(--accent); color: white; }
     button:disabled { opacity: 0.5; cursor: default; }
+    #status { min-height: 20px; margin-top: 14px; word-break: break-word; }
+    #status.good { color: var(--good); }
+    #status.bad { color: var(--bad); }
+    .rules { display: flex; align-items: center; gap: 10px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); }
+    .rules span { flex: 1; }
   </style>
 </head>
 <body>
-  <h1>RSSHub</h1>
-  <p>很多网站没有自己的订阅源，RSSHub 可以为它们生成。这里填你用的 RSSHub 实例；规则从它那里取得，每天更新一次。rsshub.app 是公共实例，只适合试用，长期使用请自己部署。</p>
-  <label for="rsshub">RSSHub 地址</label>
-  <input id="rsshub" type="url" placeholder="https://rsshub.app" spellcheck="false">
-  <label for="key">访问密钥（实例设置了 ACCESS_KEY 时才需要）</label>
-  <input id="key" type="text" spellcheck="false" autocomplete="off">
-  <div class="row">
-    <span id="status"></span>
-    <button id="save">保存并更新规则</button>
-  </div>
+  <main>
+    <header>
+      <img src="icons/icon-128.png" alt="">
+      <div>
+        <h1>Save to Eddy</h1>
+        <span id="version"></span>
+      </div>
+    </header>
+    <section>
+      <h2>RSSHub</h2>
+      <p class="about">RSSHub makes feeds for sites that have none of their own.</p>
+      <label for="rsshub">Instance</label>
+      <input id="rsshub" type="url" placeholder="https://rsshub.app" spellcheck="false" autocomplete="off">
+      <label for="key">Access key <small>(only for an instance that sets one)</small></label>
+      <input id="key" type="text" spellcheck="false" autocomplete="off">
+      <div class="actions">
+        <button id="test">Test</button>
+        <span class="space"></span>
+        <button id="save" class="primary">Save</button>
+      </div>
+      <div id="status" role="status"></div>
+      <div class="rules">
+        <span id="rules"></span>
+        <button id="update">Update Rules</button>
+      </div>
+    </section>
+  </main>
   <script src="radar.js"></script>
   <script src="options.js"></script>
 </body>

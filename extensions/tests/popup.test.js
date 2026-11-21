@@ -31,7 +31,7 @@ assert.strictEqual(rows[1].children[0].textContent, "/a.atom");
 // The save button saves, then offers Show.
 p.els.save.onclick();
 assert.deepStrictEqual(p.sent, ["inspect", "capture"]);
-assert.strictEqual(p.els.status.textContent, "已保存到 Eddy");
+assert.strictEqual(p.els.status.textContent, "Saved to Eddy");
 assert.strictEqual(p.els.ask.hidden, true);
 assert.strictEqual(p.els.show.hidden, false);
 // A feed's button hands it to Eddy and closes the popup; nothing is saved.
@@ -42,17 +42,17 @@ assert.strictEqual(p.closed(), true);
 // Eddy not reachable: the popup says so.
 p = run({ ok: true, url: "https://sspai.com/", title: "少数派", feeds: [{ url: "https://sspai.com/feed", title: "" }] }, { subscribe: { ok: false, error: "host missing" } });
 p.els.feeds.children[0].children[1].onclick();
-assert.strictEqual(p.els.status.textContent, "没能打开 Eddy");
+assert.strictEqual(p.els.status.textContent, "Couldn’t open Eddy");
 assert.strictEqual(p.els.detail.textContent, "host missing");
 // No feeds: the section stays away. A page that can't be saved says so.
 p = run({ ok: true, url: "https://example.com/a", title: "Example", feeds: [] }, { subscribe: { ok: true } });
 assert.strictEqual(p.els.feeds.hidden, false);
 assert.strictEqual(p.els.feeds.children.length, 1);
-assert.strictEqual(p.els.feeds.children[0].children[1].textContent, "手动添加…");
+assert.strictEqual(p.els.feeds.children[0].children[1].textContent, "Add Manually…");
 p.els.feeds.children[0].children[1].onclick();
 assert.deepStrictEqual(p.sent, ["inspect", "subscribe"]);
-p = run({ ok: false, error: "只能保存网页" }, {});
-assert.strictEqual(p.els.status.textContent, "不能保存这个页面");
+p = run({ ok: false, error: "Only web pages can be saved." }, {});
+assert.strictEqual(p.els.status.textContent, "Can’t save this page");
 assert.deepStrictEqual(p.sent, ["inspect"]);
 // Feeds RSSHub makes for the page are listed under their own heading; with
 // some of those and none of the page's own, there is no "add by hand" row.
@@ -66,7 +66,7 @@ assert.strictEqual(p.els["radar-note"]?.textContent ?? "", "");
 // Rules that never loaded are said to be missing, with the way to settings.
 p = run({ ok: true, url: "https://example.com/a", title: "Example", feeds: [], radar: [], radarLoaded: false }, {});
 assert.strictEqual(p.els.radar.hidden, true);
-assert.strictEqual(p.els["radar-note"].textContent, "RSSHub 规则未加载");
+assert.strictEqual(p.els["radar-note"].textContent, "RSSHub rules not loaded");
 p.els.options.onclick({ preventDefault() {} });
 assert.deepStrictEqual(p.sent, ["inspect", "options"]);
 console.log("popup logic ok");

@@ -86,6 +86,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Subscriptions that FreshRSS keeps in its default category are listed outside any folder, instead of in a folder named "Uncategorized".
 - Settings → Translation, Summaries and Video: the language is picked from a menu, Chinese (Simplified) or English for now, instead of typed. Video's can be left to follow Summaries. A language typed in earlier stays chosen until another is picked.
 - A feed that is removed in FreshRSS itself now takes its articles out of the lists too, instead of leaving them behind as read articles of no feed.
+- Chrome extension 0.4.0: its words are in English, like the app's. Its settings open as a page in a tab of their own, with a Test button that asks the RSSHub instance typed in for its rules and says how many came back, or what went wrong, without saving anything; Save and Update Rules are separate buttons.
 
 ### Removed
 
