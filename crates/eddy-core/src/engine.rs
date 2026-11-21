@@ -302,6 +302,13 @@ impl Engine {
         *self.inner.change_listener.write() = listener;
     }
 
+    /// Runs the change listener: for a host that changed data on someone
+    /// else's behalf (the command line working through the app) and wants
+    /// open lists to reload.
+    pub fn notify_changed(&self) {
+        self.inner.notify_changed();
+    }
+
     /// Called as a long sync with the server moves; read the new state from
     /// `status().sync`.
     pub fn set_progress_listener(&self, listener: Option<Arc<dyn Fn() + Send + Sync>>) {

@@ -994,6 +994,166 @@ async fn saving_urls_and_importing_captures() {
 }
 
 #[tokio::test]
+async fn text_is_saved_as_a_document_of_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let notes = "https://notes.example/tides/";
+    let markdown = r#"# Field notes
+
+The *tide* turns at $t_0 = \frac{T}{2}$, see [the table](tables/1.html); it costs \$5.
+
+$$
+\begin{aligned} a_1 &= b \\ c_1 &= d \end{aligned}
+$$
+
+> Quoted, with `code` in it.
+
+1. First
+    - nested
+2. Second
+
+| Station | Height |
+| --- | --- |
+| Dover | 6.7 |
+
+```rust
+fn main() {}
+```
+"#;
+    let saved = engine
+        .save_text(None, markdown, TextFormat::Markdown, Some(notes))
+        .await
+        .unwrap();
+    assert_eq!(saved.item.title, "Field notes");
+    assert_eq!(saved.item.kind, eddy_model::ItemKind::Saved);
+    assert_eq!(saved.item.url, None);
+    let loaded = engine.document(&saved.item.id).await.unwrap().unwrap();
+    let doc = &loaded.document;
+    assert!(
+        !doc.blocks
+            .iter()
+            .any(|b| matches!(b.kind, BlockKind::Heading { .. })),
+        "the heading that became the title is not repeated"
+    );
+    // TeX arrives as written: no Markdown escapes or emphasis inside it.
+    let runs: Vec<&eddy_model::Run> = doc
+        .blocks
+        .iter()
+        .flat_map(|b| b.kind.runs().unwrap_or(&[]))
+        .collect();
+    let inline: Vec<&str> = runs
+        .iter()
+        .filter(|r| r.math)
+        .map(|r| r.text.as_str())
+        .collect();
+    assert_eq!(inline, ["t_0 = \\frac{T}{2}"]);
+    assert!(doc.blocks.iter().any(|b| matches!(
+        &b.kind,
+        BlockKind::Math { tex } if tex == "\\begin{aligned} a_1 &= b \\\\ c_1 &= d \\end{aligned}"
+    )));
+    assert!(doc.plain_text().contains("it costs $5."));
+    // Where the text came from is the base of its links, not its address.
+    assert!(
+        runs.iter()
+            .any(|r| r.link.as_deref() == Some("https://notes.example/tides/tables/1.html"))
+    );
+    assert_eq!(loaded.version.source_url.as_deref(), Some(notes));
+    assert_eq!(loaded.version.raw_mime, "text/html");
+    assert_eq!(engine.saved_item_for_url(notes).unwrap(), None);
+    let listed = engine
+        .items(&ItemQuery {
+            filter: ItemFilter::Saved,
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(engine.search("Dover", 5).unwrap().len(), 1);
+
+    // What is written out as Markdown saves back as the same document.
+    let written = doc.to_markdown(&eddy_model::MarkdownOptions {
+        title: Some(&saved.item.title),
+        blocks: None,
+    });
+    let again = engine
+        .save_text(None, &written, TextFormat::Markdown, Some(notes))
+        .await
+        .unwrap();
+    assert_ne!(again.item.id, saved.item.id);
+    assert_eq!(again.item.title, "Field notes");
+    let second = engine.document(&again.item.id).await.unwrap().unwrap();
+    let kinds =
+        |d: &eddy_model::Document| d.blocks.iter().map(|b| b.kind.clone()).collect::<Vec<_>>();
+    assert_eq!(kinds(&second.document), kinds(doc), "{written}");
+
+    // The stored HTML is enough to make the document again.
+    let blob = loaded.version.doc_blob.clone().unwrap();
+    std::fs::remove_file(
+        dir.path()
+            .join("blobs")
+            .join(&blob[blob.len() - 2..])
+            .join(&blob),
+    )
+    .unwrap();
+    let regenerated = engine.document(&saved.item.id).await.unwrap().unwrap();
+    assert_eq!(&regenerated.document, doc);
+}
+
+#[tokio::test]
+async fn saved_text_takes_html_and_a_title_and_refuses_what_it_cannot_keep() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let saved = engine
+        .save_text(
+            Some("  Reading list  "),
+            "<h1>Reading list</h1><p>Start with <b>Feynman</b>.</p>",
+            TextFormat::Html,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(saved.item.title, "Reading list");
+    let doc = engine.document(&saved.item.id).await.unwrap().unwrap();
+    assert_eq!(doc.document.plain_text(), "Start with Feynman.");
+    assert_eq!(doc.version.source_url, None);
+
+    // Without a heading, the opening words name it.
+    let long = format!("{} end", "word ".repeat(40));
+    let untitled = engine
+        .save_text(None, &long, TextFormat::Markdown, None)
+        .await
+        .unwrap();
+    assert_eq!(untitled.item.title.chars().count(), 81);
+    assert!(untitled.item.title.ends_with('…'));
+
+    for (body, url) in [
+        ("   \n", None),
+        ("<script>1</script>", None),
+        ("text", Some("not a url")),
+        ("text", Some("file:///etc/passwd")),
+    ] {
+        let refused = engine
+            .save_text(None, body, TextFormat::Html, url)
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code(), "invalid", "{body:?} {url:?}");
+    }
+    let huge = "a".repeat(MAX_TEXT_BYTES + 1);
+    assert!(
+        engine
+            .save_text(None, &huge, TextFormat::Markdown, None)
+            .await
+            .is_err()
+    );
+    let kept = engine
+        .items(&ItemQuery {
+            filter: ItemFilter::Saved,
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(kept.len(), 2, "nothing refused was stored");
+}
+
+#[tokio::test]
 async fn private_rule_packs_load_from_the_data_directory() {
     let dir = tempfile::tempdir().unwrap();
     let engine = open(dir.path());

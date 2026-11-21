@@ -21,6 +21,7 @@ mod pdf_table;
 mod platform;
 mod progress;
 mod rules;
+mod save_text;
 mod search;
 mod server;
 mod subscribe;
@@ -67,6 +68,7 @@ pub use native_host::{CHROME_EXTENSION_ID, NATIVE_HOST_NAME, install_native_host
 pub use platform::{LogLevel, MemoryPlatform, Platform};
 pub use progress::{ResumePoint, SeriesInfo};
 pub use rules::RulePackSummary;
+pub use save_text::{MAX_TEXT_BYTES, TextFormat};
 pub use search::SearchResult;
 pub use server::{AppliedOps, OpsPage, ServerOverview};
 pub use subscribe::AddedFeed;
@@ -115,6 +117,24 @@ pub enum EngineError {
     UpgradeRequired(String),
     #[error("{0}")]
     Invalid(String),
+}
+
+impl EngineError {
+    /// A name for the kind of error that stays the same whatever language
+    /// the message is in, for tools that act on it.
+    pub fn code(&self) -> &'static str {
+        match self {
+            EngineError::Store(_) => "store",
+            EngineError::Upstream(_) => "upstream",
+            EngineError::NotConfigured => "not_configured",
+            EngineError::NotFound => "not_found",
+            EngineError::Network(_) => "network",
+            EngineError::Offline(_) => "offline",
+            EngineError::Unauthorized => "unauthorized",
+            EngineError::UpgradeRequired(_) => "upgrade_required",
+            EngineError::Invalid(_) => "invalid",
+        }
+    }
 }
 
 impl From<serde_json::Error> for EngineError {

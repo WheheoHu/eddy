@@ -249,6 +249,36 @@ fn markdown_to_html(markdown: &str) -> String {
     out
 }
 
+/// Markdown written by a person or an agent, as the HTML the document
+/// converter reads. Formulas between `$` or `$$` go through as TeX, in the
+/// `<script type="math/tex">` form the converter knows: left to the Markdown
+/// parser, the backslashes and underscores in them would be read as escapes
+/// and emphasis.
+pub fn markdown_to_article_html(markdown: &str) -> String {
+    use pulldown_cmark::{CowStr, Event, Options, Parser, html};
+    let options = Options::ENABLE_TABLES
+        | Options::ENABLE_FOOTNOTES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_HEADING_ATTRIBUTES
+        | Options::ENABLE_MATH;
+    // A script's text ends at the first `</script`, whatever follows it.
+    let script = |kind: &str, tex: &str| {
+        CowStr::from(format!(
+            "<script type=\"{kind}\">{}</script>",
+            tex.replace("</", "< /")
+        ))
+    };
+    let events = Parser::new_ext(markdown, options).map(|event| match event {
+        Event::InlineMath(tex) => Event::InlineHtml(script("math/tex", &tex)),
+        Event::DisplayMath(tex) => Event::Html(script("math/tex; mode=display", &tex)),
+        other => other,
+    });
+    let mut out = String::with_capacity(markdown.len() * 2);
+    html::push_html(&mut out, events);
+    out
+}
+
 /// The page `<title>` (or `og:title`), trimmed of site suffixes like " | Site".
 pub fn page_title(doc: &Html) -> Option<String> {
     let og = Selector::parse("meta[property=\"og:title\"]").unwrap();

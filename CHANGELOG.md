@@ -29,6 +29,8 @@ Sync protocol 3. Servers and devices on protocol 1 must be updated together; one
 - Engine: `feed_icon` gives the icon of a subscription's site. It is looked for on the device, from the site's address the feed carries: the icons the page names (or the site's front page, when the feed gives its own address as its site's), then `/favicon.ico`; what comes back is only taken if it is an image. The icon is kept in the cache and found again if evicted; a site without one is asked again after a week, and one that can't be reached, the next time. Nothing about icons is synced. The local data format goes to 8.
 - Engine: `clear_cache` empties the offline cache now, whatever its limit: articles already read, cached pictures and feed icons go; unread, starred, saved and in-progress content and imported files stay.
 - Unsubscribing from a feed (`remove_feed`, `eddy-cli feed remove ID`, with `feed list` for the IDs): FreshRSS unsubscribes, and the feed leaves Eddy with its articles. A device paired with a server asks the server (`DELETE /v1/subscriptions/{id}`); with the server out of reach the answer is that it is offline. A feed FreshRSS no longer has is simply removed here.
+- Engine: `save_text` saves Markdown or HTML handed over as it is (notes, a compiled summary) as a document of its own in Saved. Formulas between `$` and `$$` are kept as TeX. It syncs like any saved page and needs no protocol change.
+- Engine: a document can be written out as Markdown (`Document::to_markdown`), with tables, nested lists, code and formulas; what is written out saves back as the same document.
 
 ### Changed
 
