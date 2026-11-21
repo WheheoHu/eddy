@@ -14,11 +14,21 @@ pub enum Mode {
     /// Ask the app that has `data` open.
     App {
         data: PathBuf,
-        /// The app to start when nothing answers. `None` for a data
-        /// directory someone pointed an app at themselves: starting an app
-        /// here would start it on the user's own library.
-        launch: Option<PathBuf>,
+        /// How to start the app when nothing answers. `None` for a copy
+        /// outside any app: it has no app of its own to start.
+        launch: Option<Launch>,
     },
+}
+
+/// The app to start, and the data directory to start it on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Launch {
+    pub bundle: PathBuf,
+    /// `EDDY_DATA_DIR` for the app, when the command was given one: a
+    /// separate instance on that directory, whatever else is running.
+    /// Without it the app opens the user's library, and is not started a
+    /// second time when it is already running.
+    pub data: Option<PathBuf>,
 }
 
 /// What the choice depends on, gathered by [`Surroundings::current`].
@@ -99,14 +109,17 @@ pub fn choose(data: Option<&Path>, app: bool, around: &Surroundings) -> Result<M
         });
     }
     match (&around.data_override, bundle) {
-        (Some(data), _) => Ok(Mode::App {
+        (Some(data), bundle) => Ok(Mode::App {
             data: data.clone(),
-            launch: None,
+            launch: bundle.map(|bundle| Launch {
+                bundle,
+                data: Some(data.clone()),
+            }),
         }),
         (None, Some(bundle)) => match around.library() {
             Some(data) => Ok(Mode::App {
                 data,
-                launch: Some(bundle),
+                launch: Some(Launch { bundle, data: None }),
             }),
             None => Err("HOME is not set, so Eddy's library cannot be found.".into()),
         },
@@ -165,15 +178,21 @@ mod tests {
             choose(None, false, &around(BUNDLED, None)),
             Ok(Mode::App {
                 data: PathBuf::from(LIBRARY),
-                launch: Some(PathBuf::from("/Applications/Eddy.app")),
+                launch: Some(Launch {
+                    bundle: PathBuf::from("/Applications/Eddy.app"),
+                    data: None,
+                }),
             })
         );
-        // A test copy of the app, on its own data: found, never started.
+        // Told which data to work on, it starts its app on that data.
         assert_eq!(
             choose(None, false, &around(BUNDLED, Some("/tmp/app-test"))),
             Ok(Mode::App {
                 data: PathBuf::from("/tmp/app-test"),
-                launch: None,
+                launch: Some(Launch {
+                    bundle: PathBuf::from("/Applications/Eddy.app"),
+                    data: Some(PathBuf::from("/tmp/app-test")),
+                }),
             })
         );
     }

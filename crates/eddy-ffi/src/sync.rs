@@ -124,10 +124,14 @@ impl EddyEngine {
     pub async fn sign_out_and_erase(&self, discard_unsent: bool) -> R<SignOutView> {
         Ok(
             match self.engine.sign_out_and_erase(discard_unsent).await? {
-                eddy_core::SignOut::Erased => SignOutView {
-                    erased: true,
-                    unsent: 0,
-                },
+                eddy_core::SignOut::Erased => {
+                    // Nothing more is to be done on data that is going.
+                    self.stop_control_server();
+                    SignOutView {
+                        erased: true,
+                        unsent: 0,
+                    }
+                }
                 eddy_core::SignOut::Unsent(unsent) => SignOutView {
                     erased: false,
                     unsent,

@@ -225,9 +225,10 @@ pub fn text(request: &Request, value: Value) -> Result<String, ControlError> {
         Request::Collection { .. } => {
             let collection: Collection = read(value)?;
             for entry in collection.entries {
-                let chapters = match entry.chapters {
-                    0 => String::new(),
-                    n => format!("  {}/{n} chapters", entry.finished),
+                // A page or PDF on its own is not a book of one chapter.
+                let chapters = match entry.series_id {
+                    Some(_) => format!("  {}/{} chapters", entry.finished, entry.chapters),
+                    None => String::new(),
                 };
                 out.push(format!(
                     "{}  {:<10}  {:>3.0}%  {}{chapters}",

@@ -1270,6 +1270,7 @@ name = "eddy-ffi"
 version = "0.2.0"
 dependencies = [
  "async-trait",
+ "eddy-control",
  "eddy-core",
  "eddy-model",
  "eddy-pdf",

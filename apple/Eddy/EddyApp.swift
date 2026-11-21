@@ -7,18 +7,34 @@ import UniformTypeIdentifiers
 /// dialog is answered the activation that came with the launch is spent;
 /// without this the window appears behind whatever was in front.
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Started by the command line to work for it (`open -g -j … --args
+    /// --background`): Eddy stays hidden behind whatever is in front until
+    /// the user turns to it.
+    private static var inBackground = ProcessInfo.processInfo.arguments.contains("--background")
+
     func applicationDidFinishLaunching(_ notification: Notification) {
-        Self.comeForward()
+        Self.arrive()
         // Once more after the window has had time to appear: activation
         // granted before there is a window doesn't always stick.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            if !NSApp.isActive { Self.comeForward() }
+            if !NSApp.isActive { Self.arrive() }
         }
         // After the window is up and its lists are drawn.
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { WebWarmUp.begin() }
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        Self.inBackground = false
+    }
+
+    /// Coming forward as part of starting up, which a start in the
+    /// background leaves out.
+    static func arrive() {
+        if !inBackground { comeForward() }
+    }
+
     static func comeForward() {
+        inBackground = false
         NSApp.activate()
         if !NSApp.isActive { forceForward() }
         NSApp.windows.first { $0.canBecomeKey }?.makeKeyAndOrderFront(nil)
@@ -211,7 +227,7 @@ struct RootView: View {
         }
         // The window is made after launching finishes; bring it forward too.
         .onAppear {
-            AppDelegate.comeForward()
+            AppDelegate.arrive()
             keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
                 // ⌥A translates, wherever focus is: a list would otherwise
                 // type-select on the "å" and the web page would keep it.

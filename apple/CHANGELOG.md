@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- The `eddy` command line comes inside the app, for working on your library from Terminal and for agents: listing and searching items, reading their text as Markdown, saving pages, files and text, managing subscriptions and tags, reading and setting reading positions. It asks the running app to do the work, so changes show at once, and starts Eddy in the background when it is not running. `eddy guide` explains it to an agent; every command takes `--json`.
 - Settings → Accounts shows whether the sync server is online, its version, and how many changes are waiting to upload.
 - In server mode the FreshRSS section shows the server's account and lets this Mac keep it for refreshing while the server is offline; a server without an account can be given one here.
 - Settings → About shows the app version and the core version.
