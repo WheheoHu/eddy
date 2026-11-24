@@ -137,6 +137,13 @@ pub struct CreateVideoJobRequest {
     pub target_language: Option<String>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetryVideoJobRequest {
+    /// `"resume"`, `"write_chapters"`, `"plan_visuals"`, or `"full"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_stage: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteVideoJob {
     pub id: String,
@@ -155,6 +162,12 @@ pub struct RemoteVideoJob {
     pub result_item_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    #[serde(default)]
+    pub can_rewrite_chapters: bool,
+    #[serde(default)]
+    pub can_replan_visuals: bool,
+    #[serde(default)]
+    pub cache_bytes: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -527,9 +540,18 @@ impl SyncClient {
             .await
     }
 
-    pub async fn retry_video_job(&self, id: &str) -> Result<RemoteVideoJob> {
-        self.json(self.http.post(self.url(&format!("video-jobs/{id}/retry"))))
-            .await
+    pub async fn retry_video_job(
+        &self,
+        id: &str,
+        from_stage: Option<&str>,
+    ) -> Result<RemoteVideoJob> {
+        let mut req = self.http.post(self.url(&format!("video-jobs/{id}/retry")));
+        if let Some(stage) = from_stage {
+            req = req.json(&RetryVideoJobRequest {
+                from_stage: Some(stage.to_string()),
+            });
+        }
+        self.json(req).await
     }
 
     pub async fn cancel_video_job(&self, id: &str) -> Result<RemoteVideoJob> {

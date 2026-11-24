@@ -18,15 +18,15 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use eddy_core::{
-    Engine, EngineOptions, HistoryCallback, StartVideoJobOptions, TranscriptPolicy, VideoJobTarget,
-    VideoPipelineMode, record_to_remote,
+    Engine, EngineOptions, HistoryCallback, RetryFromStage, StartVideoJobOptions, TranscriptPolicy,
+    VideoJobTarget, VideoPipelineMode, record_to_remote,
 };
 use eddy_model::ids::sha256_hex;
 use eddy_store::Store;
 use eddy_sync::{
     AccountInfo, AccountRequest, ConfigEntry, CreateVideoJobRequest, ErrorBody, MIN_PROTOCOL,
     PROTOCOL_HEADER, PROTOCOL_VERSION, PairRequest, PairResponse, PullResponse, PushResponse,
-    RawPushRequest, RejectedOp, RemoteVideoJob, SearchHit, ServerInfo,
+    RawPushRequest, RejectedOp, RemoteVideoJob, RetryVideoJobRequest, SearchHit, ServerInfo,
 };
 use serde::Deserialize;
 use tokio::sync::broadcast;
@@ -196,6 +196,7 @@ pub fn create_pairing_code(store: &Store, ttl: Duration) -> Result<String, Strin
     Ok(code)
 }
 
+#[derive(Debug)]
 pub struct ApiError(pub(crate) StatusCode, pub(crate) String);
 
 impl ApiError {
@@ -704,8 +705,23 @@ async fn retry_video_job(
     State(s): State<Arc<AppState>>,
     _d: Device,
     Path(id): Path<String>,
+    body: axum::body::Bytes,
 ) -> Result<Json<RemoteVideoJob>, ApiError> {
-    Ok(Json(s.retry_video_job(&id)?))
+    let stage = parse_retry_stage_body(&body)?;
+    Ok(Json(s.retry_video_job(&id, stage)?))
+}
+
+pub(crate) fn parse_retry_stage_body(body: &[u8]) -> Result<RetryFromStage, ApiError> {
+    if body.iter().all(|b| b.is_ascii_whitespace()) {
+        return Ok(RetryFromStage::Resume);
+    }
+    let req: RetryVideoJobRequest = serde_json::from_slice(body)
+        .map_err(|e| ApiError::bad(format!("Invalid retry payload: {e}")))?;
+    Ok(req
+        .from_stage
+        .as_deref()
+        .map(RetryFromStage::parse)
+        .unwrap_or(RetryFromStage::Resume))
 }
 
 async fn cancel_video_job(
@@ -728,18 +744,23 @@ async fn dismiss_video_job(
 /// Video jobs, as devices and the admin page both drive them.
 impl AppState {
     pub(crate) fn video_jobs(&self) -> Result<Vec<RemoteVideoJob>, ApiError> {
+        let jobs_dir = self.engine.video_jobs_dir();
         let jobs = self
             .engine
             .local_video_job_records(50)
             .map_err(ApiError::internal)?;
-        Ok(jobs.into_iter().map(record_to_remote).collect())
+        Ok(jobs
+            .into_iter()
+            .map(|r| record_to_remote(r, &jobs_dir))
+            .collect())
     }
 
     fn video_job(&self, id: &str) -> Result<RemoteVideoJob, ApiError> {
+        let jobs_dir = self.engine.video_jobs_dir();
         self.engine
             .local_video_job_record(id)
             .map_err(ApiError::internal)?
-            .map(record_to_remote)
+            .map(|r| record_to_remote(r, &jobs_dir))
             .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "Job not found".into()))
     }
 
@@ -788,9 +809,13 @@ impl AppState {
         self.video_job(&created.id)
     }
 
-    pub(crate) fn retry_video_job(self: &Arc<Self>, id: &str) -> Result<RemoteVideoJob, ApiError> {
+    pub(crate) fn retry_video_job(
+        self: &Arc<Self>,
+        id: &str,
+        from_stage: RetryFromStage,
+    ) -> Result<RemoteVideoJob, ApiError> {
         self.engine
-            .retry_local_video_job(id, Some(self.video_notifier()))
+            .retry_local_video_job(id, from_stage, Some(self.video_notifier()))
             .map_err(ApiError::bad)?;
         self.announce_video_job_event();
         self.video_job(id)

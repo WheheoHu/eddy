@@ -363,6 +363,7 @@ function jobRow(j, now) {
   if (active) actions.append(el("button", { onclick: () => jobAction(j, "cancel") }, "Cancel"));
   else {
     if (j.status !== "succeeded") actions.append(el("button", { onclick: () => jobAction(j, "retry") }, "Retry"), " ");
+    else if (j.can_rewrite_chapters) actions.append(el("button", { onclick: () => jobAction(j, "retry", { from_stage: "write_chapters" }) }, "Rewrite"), " ");
     actions.append(el("button", { onclick: () => jobAction(j, "dismiss") }, "Clear"));
   }
   return el("tr", null,
@@ -419,9 +420,9 @@ function revoke(d) {
   act(() => api("DELETE", "devices/" + encodeURIComponent(d.id)), "Device revoked.");
 }
 
-function jobAction(j, action) {
+function jobAction(j, action, body) {
   if (action === "dismiss") return act(() => api("DELETE", "video-jobs/" + encodeURIComponent(j.id)));
-  act(() => api("POST", "video-jobs/" + encodeURIComponent(j.id) + "/" + action));
+  act(() => api("POST", "video-jobs/" + encodeURIComponent(j.id) + "/" + action, body));
 }
 
 function tickCode() {

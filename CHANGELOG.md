@@ -10,6 +10,7 @@ Sync protocol 3. Servers and devices on protocol 1 must be updated together; one
 
 ### Added
 
+- Video-to-Book: completed jobs now keep their reusable transcript, visual plan, and extracted 1080p slides on disk (after removing heavy raw video/audio) and support stage-aware retries (`Resume`, `WriteChapters`, `PlanVisuals`, `Full`) so you can switch writer models or languages and regenerate a new book version without re-running ASR or slide capture. Added `video_cache_usage` and `clear_video_cache` to inspect and clear cached job checkpoints while keeping imported books intact; server `/v1/video-jobs/{id}/retry` and `/admin` accept an optional `from_stage`.
 - Windows: the Rust core and `eddy-cli` build and run on Windows (MSVC). `scripts/fetch-pdfium.sh windows` fetches the shared pdfium build, which `eddy-pdf` loads from next to the executable; the macOS app keeps its static link.
 - Server: admin page at `/admin`, on when `EDDY_ADMIN_PASSWORD` is set: pairing codes, devices, FreshRSS status and account, video jobs, service status.
 - Server: `eddy-server --version`; `/v1/info` reports the version; `/v1/health` checks the database.

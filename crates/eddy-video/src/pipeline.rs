@@ -22,9 +22,10 @@ use crate::media::{
     try_fetch_subtitles,
 };
 use crate::models::{
-    ArticleBlock, ArticleDocument, ArticleSection, CandidateFrame, GeneratedBook, PipelinePhase,
-    PipelineProgress, Stage1ChapterPlan, Stage1Plan, Stage1SlideChoice, TranscriptBundle,
-    VideoProbe, format_timestamp_ms, parse_timestamp_to_ms,
+    ArticleBlock, ArticleDocument, ArticleSection, CandidateFrame, GeneratedBook,
+    JobCheckpointStatus, PipelinePhase, PipelineProgress, RetryFromStage, Stage1ChapterPlan,
+    Stage1Plan, Stage1SlideChoice, TranscriptBundle, VideoProbe, format_timestamp_ms,
+    parse_timestamp_to_ms,
 };
 use crate::settings::{RuntimeVideoConfig, StageEndpoint, VideoPipelineMode};
 use crate::toolchain::detect_toolchain;
@@ -157,10 +158,124 @@ Return STRICT JSON with this schema:
 }
 "#;
 
+const REFRESH_OVERVIEW_FLAG: &str = "refresh_overview.flag";
+
 #[derive(Serialize, Deserialize)]
 struct PlanCheckpoint {
     plan: Stage1Plan,
     frames: Vec<CandidateFrame>,
+}
+
+/// Recursively sums file sizes under `dir`. Missing or unreadable entries count as 0.
+pub fn dir_size_bytes(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut total = 0u64;
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if meta.is_dir() {
+            total = total.saturating_add(dir_size_bytes(&entry.path()));
+        } else if meta.is_file() {
+            total = total.saturating_add(meta.len());
+        }
+    }
+    total
+}
+
+fn plan_has_intact_frames(plan_file: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(plan_file) else {
+        return false;
+    };
+    let Ok(cp) = serde_json::from_slice::<PlanCheckpoint>(&bytes) else {
+        return false;
+    };
+    if cp.plan.chapters.is_empty() {
+        return false;
+    }
+    let referenced: HashSet<&str> = cp
+        .plan
+        .chapters
+        .iter()
+        .flat_map(|ch| ch.selected_slides.iter().map(|s| s.frame_id.as_str()))
+        .collect();
+    if referenced.is_empty() {
+        return true;
+    }
+    let frame_map: HashMap<&str, &str> = cp
+        .frames
+        .iter()
+        .map(|f| (f.frame_id.as_str(), f.image_path.as_str()))
+        .collect();
+    referenced
+        .into_iter()
+        .all(|fid| frame_map.get(fid).is_some_and(|p| Path::new(p).is_file()))
+}
+
+/// Inspects which reusable checkpoint artifacts exist on disk inside `job_dir`.
+pub fn inspect_job_checkpoints(job_dir: &Path) -> JobCheckpointStatus {
+    if !job_dir.is_dir() {
+        return JobCheckpointStatus::default();
+    }
+    let has_transcript = job_dir.join("checkpoint_transcript.json").is_file();
+    let has_plan_and_frames =
+        has_transcript && plan_has_intact_frames(&job_dir.join("checkpoint_plan.json"));
+    let cached_chapters = std::fs::read_dir(job_dir.join("chapters"))
+        .ok()
+        .map(|rd| {
+            rd.flatten()
+                .filter(|e| {
+                    let p = e.path();
+                    p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("json")
+                })
+                .count() as u32
+        })
+        .unwrap_or(0);
+    let cache_bytes = dir_size_bytes(job_dir);
+    JobCheckpointStatus {
+        has_transcript,
+        has_plan_and_frames,
+        cached_chapters,
+        cache_bytes,
+    }
+}
+
+/// Clears only the downstream checkpoints required to restart a job from `stage`, preserving
+/// upstream artifacts (ASR transcript, Stage 1 visual plan, captured 1080p frames) whenever safe.
+pub fn prepare_job_dir_for_retry(job_dir: &Path, stage: RetryFromStage) -> Result<(), VideoError> {
+    match stage {
+        RetryFromStage::Resume => Ok(()),
+        RetryFromStage::WriteChapters => {
+            let _ = std::fs::remove_dir_all(job_dir.join("chapters"));
+            let plan_file = job_dir.join("checkpoint_plan.json");
+            if plan_has_intact_frames(&plan_file) {
+                std::fs::create_dir_all(job_dir)?;
+                std::fs::write(job_dir.join(REFRESH_OVERVIEW_FLAG), b"1")?;
+            } else {
+                // Missing or incomplete frame files: fall back to re-running Stage 1 cleanly.
+                let _ = std::fs::remove_file(&plan_file);
+                let _ = std::fs::remove_file(job_dir.join(REFRESH_OVERVIEW_FLAG));
+            }
+            Ok(())
+        }
+        RetryFromStage::PlanVisuals => {
+            let _ = std::fs::remove_file(job_dir.join("checkpoint_plan.json"));
+            let _ = std::fs::remove_file(job_dir.join(REFRESH_OVERVIEW_FLAG));
+            let _ = std::fs::remove_dir_all(job_dir.join("gemini_captures"));
+            let _ = std::fs::remove_dir_all(job_dir.join("local_frames"));
+            let _ = std::fs::remove_dir_all(job_dir.join("proxies"));
+            let _ = std::fs::remove_dir_all(job_dir.join("chapters"));
+            Ok(())
+        }
+        RetryFromStage::Full => {
+            if job_dir.is_dir() {
+                std::fs::remove_dir_all(job_dir)?;
+            }
+            Ok(())
+        }
+    }
 }
 
 fn check_cancel(cancel: &AtomicBool) -> Result<(), VideoError> {
@@ -318,7 +433,7 @@ pub async fn run_video_pipeline(
 
     // --- Step 3: Ensure local video + Stage 1 Visual Plan & HD Frame Capture (checkpointed) ---
     let plan_file = job_dir.join("checkpoint_plan.json");
-    let (plan, frames): (Stage1Plan, Vec<CandidateFrame>) = if plan_file.is_file() {
+    let (mut plan, frames): (Stage1Plan, Vec<CandidateFrame>) = if plan_file.is_file() {
         let cp: PlanCheckpoint = serde_json::from_slice(&std::fs::read(&plan_file)?)
             .map_err(|e| VideoError::Format(e.to_string()))?;
         (cp.plan, cp.frames)
@@ -382,8 +497,59 @@ pub async fn run_video_pipeline(
             &plan_file,
             serde_json::to_vec_pretty(&cp).unwrap_or_default(),
         )?;
+        let _ = std::fs::remove_file(job_dir.join(REFRESH_OVERVIEW_FLAG));
         (p, f)
     };
+
+    check_cancel(&cancel)?;
+
+    // When regenerating from Stage 2 (`WriteChapters`), refresh the book overview & chapter
+    // briefs using the current writer model so switching models/languages upgrades the overview.
+    let refresh_flag = job_dir.join(REFRESH_OVERVIEW_FLAG);
+    if refresh_flag.is_file() {
+        let synthesis_ep = if cfg.stage2.is_configured() {
+            &cfg.stage2
+        } else {
+            &cfg.stage1
+        };
+        report(
+            PipelinePhase::WritingChapters,
+            0,
+            plan.chapters.len() as u32,
+            "Refreshing book overview with current writer model…",
+            Some(if plan.article_title.trim().is_empty() {
+                probe.title.clone()
+            } else {
+                plan.article_title.clone()
+            }),
+        );
+        let refresh_http = build_streaming_http_client(120, 600)?;
+        match resynthesize_plan_overview(
+            &refresh_http,
+            synthesis_ep,
+            &probe,
+            &cfg.target_language,
+            &plan,
+        )
+        .await
+        {
+            Ok(updated) => {
+                plan = updated;
+                let cp = PlanCheckpoint {
+                    plan: plan.clone(),
+                    frames: frames.clone(),
+                };
+                let _ = std::fs::write(
+                    &plan_file,
+                    serde_json::to_vec_pretty(&cp).unwrap_or_default(),
+                );
+            }
+            Err(err) => {
+                tracing::warn!("Book overview refresh failed, keeping saved plan overview: {err}");
+            }
+        }
+        let _ = std::fs::remove_file(&refresh_flag);
+    }
 
     check_cancel(&cancel)?;
 
@@ -523,7 +689,8 @@ pub async fn run_video_pipeline(
 
     let (epub_bytes, chapters_count) = build_epub_bytes(&article_doc)?;
 
-    // Clean temporary large media streams while keeping lightweight JSON checkpoints
+    // Clean temporary large media streams while keeping lightweight checkpoints and HD frames
+    // so the user can regenerate chapters/overview later without re-running ASR or capture.
     let _ = std::fs::remove_file(job_dir.join("video.mp4"));
     let _ = std::fs::remove_file(job_dir.join("audio_16k.mp3"));
     if let Ok(entries) = std::fs::read_dir(job_dir) {
@@ -535,6 +702,7 @@ pub async fn run_video_pipeline(
         }
     }
     let _ = std::fs::remove_dir_all(job_dir.join("proxies"));
+    let _ = std::fs::remove_dir_all(job_dir.join("local_frames").join("thumbs"));
 
     report(
         PipelinePhase::Completed,
@@ -1214,6 +1382,63 @@ pub(crate) async fn synthesize_chunked_overview(
         key_takeaways,
         chapter_briefs,
     })
+}
+
+/// Refreshes a saved `Stage1Plan`'s book title, subtitle, executive summary, key takeaways,
+/// and per-chapter reader briefs using the current writer model without re-running Stage 1.
+pub(crate) async fn resynthesize_plan_overview(
+    http: &reqwest::Client,
+    synthesis_ep: &StageEndpoint,
+    probe: &VideoProbe,
+    target_language: &str,
+    plan: &Stage1Plan,
+) -> Result<Stage1Plan, VideoError> {
+    let part = ChunkPartMeta {
+        part_index: 0,
+        start_ms: 0,
+        end_ms: probe.duration_ms,
+        title: plan.article_title.clone(),
+        subtitle: plan.subtitle.clone(),
+        executive_summary: plan.executive_summary.clone(),
+        key_takeaways: plan.key_takeaways.clone(),
+    };
+    let chapter_vals: Vec<Value> = plan
+        .chapters
+        .iter()
+        .map(|ch| {
+            serde_json::json!({
+                "chapter_index": ch.chapter_index,
+                "title": ch.title,
+                "start_ms": ch.start_ms,
+                "end_ms": ch.end_ms,
+                "summary_goal": ch.summary_goal,
+            })
+        })
+        .collect();
+
+    let ov = synthesize_chunked_overview(
+        http,
+        synthesis_ep,
+        probe,
+        target_language,
+        &[part],
+        &chapter_vals,
+    )
+    .await?;
+
+    let mut updated = plan.clone();
+    updated.article_title = ov.article_title;
+    updated.subtitle = ov.subtitle;
+    updated.executive_summary = ov.executive_summary;
+    updated.key_takeaways = ov.key_takeaways;
+    for ch in &mut updated.chapters {
+        if let Some(brief) = ov.chapter_briefs.get(&ch.chapter_index)
+            && !brief.trim().is_empty()
+        {
+            ch.brief = brief.trim().to_string();
+        }
+    }
+    Ok(updated)
 }
 
 fn shift_clip_ts(ts_ms: u64, chunk_start_ms: u64, clip_dur_ms: u64, total_ms: u64) -> u64 {

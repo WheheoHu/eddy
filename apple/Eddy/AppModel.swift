@@ -1426,10 +1426,11 @@ final class AppModel {
         }
     }
 
-    func retryVideoJob(_ job: VideoJobView) async {
+    func retryVideoJob(_ job: VideoJobView, from stage: VideoRetryStageView = .resume) async {
         guard let engine else { return }
         do {
-            _ = try await engine.retryVideoJob(id: job.id, target: job.target)
+            completedJobIDs.remove(job.id)
+            _ = try await engine.retryVideoJob(id: job.id, target: job.target, fromStage: stage)
             await refreshVideoJobs(initial: false)
         } catch {
             report(error)

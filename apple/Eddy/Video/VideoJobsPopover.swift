@@ -157,7 +157,12 @@ private struct VideoJobRow: View {
 
     private var phaseText: String {
         if job.status == "succeeded" {
-            return job.detail.isEmpty ? "Completed" : job.detail
+            let base = job.detail.isEmpty ? "Completed" : job.detail
+            if job.cacheBytes > 0 {
+                let size = ByteCountFormatter.string(fromByteCount: Int64(job.cacheBytes), countStyle: .file)
+                return "\(base) · \(size) cached"
+            }
+            return base
         }
         if job.status == "canceled" {
             return "Canceled"
@@ -181,6 +186,33 @@ private struct VideoJobRow: View {
     }
 
     @ViewBuilder
+    private var regenerateMenu: some View {
+        Menu {
+            Button("Rewrite Chapters & Overview") {
+                Task { await model.retryVideoJob(job, from: .writeChapters) }
+            }
+            .disabled(!job.canRewriteChapters)
+
+            Button("Re-plan Visuals & Rewrite") {
+                Task { await model.retryVideoJob(job, from: .planVisuals) }
+            }
+            .disabled(!job.canReplanVisuals)
+
+            Divider()
+
+            Button("Run Again from Scratch") {
+                Task { await model.retryVideoJob(job, from: .full) }
+            }
+        } label: {
+            Image(systemName: "arrow.clockwise")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Regenerate book using saved transcript or extracted slides")
+    }
+
+    @ViewBuilder
     private var actions: some View {
         if isRunning {
             Button {
@@ -193,10 +225,12 @@ private struct VideoJobRow: View {
         } else if job.status == "failed" || job.status == "canceled" {
             HStack(spacing: 6) {
                 Button("Retry") {
-                    Task { await model.retryVideoJob(job) }
+                    Task { await model.retryVideoJob(job, from: .resume) }
                 }
                 .controlSize(.small)
                 .help("Resume from saved stage checkpoints")
+
+                regenerateMenu
 
                 Button {
                     Task { await model.dismissVideoJob(job) }
@@ -215,13 +249,16 @@ private struct VideoJobRow: View {
                     }
                     .controlSize(.small)
                 }
+
+                regenerateMenu
+
                 Button {
                     Task { await model.dismissVideoJob(job) }
                 } label: {
                     Image(systemName: "xmark")
                 }
                 .buttonStyle(.borderless)
-                .help("Dismiss")
+                .help("Dismiss and delete cached checkpoints")
             }
         }
     }

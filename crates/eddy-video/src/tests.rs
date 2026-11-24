@@ -7,9 +7,13 @@ use crate::client::{
 };
 use crate::epub_builder::{build_epub_bytes, format_takeaway_html};
 use crate::media::parse_vtt_or_srt;
-use crate::models::{ArticleBlock, ArticleDocument, ArticleSection, Stage1Plan, VideoProbe};
+use crate::models::{
+    ArticleBlock, ArticleDocument, ArticleSection, CandidateFrame, RetryFromStage,
+    Stage1ChapterPlan, Stage1Plan, Stage1SlideChoice, VideoProbe,
+};
 use crate::pipeline::{
-    build_fallback_overview, merge_chunk_chapters_and_meta, sample_takeaways_proportionally,
+    build_fallback_overview, inspect_job_checkpoints, merge_chunk_chapters_and_meta,
+    prepare_job_dir_for_retry, resynthesize_plan_overview, sample_takeaways_proportionally,
     synthesize_chunked_overview,
 };
 use crate::redact::{REDACTED, redact_text};
@@ -980,4 +984,165 @@ fn deserializes_legacy_checkpoints_without_brief_field() {
     });
     let sec: ArticleSection = serde_json::from_value(legacy_sec).unwrap();
     assert_eq!(sec.brief, "");
+}
+
+#[test]
+fn inspects_and_prepares_checkpoints_for_stage_retries() {
+    let tmp = tempfile::tempdir().unwrap();
+    let job_dir = tmp.path();
+
+    let cap_dir = job_dir.join("gemini_captures");
+    let ch_dir = job_dir.join("chapters");
+    std::fs::create_dir_all(&cap_dir).unwrap();
+    std::fs::create_dir_all(&ch_dir).unwrap();
+
+    let frame_path = cap_dir.join("hs001_00010000.jpg");
+    std::fs::write(&frame_path, vec![0xFFu8; 2048]).unwrap();
+    std::fs::write(job_dir.join("checkpoint_probe.json"), b"{}").unwrap();
+    std::fs::write(job_dir.join("checkpoint_transcript.json"), b"{}").unwrap();
+    std::fs::write(ch_dir.join("chapter_01.json"), b"{}").unwrap();
+
+    let plan_cp = serde_json::json!({
+        "plan": Stage1Plan {
+            article_title: "Smolder".into(),
+            subtitle: "Sub".into(),
+            executive_summary: "Old summary".into(),
+            key_takeaways: vec!["Old takeaway".into()],
+            chapters: vec![Stage1ChapterPlan {
+                chapter_index: 1,
+                title: "Intro".into(),
+                start_ms: 0,
+                end_ms: 60_000,
+                brief: String::new(),
+                summary_goal: "Explain intro".into(),
+                key_terms: vec![],
+                selected_slides: vec![Stage1SlideChoice {
+                    frame_id: "hs001".into(),
+                    timestamp_ms: 10_000,
+                    role: "slide".into(),
+                    draft_caption: "Slide 1".into(),
+                }],
+            }],
+        },
+        "frames": vec![CandidateFrame {
+            frame_id: "hs001".into(),
+            timestamp_ms: 10_000,
+            image_path: frame_path.to_string_lossy().into_owned(),
+            thumb_path: None,
+            dhash: 0,
+            sharpness: 50.0,
+        }]
+    });
+    std::fs::write(
+        job_dir.join("checkpoint_plan.json"),
+        serde_json::to_vec_pretty(&plan_cp).unwrap(),
+    )
+    .unwrap();
+
+    let status = inspect_job_checkpoints(job_dir);
+    assert!(status.has_transcript);
+    assert!(status.has_plan_and_frames);
+    assert_eq!(status.cached_chapters, 1);
+    assert!(status.cache_bytes >= 2048);
+
+    // 1. WriteChapters clears chapters/ and sets refresh_overview.flag, keeping transcript, plan, and frames.
+    prepare_job_dir_for_retry(job_dir, RetryFromStage::WriteChapters).unwrap();
+    assert!(!ch_dir.exists());
+    assert!(job_dir.join("checkpoint_transcript.json").is_file());
+    assert!(job_dir.join("checkpoint_plan.json").is_file());
+    assert!(frame_path.is_file());
+    assert!(job_dir.join("refresh_overview.flag").is_file());
+
+    // 2. If a referenced frame JPEG is missing on disk, inspect reports false and WriteChapters clears plan.
+    std::fs::remove_file(&frame_path).unwrap();
+    let missing = inspect_job_checkpoints(job_dir);
+    assert!(missing.has_transcript);
+    assert!(!missing.has_plan_and_frames);
+    prepare_job_dir_for_retry(job_dir, RetryFromStage::WriteChapters).unwrap();
+    assert!(!job_dir.join("checkpoint_plan.json").is_file());
+    assert!(!job_dir.join("refresh_overview.flag").is_file());
+
+    // 3. PlanVisuals keeps probe and transcript while wiping plan, frames, and chapters.
+    std::fs::create_dir_all(&cap_dir).unwrap();
+    std::fs::write(&frame_path, b"jpg").unwrap();
+    std::fs::write(job_dir.join("checkpoint_plan.json"), b"{}").unwrap();
+    prepare_job_dir_for_retry(job_dir, RetryFromStage::PlanVisuals).unwrap();
+    assert!(job_dir.join("checkpoint_probe.json").is_file());
+    assert!(job_dir.join("checkpoint_transcript.json").is_file());
+    assert!(!job_dir.join("checkpoint_plan.json").is_file());
+    assert!(!cap_dir.exists());
+
+    // 4. Full wipes the entire job directory.
+    prepare_job_dir_for_retry(job_dir, RetryFromStage::Full).unwrap();
+    assert!(!job_dir.exists());
+}
+
+#[tokio::test]
+async fn resynthesizes_saved_plan_overview_with_new_writer_model() {
+    let server = MockServer::start().await;
+    let updated_json = serde_json::json!({
+        "article_title": "Refined Whole Book Title",
+        "subtitle": "Crisp updated framing",
+        "executive_summary": "A concise two-sentence synthesis from the upgraded writer model.",
+        "key_takeaways": [
+            "Format: Custom 4x4x4 bricks cut memory usage.",
+            "Shadows: Async compute keeps shadows nearly free."
+        ],
+        "chapter_briefs": [
+            {"chapter_index": 1, "brief": "Explains the core architecture and goals."}
+        ]
+    });
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{
+                "message": { "content": updated_json.to_string() }
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let ep = StageEndpoint {
+        protocol: ProtocolKind::OpenAi,
+        url: format!("{}/v1", server.uri()),
+        model: "claude-opus-5-5".into(),
+        api_key: "sk-rewrite-test".into(),
+    };
+    let probe = VideoProbe {
+        video_id: "vid1".into(),
+        title: "Original Talk".into(),
+        duration_ms: 1_800_000,
+        ..Default::default()
+    };
+    let old_plan = Stage1Plan {
+        article_title: "Old Title (Part 1)".into(),
+        subtitle: "Old sub".into(),
+        executive_summary: "Very verbose old concatenated summary.".into(),
+        key_takeaways: vec!["Old point".into()],
+        chapters: vec![Stage1ChapterPlan {
+            chapter_index: 1,
+            title: "Chapter 1".into(),
+            start_ms: 0,
+            end_ms: 1_800_000,
+            brief: String::new(),
+            summary_goal: "Cover architecture deeply".into(),
+            key_terms: vec!["Smolder".into()],
+            selected_slides: vec![],
+        }],
+    };
+    let http = build_streaming_http_client(10, 20).unwrap();
+    let refreshed = resynthesize_plan_overview(&http, &ep, &probe, "English", &old_plan)
+        .await
+        .unwrap();
+    assert_eq!(refreshed.article_title, "Refined Whole Book Title");
+    assert_eq!(
+        refreshed.executive_summary,
+        "A concise two-sentence synthesis from the upgraded writer model."
+    );
+    assert_eq!(refreshed.key_takeaways.len(), 2);
+    assert_eq!(
+        refreshed.chapters[0].brief,
+        "Explains the core architecture and goals."
+    );
 }
