@@ -81,7 +81,7 @@ pub fn build_epub_bytes(doc: &ArticleDocument) -> Result<(Vec<u8>, u32), VideoEr
             } else {
                 "Executive Summary"
             };
-            let ov_body = build_overview_xhtml(doc);
+            let ov_body = build_overview_xhtml(doc, is_zh, true);
             let fname = "chapter_00.xhtml".to_string();
             xhtml_payloads.push((fname.clone(), wrap_xhtml(ov_title, lang, &ov_body)));
             chapter_files.push(("chap_00".into(), fname, ov_title.into()));
@@ -96,7 +96,7 @@ pub fn build_epub_bytes(doc: &ArticleDocument) -> Result<(Vec<u8>, u32), VideoEr
     } else {
         let fname = "article.xhtml".to_string();
         let mut combined = Vec::new();
-        let ov = build_overview_xhtml(doc);
+        let ov = build_overview_xhtml(doc, is_zh, false);
         if !ov.is_empty() {
             combined.push(ov);
             combined.push("<hr/>".into());
@@ -263,7 +263,79 @@ fn wrap_xhtml(title: &str, lang: &str, body_inner: &str) -> String {
     )
 }
 
-fn build_overview_xhtml(doc: &ArticleDocument) -> String {
+/// Formats a single takeaway string as safe XHTML, bolding a concise leading topic label
+/// (`Topic: detail` or `主题：说明`) and stripping any stray Markdown `**...**` markers.
+pub(crate) fn format_takeaway_html(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    // Handle leading Markdown bold like `**Topic**: detail` or `**Topic**：detail`
+    if let Some(after_open) = trimmed.strip_prefix("**")
+        && let Some(close_idx) = after_open.find("**")
+    {
+        let label = after_open[..close_idx].trim();
+        let rest = after_open[close_idx + 2..].trim_start();
+        if !label.is_empty() && label.chars().count() <= 40 {
+            if let Some(detail) = rest.strip_prefix('：').map(str::trim)
+                && !detail.is_empty()
+            {
+                return format!(
+                    "<strong>{}：</strong>{}",
+                    escape_xml(label),
+                    escape_xml(detail)
+                );
+            }
+            if let Some(detail) = rest.strip_prefix(':').map(str::trim)
+                && !detail.is_empty()
+            {
+                return format!(
+                    "<strong>{}: </strong>{}",
+                    escape_xml(label),
+                    escape_xml(detail)
+                );
+            }
+            if !rest.is_empty() {
+                return format!(
+                    "<strong>{}</strong> {}",
+                    escape_xml(label),
+                    escape_xml(rest)
+                );
+            }
+            return format!("<strong>{}</strong>", escape_xml(label));
+        }
+    }
+
+    // Split on full-width `：` or ASCII `: ` when the leading label looks like a concise topic.
+    let split = trimmed
+        .find('：')
+        .map(|idx| (idx, "：", idx + '：'.len_utf8()))
+        .into_iter()
+        .chain(trimmed.find(": ").map(|idx| (idx, ": ", idx + 2)))
+        .min_by_key(|(idx, _, _)| *idx);
+
+    if let Some((sep_start, sep, detail_start)) = split {
+        let label = trimmed[..sep_start].trim();
+        let detail = trimmed[detail_start..].trim();
+        let label_len = label.chars().count();
+        let lower_label = label.to_ascii_lowercase();
+        let is_url_scheme = lower_label.ends_with("http") || lower_label.ends_with("https");
+        let is_timestamp =
+            !label.is_empty() && label.chars().all(|c| c.is_ascii_digit() || c == ':');
+        if (1..=40).contains(&label_len) && !detail.is_empty() && !is_url_scheme && !is_timestamp {
+            return format!(
+                "<strong>{}{sep}</strong>{}",
+                escape_xml(label),
+                escape_xml(detail)
+            );
+        }
+    }
+
+    escape_xml(trimmed)
+}
+
+fn build_overview_xhtml(doc: &ArticleDocument, is_zh: bool, include_chapter_guide: bool) -> String {
     let mut parts = Vec::new();
     if !doc.subtitle.trim().is_empty() {
         parts.push(format!(
@@ -271,29 +343,109 @@ fn build_overview_xhtml(doc: &ArticleDocument) -> String {
             escape_xml(doc.subtitle.trim())
         ));
     }
+
+    let mut meta_items = Vec::new();
     if let Some(url) = doc.source_url.as_deref().filter(|u| !u.trim().is_empty()) {
-        let esc = escape_xml(url);
-        parts.push(format!(
-            r#"<p>Original Video: <a href="{esc}">{esc}</a></p>"#
-        ));
-    }
-    if !doc.executive_summary.trim().is_empty() {
-        parts.push(format!(
-            "<blockquote><p>{}</p></blockquote>",
-            escape_xml(doc.executive_summary.trim())
-        ));
-    }
-    if !doc.key_takeaways.is_empty() {
-        let lis: String = doc
-            .key_takeaways
-            .iter()
-            .filter(|t| !t.trim().is_empty())
-            .map(|t| format!("<li>{}</li>", escape_xml(t.trim())))
-            .collect();
-        if !lis.is_empty() {
-            parts.push(format!("<ul>{lis}</ul>"));
+        let esc = escape_xml(url.trim());
+        if is_zh {
+            meta_items.push(format!(r#"原视频：<a href="{esc}">观看原片</a>"#));
+        } else {
+            meta_items.push(format!(
+                r#"Original Video: <a href="{esc}">Watch source</a>"#
+            ));
         }
     }
+    if doc.duration_ms > 0 {
+        let dur = format_timestamp_ms(doc.duration_ms);
+        if is_zh {
+            meta_items.push(format!("时长 {dur}"));
+        } else {
+            meta_items.push(format!("Duration {dur}"));
+        }
+    }
+    if include_chapter_guide && doc.sections.len() > 1 {
+        if is_zh {
+            meta_items.push(format!("共 {} 章", doc.sections.len()));
+        } else {
+            meta_items.push(format!("{} chapters", doc.sections.len()));
+        }
+    }
+    if !meta_items.is_empty() {
+        parts.push(format!("<p><small>{}</small></p>", meta_items.join(" · ")));
+    }
+
+    let summary_paras: Vec<&str> = doc
+        .executive_summary
+        .trim()
+        .split('\n')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
+    if !summary_paras.is_empty() {
+        parts.push(if is_zh {
+            "<h3>核心概览</h3>".into()
+        } else {
+            "<h3>Overview</h3>".into()
+        });
+        let inner: String = summary_paras
+            .into_iter()
+            .map(|p| format!("<p>{}</p>", escape_xml(p)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        parts.push(format!("<blockquote>\n{inner}\n</blockquote>"));
+    }
+
+    let takeaway_lis: String = doc
+        .key_takeaways
+        .iter()
+        .map(|t| format_takeaway_html(t))
+        .filter(|h| !h.is_empty())
+        .map(|h| format!("<li>{h}</li>"))
+        .collect();
+    if !takeaway_lis.is_empty() {
+        parts.push(if is_zh {
+            "<h3>核心要点</h3>".into()
+        } else {
+            "<h3>Key Takeaways</h3>".into()
+        });
+        parts.push(format!("<ul>{takeaway_lis}</ul>"));
+    }
+
+    if include_chapter_guide && doc.sections.len() > 1 {
+        let guide_lis: String = doc
+            .sections
+            .iter()
+            .map(|sec| {
+                let fname = format!("chapter_{:02}.xhtml", sec.index);
+                let ts_range = format!(
+                    "{}–{}",
+                    format_timestamp_ms(sec.start_ms),
+                    format_timestamp_ms(sec.end_ms)
+                );
+                let brief = sec.brief.trim();
+                let brief_suffix = if brief.is_empty() {
+                    String::new()
+                } else if is_zh {
+                    format!("：{}", escape_xml(brief))
+                } else {
+                    format!(" — {}", escape_xml(brief))
+                };
+                format!(
+                    r#"<li><strong><a href="{fname}">{}</a></strong> <small>({ts_range})</small>{brief_suffix}</li>"#,
+                    escape_xml(&sec.title)
+                )
+            })
+            .collect();
+        if !guide_lis.is_empty() {
+            parts.push(if is_zh {
+                "<h3>章节导览</h3>".into()
+            } else {
+                "<h3>Chapter Guide</h3>".into()
+            });
+            parts.push(format!("<ol>{guide_lis}</ol>"));
+        }
+    }
+
     parts.join("\n")
 }
 

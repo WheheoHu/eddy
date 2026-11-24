@@ -142,6 +142,8 @@ pub struct Stage1ChapterPlan {
     pub title: String,
     pub start_ms: u64,
     pub end_ms: u64,
+    #[serde(default)]
+    pub brief: String,
     pub summary_goal: String,
     pub key_terms: Vec<String>,
     pub selected_slides: Vec<Stage1SlideChoice>,
@@ -180,6 +182,8 @@ pub struct ArticleSection {
     pub title: String,
     pub start_ms: u64,
     pub end_ms: u64,
+    #[serde(default)]
+    pub brief: String,
     pub blocks: Vec<ArticleBlock>,
 }
 
@@ -252,4 +256,50 @@ pub struct GeneratedBook {
     pub author: Option<String>,
     pub chapters_count: u32,
     pub epub_bytes: Vec<u8>,
+}
+
+/// Which stage to restart a Video-to-Book job from when retrying or regenerating.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetryFromStage {
+    /// Keep all saved checkpoints and resume where the job stopped.
+    #[default]
+    Resume,
+    /// Keep probe, transcript/ASR, Stage 1 plan, and extracted HD frames; refresh the book
+    /// overview and rewrite all chapters with the current Stage 2 Writer model.
+    WriteChapters,
+    /// Keep probe and transcript/ASR; clear Stage 1 plan, extracted frames, and chapters, then
+    /// re-run visual planning and writing.
+    PlanVisuals,
+    /// Clear every checkpoint and re-run the entire pipeline from scratch.
+    Full,
+}
+
+impl RetryFromStage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RetryFromStage::Resume => "resume",
+            RetryFromStage::WriteChapters => "write_chapters",
+            RetryFromStage::PlanVisuals => "plan_visuals",
+            RetryFromStage::Full => "full",
+        }
+    }
+
+    pub fn parse(s: &str) -> Self {
+        match s.trim() {
+            "write_chapters" => RetryFromStage::WriteChapters,
+            "plan_visuals" => RetryFromStage::PlanVisuals,
+            "full" => RetryFromStage::Full,
+            _ => RetryFromStage::Resume,
+        }
+    }
+}
+
+/// Reusable checkpoint artifacts currently retained on disk for a Video-to-Book job.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct JobCheckpointStatus {
+    pub has_transcript: bool,
+    pub has_plan_and_frames: bool,
+    pub cached_chapters: u32,
+    pub cache_bytes: u64,
 }

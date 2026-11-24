@@ -44,8 +44,9 @@ pub use eddy_extract::{ChapterLink, SeriesProposal};
 pub use eddy_fetch::WebRenderer;
 pub use eddy_media::{MediaItem, MediaSet, MediaStatus, MediaType, is_media_url};
 pub use eddy_video::{
-    PipelinePhase, ProtocolKind, StageEndpointSettings, ToolchainStatus, TranscriptPolicy,
-    VideoPipelineMode, VideoProbe, VideoSettings, VideoStageRole, is_video_file_path, is_video_url,
+    JobCheckpointStatus, PipelinePhase, ProtocolKind, RetryFromStage, StageEndpointSettings,
+    ToolchainStatus, TranscriptPolicy, VideoPipelineMode, VideoProbe, VideoSettings,
+    VideoStageRole, is_video_file_path, is_video_url,
 };
 pub use engine::{
     Engine, EngineOptions, EngineStatus, Mode, RefreshSummary, SourceInfo, SourceStats, SyncPhase,

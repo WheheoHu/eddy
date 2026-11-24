@@ -475,8 +475,10 @@ async fn retry_video_job(
     State(s): State<Arc<AppState>>,
     _a: Session,
     Path(id): Path<String>,
+    body: axum::body::Bytes,
 ) -> Result<Json<RemoteVideoJob>, ApiError> {
-    Ok(Json(s.retry_video_job(&id)?))
+    let stage = crate::parse_retry_stage_body(&body)?;
+    Ok(Json(s.retry_video_job(&id, stage)?))
 }
 
 async fn cancel_video_job(
@@ -526,5 +528,31 @@ mod tests {
         assert_eq!(session_cookie(&headers).as_deref(), Some("tok"));
         headers.insert(header::COOKIE, "eddy_admin_x=no".parse().unwrap());
         assert_eq!(session_cookie(&headers), None);
+    }
+
+    #[test]
+    fn retry_stage_body_defaults_to_resume_and_parses_stages() {
+        use eddy_core::RetryFromStage;
+        assert_eq!(
+            crate::parse_retry_stage_body(b"").unwrap(),
+            RetryFromStage::Resume
+        );
+        assert_eq!(
+            crate::parse_retry_stage_body(b"   ").unwrap(),
+            RetryFromStage::Resume
+        );
+        assert_eq!(
+            crate::parse_retry_stage_body(br#"{"from_stage":"write_chapters"}"#).unwrap(),
+            RetryFromStage::WriteChapters
+        );
+        assert_eq!(
+            crate::parse_retry_stage_body(br#"{"from_stage":"plan_visuals"}"#).unwrap(),
+            RetryFromStage::PlanVisuals
+        );
+        assert_eq!(
+            crate::parse_retry_stage_body(br#"{"from_stage":"full"}"#).unwrap(),
+            RetryFromStage::Full
+        );
+        assert!(crate::parse_retry_stage_body(b"not-json").is_err());
     }
 }

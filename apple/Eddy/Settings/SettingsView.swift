@@ -1097,9 +1097,12 @@ private struct StorageSettings: View {
     @Environment(AppModel.self) private var model
     @State private var usage: UInt64 = 0
     @State private var limit: UInt64 = 2 << 30
+    @State private var videoCache: UInt64 = 0
     @State private var note = ""
     @State private var clearing = false
     @State private var cleared = ""
+    @State private var clearingVideo = false
+    @State private var clearedVideo = ""
 
     /// Removing some gigabytes of files takes a moment: off the main thread.
     private func clear() {
@@ -1112,6 +1115,19 @@ private struct StorageSettings: View {
                 ? String(localized: "Freed \(ByteCountFormatter.string(fromByteCount: Int64(freed), countStyle: .file)).")
                 : String(localized: "Nothing to clear.")
             clearing = false
+        }
+    }
+
+    private func clearVideo() {
+        guard let engine = model.engine else { return }
+        clearingVideo = true
+        Task {
+            let freed = await Task.detached { (try? engine.clearVideoCache()) ?? 0 }.value
+            videoCache = (try? engine.videoCacheUsage()) ?? videoCache
+            clearedVideo = freed > 0
+                ? String(localized: "Freed \(ByteCountFormatter.string(fromByteCount: Int64(freed), countStyle: .file)).")
+                : String(localized: "Nothing to clear.")
+            clearingVideo = false
         }
     }
 
@@ -1137,6 +1153,21 @@ private struct StorageSettings: View {
             } footer: {
                 Text("Unread, starred, saved and in-progress articles are always kept. Clearing removes the rest now: articles already read, and the pictures and feed icons downloaded for them. They are fetched again when opened.")
             }
+            Section {
+                LabeledContent("Video conversion cache") {
+                    HStack(spacing: 10) {
+                        if clearingVideo {
+                            ProgressView().controlSize(.small)
+                        } else if !clearedVideo.isEmpty {
+                            Text(clearedVideo)
+                        }
+                        Text(ByteCountFormatter.string(fromByteCount: Int64(videoCache), countStyle: .file))
+                        Button("Clear Video Cache") { clearVideo() }.disabled(clearingVideo)
+                    }
+                }
+            } footer: {
+                Text("Saved transcripts and extracted slides from finished Video-to-Book jobs let you rewrite books with another writer model without re-running ASR or frame capture. Clearing removes those checkpoints while keeping your imported books.")
+            }
             Section("Search") {
                 LabeledContent("Search index") {
                     HStack(spacing: 10) {
@@ -1152,6 +1183,7 @@ private struct StorageSettings: View {
         .onAppear {
             usage = (try? model.engine?.cacheUsage()) ?? 0
             limit = (try? model.engine?.cacheLimit()) ?? limit
+            videoCache = (try? model.engine?.videoCacheUsage()) ?? 0
         }
     }
 }

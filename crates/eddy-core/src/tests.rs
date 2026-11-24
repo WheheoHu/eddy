@@ -3675,3 +3675,112 @@ async fn a_feeds_icon_is_its_sites_favicon_found_once_and_kept() {
     std::fs::remove_file(engine.inner.store.blob_file(&key).unwrap().unwrap()).unwrap();
     assert_eq!(engine.feed_icon("named").await.unwrap().unwrap().0, PNG);
 }
+
+#[tokio::test]
+async fn video_cache_reports_capabilities_and_clears_inactive_jobs_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let jobs_dir = engine.video_jobs_dir();
+
+    // Seed one succeeded job with full checkpoints and one running job.
+    let done_id = "job-done";
+    let active_id = "job-running";
+    let done_dir = jobs_dir.join(done_id);
+    let active_dir = jobs_dir.join(active_id);
+    std::fs::create_dir_all(done_dir.join("gemini_captures")).unwrap();
+    std::fs::create_dir_all(&active_dir).unwrap();
+
+    let frame = done_dir.join("gemini_captures/hs001.jpg");
+    std::fs::write(&frame, vec![0xAAu8; 4096]).unwrap();
+    std::fs::write(done_dir.join("checkpoint_transcript.json"), b"{}").unwrap();
+    let plan = json!({
+        "plan": {
+            "article_title": "Talk",
+            "subtitle": "Sub",
+            "executive_summary": "Sum",
+            "key_takeaways": ["A: B"],
+            "chapters": [{
+                "chapter_index": 1,
+                "title": "Ch 1",
+                "start_ms": 0,
+                "end_ms": 60000,
+                "brief": "",
+                "summary_goal": "Goal",
+                "key_terms": [],
+                "selected_slides": [{
+                    "frame_id": "hs001",
+                    "timestamp_ms": 1000,
+                    "role": "slide",
+                    "draft_caption": "Slide"
+                }]
+            }]
+        },
+        "frames": [{
+            "frame_id": "hs001",
+            "timestamp_ms": 1000,
+            "image_path": frame.to_string_lossy(),
+            "thumb_path": null,
+            "dhash": 0,
+            "sharpness": 10.0
+        }]
+    });
+    std::fs::write(
+        done_dir.join("checkpoint_plan.json"),
+        serde_json::to_vec(&plan).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(active_dir.join("video.mp4"), vec![0xBBu8; 8192]).unwrap();
+
+    let now = eddy_model::now_ms();
+    for (id, status) in [(done_id, "succeeded"), (active_id, "running")] {
+        engine
+            .inner
+            .store
+            .upsert_video_job(&eddy_store::VideoJobRecord {
+                id: id.into(),
+                source: "https://www.youtube.com/watch?v=test".into(),
+                title: id.into(),
+                pipeline: "gemini_two_stage".into(),
+                transcript_policy: "prefer_any_subtitles".into(),
+                target_language: "English".into(),
+                phase: "completed".into(),
+                status: status.into(),
+                completed_chapters: 1,
+                total_chapters: 1,
+                detail: "Imported 2 chapters".into(),
+                error: None,
+                result_series_id: Some("ser-1".into()),
+                result_item_id: Some("item-1".into()),
+                created_at: now,
+                updated_at: now,
+            })
+            .unwrap();
+    }
+
+    let jobs = engine.video_jobs().await.unwrap();
+    let done_job = jobs.iter().find(|j| j.id == done_id).unwrap();
+    let active_job = jobs.iter().find(|j| j.id == active_id).unwrap();
+    assert!(done_job.can_rewrite_chapters);
+    assert!(done_job.can_replan_visuals);
+    assert!(done_job.cache_bytes >= 4096);
+    assert!(!active_job.can_rewrite_chapters);
+    assert!(!active_job.can_replan_visuals);
+
+    // Cache usage counts inactive job only, not the running job.
+    let usage = engine.video_cache_usage().unwrap();
+    assert_eq!(usage, done_job.cache_bytes);
+
+    // Clearing cache removes done_dir while leaving running job dir and DB row intact.
+    let freed = engine.clear_video_cache().unwrap();
+    assert_eq!(freed, usage);
+    assert!(!done_dir.exists());
+    assert!(active_dir.join("video.mp4").is_file());
+    assert_eq!(engine.video_cache_usage().unwrap(), 0);
+
+    let after = engine.video_jobs().await.unwrap();
+    let done_after = after.iter().find(|j| j.id == done_id).unwrap();
+    assert!(!done_after.can_rewrite_chapters);
+    assert!(!done_after.can_replan_visuals);
+    assert_eq!(done_after.cache_bytes, 0);
+    assert_eq!(done_after.result_item_id.as_deref(), Some("item-1"));
+}

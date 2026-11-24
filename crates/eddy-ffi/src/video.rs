@@ -304,6 +304,25 @@ pub struct StartVideoJobRequestView {
     pub cookies_from_browser: Option<String>,
 }
 
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VideoRetryStageView {
+    Resume,
+    WriteChapters,
+    PlanVisuals,
+    Full,
+}
+
+impl From<VideoRetryStageView> for core::RetryFromStage {
+    fn from(s: VideoRetryStageView) -> Self {
+        match s {
+            VideoRetryStageView::Resume => core::RetryFromStage::Resume,
+            VideoRetryStageView::WriteChapters => core::RetryFromStage::WriteChapters,
+            VideoRetryStageView::PlanVisuals => core::RetryFromStage::PlanVisuals,
+            VideoRetryStageView::Full => core::RetryFromStage::Full,
+        }
+    }
+}
+
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
 pub struct VideoJobView {
     pub id: String,
@@ -324,6 +343,9 @@ pub struct VideoJobView {
     pub result_item_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    pub can_rewrite_chapters: bool,
+    pub can_replan_visuals: bool,
+    pub cache_bytes: u64,
 }
 
 impl From<core::VideoJobInfo> for VideoJobView {
@@ -346,6 +368,9 @@ impl From<core::VideoJobInfo> for VideoJobView {
             result_item_id: j.result_item_id,
             created_at: j.created_at,
             updated_at: j.updated_at,
+            can_rewrite_chapters: j.can_rewrite_chapters,
+            can_replan_visuals: j.can_replan_visuals,
+            cache_bytes: j.cache_bytes,
         }
     }
 }
@@ -392,6 +417,14 @@ impl EddyEngine {
 
     pub fn check_video_toolchain(&self) -> R<VideoToolchainView> {
         Ok(self.engine.check_video_toolchain()?.into())
+    }
+
+    pub fn video_cache_usage(&self) -> R<u64> {
+        Ok(self.engine.video_cache_usage()?)
+    }
+
+    pub fn clear_video_cache(&self) -> R<u64> {
+        Ok(self.engine.clear_video_cache()?)
     }
 }
 
@@ -448,10 +481,15 @@ impl EddyEngine {
             .collect())
     }
 
-    pub async fn retry_video_job(&self, id: String, target: VideoJobTargetView) -> R<VideoJobView> {
+    pub async fn retry_video_job(
+        &self,
+        id: String,
+        target: VideoJobTargetView,
+        from_stage: VideoRetryStageView,
+    ) -> R<VideoJobView> {
         Ok(self
             .engine
-            .retry_video_job(&id, target.into())
+            .retry_video_job(&id, target.into(), from_stage.into())
             .await?
             .into())
     }

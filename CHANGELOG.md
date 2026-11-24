@@ -10,6 +10,7 @@ Sync protocol 3. Servers and devices on protocol 1 must be updated together; one
 
 ### Added
 
+- Video-to-Book: completed jobs now keep their reusable transcript, visual plan, and extracted 1080p slides on disk (after removing heavy raw video/audio) and support stage-aware retries (`Resume`, `WriteChapters`, `PlanVisuals`, `Full`) so you can switch writer models or languages and regenerate a new book version without re-running ASR or slide capture. Added `video_cache_usage` and `clear_video_cache` to inspect and clear cached job checkpoints while keeping imported books intact; server `/v1/video-jobs/{id}/retry` and `/admin` accept an optional `from_stage`.
 - Windows: the Rust core and `eddy-cli` build and run on Windows (MSVC). `scripts/fetch-pdfium.sh windows` fetches the shared pdfium build, which `eddy-pdf` loads from next to the executable; the macOS app keeps its static link.
 - Server: admin page at `/admin`, on when `EDDY_ADMIN_PASSWORD` is set: pairing codes, devices, FreshRSS status and account, video jobs, service status.
 - Server: `eddy-server --version`; `/v1/info` reports the version; `/v1/health` checks the database.
@@ -37,6 +38,7 @@ Sync protocol 3. Servers and devices on protocol 1 must be updated together; one
 
 ### Changed
 
+- Video-to-Book: long videos split across chunks now synthesize one concise whole-book overview instead of concatenating per-part summaries and dropping later takeaways. The opening overview chapter now separates the summary, bold-headed key takeaways, and a clickable chapter guide with timestamps.
 - `eddy-cli`: `--data DIR` is refused for the app's own data directory, and for a directory an app is running on. `doc ID` prints the text as Markdown (the block counts it used to print are `doc ID --format summary`); `series URL` is `series detect URL`; `gallery FOLDER COUNT` is `dev gallery-probe`; `text ID` lines start with the block's ID; the progress of fetching older articles goes to standard error with the rest. The other commands keep their old spellings and output.
 - Sync protocol 2: clients send their protocol version and servers report the oldest they accept; either side tells the other to update when they are too far apart (HTTP 426 from the server).
 - A change the server cannot use (unknown kind, wrong value, a clock far ahead) is refused on its own; the rest of the upload goes through.

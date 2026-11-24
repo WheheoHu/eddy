@@ -5,9 +5,17 @@ use crate::client::{
     UserPart, build_streaming_http_client, call_gemini_generate_content_with_retries,
     call_stage_model, extract_json_object, test_stage_endpoint,
 };
-use crate::epub_builder::build_epub_bytes;
+use crate::epub_builder::{build_epub_bytes, format_takeaway_html};
 use crate::media::parse_vtt_or_srt;
-use crate::models::{ArticleBlock, ArticleDocument, ArticleSection};
+use crate::models::{
+    ArticleBlock, ArticleDocument, ArticleSection, CandidateFrame, RetryFromStage,
+    Stage1ChapterPlan, Stage1Plan, Stage1SlideChoice, VideoProbe,
+};
+use crate::pipeline::{
+    build_fallback_overview, inspect_job_checkpoints, merge_chunk_chapters_and_meta,
+    prepare_job_dir_for_retry, resynthesize_plan_overview, sample_takeaways_proportionally,
+    synthesize_chunked_overview,
+};
 use crate::redact::{REDACTED, redact_text};
 use crate::settings::{
     ProtocolKind, ResolvedProtocol, StageEndpoint, VideoSettings, VideoStageRole,
@@ -102,6 +110,7 @@ fn cleans_rolling_vtt_and_builds_multichapter_epub() {
                 title: "第一章 Cutout".into(),
                 start_ms: 0,
                 end_ms: 300_000,
+                brief: "介绍 Cutout 渲染管线。".into(),
                 blocks: vec![ArticleBlock {
                     kind: "paragraph".into(),
                     text: "第一段正文".into(),
@@ -113,6 +122,7 @@ fn cleans_rolling_vtt_and_builds_multichapter_epub() {
                 title: "第二章 Radiance Cascades".into(),
                 start_ms: 300_000,
                 end_ms: 600_000,
+                brief: "深入解析辐射级联算法。".into(),
                 blocks: vec![ArticleBlock {
                     kind: "math".into(),
                     tex: Some("E = mc^2".into()),
@@ -522,5 +532,617 @@ async fn streams_openai_sse_and_labels_mid_body_read_timeout() {
     assert!(
         stall_err.to_ascii_lowercase().contains("timed out"),
         "expected timed out details, got: {stall_err}"
+    );
+}
+
+#[tokio::test]
+async fn synthesizes_chunked_overview_via_stage2_endpoint() {
+    use wiremock::matchers::body_string_contains;
+
+    let parts = vec![
+        (
+            0usize,
+            0u64,
+            900_000u64,
+            serde_json::json!({
+                "article_title": "Smolder 体积渲染系统（第一部分）",
+                "subtitle": "立项背景与核心需求",
+                "executive_summary": "本部分演讲介绍了 Smolder 在 Glacier 引擎中的立项背景与核心需求。",
+                "key_takeaways": ["立项背景：打造一等公民体积渲染", "缩放目标：覆盖 RTX 5090 到 Switch 2"],
+                "chapters": [
+                    {"chapter_index": 1, "title": "立项背景", "start_time": "00:00", "end_time": "08:00", "summary_goal": "Explain goals", "slides": []},
+                    {"chapter_index": 2, "title": "光照集成挑战", "start_time": "08:00", "end_time": "15:00", "summary_goal": "Explain lighting", "slides": []}
+                ]
+            }),
+        ),
+        (
+            1usize,
+            900_000u64,
+            1_800_000u64,
+            serde_json::json!({
+                "article_title": "Smolder 原型探索",
+                "subtitle": "两次技术尝试",
+                "executive_summary": "本部分演讲回顾了 GPU 粒子方案失败与 Raymarching + MBOIT 原型验证。",
+                "key_takeaways": ["原型验证：回归光线步进与 MBOIT", "离线烘焙：规避 NanoVDB 寄存器压力"],
+                "chapters": [
+                    {"chapter_index": 1, "title": "原型演进", "start_time": "00:00", "end_time": "15:00", "summary_goal": "Explain prototypes", "slides": []}
+                ]
+            }),
+        ),
+        (
+            2usize,
+            1_800_000u64,
+            2_700_000u64,
+            serde_json::json!({
+                "article_title": "Smolder 数据格式",
+                "subtitle": "体素砖块设计",
+                "executive_summary": "本部分演讲深入剖析了 4x4x4 体素砖块格式与 CuteSort 排序管线。",
+                "key_takeaways": ["体素格式：4 bits/voxel 压缩与 5x5x5 边界复制", "重叠排序：波前剔除与 CuteSort"],
+                "chapters": [
+                    {"chapter_index": 1, "title": "运行时体积格式", "start_time": "00:00", "end_time": "15:00", "summary_goal": "Explain brick format", "slides": []}
+                ]
+            }),
+        ),
+        (
+            3usize,
+            2_700_000u64,
+            3_600_000u64,
+            serde_json::json!({
+                "article_title": "Smolder 阴影与优化",
+                "subtitle": "异步阴影与自适应采样",
+                "executive_summary": "本部分演讲介绍了异步阴影计算、自适应采样组与 Xbox Series S 内存优化。",
+                "key_takeaways": ["自适应采样：重度烟雾场景节省 50% 性能", "内存削减：半分辨率 Mip 降低 80%-85% 占用"],
+                "chapters": [
+                    {"chapter_index": 1, "title": "阴影与全平台缩放", "start_time": "00:00", "end_time": "15:00", "summary_goal": "Explain shadows and TAA", "slides": []}
+                ]
+            }),
+        ),
+    ];
+
+    let (part_metas, merged_chapters) = merge_chunk_chapters_and_meta(&parts, 3_600_000);
+    assert_eq!(part_metas.len(), 4);
+    assert_eq!(merged_chapters.len(), 5);
+    assert_eq!(merged_chapters[4]["chapter_index"], 5);
+    assert_eq!(merged_chapters[4]["start_ms"], 2_700_000);
+
+    let server = MockServer::start().await;
+    let synth_json = serde_json::json!({
+        "article_title": "《007 First Light》实时体积渲染系统 Smolder 架构解析",
+        "subtitle": "IO Interactive 如何在 Glacier 引擎中打造全平台可扩展的体积特效管线",
+        "executive_summary": "IO Interactive 在 SIGGRAPH 演讲中系统拆解了 Glacier 引擎的新一代体积渲染系统 Smolder。团队放弃 GPU 粒子方案，围绕自定义 4x4x4 压缩体素砖块、MBOIT 阴影与自适应采样构建统一管线，最终在全平台稳定运行超过 450 个动态体积特效。",
+        "key_takeaways": [
+            "管线定型：放弃软件光栅化粒子，转向离线烘焙加 Raymarching 与 MBOIT 方案。",
+            "定制格式：4 bits/voxel 块压缩与 5x5x5 边界复制兼顾采样效率与低寄存器压力。",
+            "异步阴影：利用 Async Compute 与动态阴影剔除实现近乎零成本的全光源体积阴影。",
+            "性能缩放：自适应采样组节省高达 50% 重度烟雾开销，半分辨率 Mip 降低 80%-85% 显存占用。"
+        ],
+        "chapter_briefs": [
+            {"chapter_index": 1, "brief": "介绍 Smolder 在 Glacier 引擎中的立项动机与跨平台目标。"},
+            {"chapter_index": 2, "brief": "拆解太阳阴影、局部光源与全局光照的体积集成挑战。"},
+            {"chapter_index": 3, "brief": "复盘两次早期原型实验以及转向离线烘焙模拟的权衡。"},
+            {"chapter_index": 4, "brief": "详解自定义体素砖块格式、空域跳过与多体积排序算法。"},
+            {"chapter_index": 5, "brief": "阐述异步阴影、蓝噪声自适应采样与主机内存优化实践。"}
+        ]
+    });
+
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_string_contains("Part 1 of 4"))
+        .and(body_string_contains("Part 4 of 4"))
+        .and(body_string_contains("Chapter 5"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": synth_json.to_string()
+                }
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let ep = StageEndpoint {
+        protocol: ProtocolKind::OpenAi,
+        url: format!("{}/v1", server.uri()),
+        model: "claude-opus-5-5".into(),
+        api_key: "sk-synth-test".into(),
+    };
+    let probe = VideoProbe {
+        video_id: "MFgptB5tpxk".into(),
+        title: "Smolder: Real-Time Volumetric Rendering".into(),
+        duration_ms: 3_600_000,
+        ..Default::default()
+    };
+    let http = build_streaming_http_client(10, 20).unwrap();
+    let overview = synthesize_chunked_overview(
+        &http,
+        &ep,
+        &probe,
+        "Simplified Chinese",
+        &part_metas,
+        &merged_chapters,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        overview.article_title,
+        "《007 First Light》实时体积渲染系统 Smolder 架构解析"
+    );
+    assert!(!overview.executive_summary.contains("本部分演讲"));
+    assert_eq!(overview.key_takeaways.len(), 4);
+    assert_eq!(overview.chapter_briefs.len(), 5);
+    assert_eq!(
+        overview.chapter_briefs.get(&5).map(String::as_str),
+        Some("阐述异步阴影、蓝噪声自适应采样与主机内存优化实践。")
+    );
+}
+
+#[test]
+fn chunked_overview_fallback_samples_all_parts_and_splits_paragraphs() {
+    let parts = vec![
+        (
+            0usize,
+            0u64,
+            900_000u64,
+            serde_json::json!({
+                "article_title": "Talk Part 1",
+                "subtitle": "Framing",
+                "executive_summary": "First part intro sentence. Second sentence here. Third verbose sentence that should be trimmed.",
+                "key_takeaways": ["P1-A", "P1-B", "P1-C", "P1-D"],
+                "chapters": []
+            }),
+        ),
+        (
+            1usize,
+            900_000u64,
+            1_800_000u64,
+            serde_json::json!({
+                "article_title": "Talk Part 2",
+                "subtitle": "",
+                "executive_summary": "Second part intro. Second part detail.",
+                "key_takeaways": ["P2-A", "P1-A", "P2-B", "P2-C"],
+                "chapters": []
+            }),
+        ),
+        (
+            2usize,
+            1_800_000u64,
+            2_700_000u64,
+            serde_json::json!({
+                "article_title": "Talk Part 3",
+                "subtitle": "",
+                "executive_summary": "Third part intro.",
+                "key_takeaways": ["P3-A", "P3-B"],
+                "chapters": []
+            }),
+        ),
+        (
+            3usize,
+            2_700_000u64,
+            3_600_000u64,
+            serde_json::json!({
+                "article_title": "Talk Part 4",
+                "subtitle": "",
+                "executive_summary": "Fourth part intro.",
+                "key_takeaways": ["P4-A", "P4-B"],
+                "chapters": []
+            }),
+        ),
+    ];
+
+    let (metas, _) = merge_chunk_chapters_and_meta(&parts, 3_600_000);
+    let sampled = sample_takeaways_proportionally(&metas, 6);
+    assert_eq!(sampled.len(), 6);
+    // Round 0 must cover all 4 parts (fixing part 3-4 starvation), and duplicate "P1-A" is skipped.
+    assert_eq!(sampled[0], "P1-A");
+    assert_eq!(sampled[1], "P2-A");
+    assert_eq!(sampled[2], "P3-A");
+    assert_eq!(sampled[3], "P4-A");
+    assert_eq!(sampled[4], "P1-B");
+    assert_eq!(sampled[5], "P3-B");
+
+    let fallback = build_fallback_overview("Fallback Probe Title", &metas);
+    assert_eq!(fallback.article_title, "Talk Part 1");
+    assert_eq!(fallback.subtitle, "Framing");
+    // Paragraphs are split with blank lines rather than glued with spaces.
+    assert_eq!(fallback.executive_summary.split("\n\n").count(), 4);
+    assert!(
+        !fallback
+            .executive_summary
+            .contains("Third verbose sentence")
+    );
+}
+
+#[test]
+fn format_takeaway_bolds_lead_in_topic_and_strips_markdown_stars() {
+    assert_eq!(
+        format_takeaway_html("内存带宽优化：通过片上缓存减少 60% 开销。"),
+        "<strong>内存带宽优化：</strong>通过片上缓存减少 60% 开销。"
+    );
+    assert_eq!(
+        format_takeaway_html("Async Shadows: Zero-cost volume shadows via Async Compute."),
+        "<strong>Async Shadows: </strong>Zero-cost volume shadows via Async Compute."
+    );
+    assert_eq!(
+        format_takeaway_html("**自适应采样**：重度烟雾场景节省 50% 性能。"),
+        "<strong>自适应采样：</strong>重度烟雾场景节省 50% 性能。"
+    );
+    assert_eq!(
+        format_takeaway_html("**Custom Format**: 4 bits/voxel with 5x5x5 border."),
+        "<strong>Custom Format: </strong>4 bits/voxel with 5x5x5 border."
+    );
+    // URLs and timestamps must not be split into bold labels.
+    assert_eq!(
+        format_takeaway_html("See https://example.com for benchmark details."),
+        "See https://example.com for benchmark details."
+    );
+    assert_eq!(
+        format_takeaway_html("12:30: live profiling demo shows 2ms frame time."),
+        "12:30: live profiling demo shows 2ms frame time."
+    );
+    assert_eq!(
+        format_takeaway_html("Plain insight with no colon."),
+        "Plain insight with no colon."
+    );
+}
+
+#[test]
+fn overview_epub_round_trips_through_eddy_epub_and_eddy_doc() {
+    use eddy_doc::{ConvertOptions, html_to_document};
+    use eddy_epub::Epub;
+    use eddy_model::{BlockKind, style};
+    use std::io::Cursor;
+
+    // 1. Multi-chapter Chinese book
+    let zh_doc = ArticleDocument {
+        video_id: "MFgptB5tpxk".into(),
+        title: "Smolder 实时体积渲染系统".into(),
+        subtitle: "Glacier 引擎跨平台体积特效实践".into(),
+        author: Some("Alexander Mueller".into()),
+        source_url: Some("https://www.youtube.com/watch?v=MFgptB5tpxk".into()),
+        duration_ms: 3_600_000,
+        executive_summary: "第一段简明导读。\n\n第二段补充核心成果。".into(),
+        key_takeaways: vec![
+            "定制体素格式：4 bits/voxel 块压缩大幅降低显存占用。".into(),
+            "**自适应采样**：近相机重度烟雾节省 50% 性能。".into(),
+        ],
+        sections: vec![
+            ArticleSection {
+                index: 1,
+                title: "立项背景与核心需求".into(),
+                start_ms: 0,
+                end_ms: 1_800_000,
+                brief: "介绍 Smolder 的跨平台目标与光照挑战。".into(),
+                blocks: vec![ArticleBlock {
+                    kind: "paragraph".into(),
+                    text: "第一章正文内容。".into(),
+                    ..Default::default()
+                }],
+            },
+            ArticleSection {
+                index: 2,
+                title: "底层格式与阴影优化".into(),
+                start_ms: 1_800_000,
+                end_ms: 3_600_000,
+                brief: String::new(),
+                blocks: vec![ArticleBlock {
+                    kind: "paragraph".into(),
+                    text: "第二章正文内容。".into(),
+                    ..Default::default()
+                }],
+            },
+        ],
+    };
+
+    let (epub_bytes, ch_count) = build_epub_bytes(&zh_doc).unwrap();
+    assert_eq!(ch_count, 3);
+    let mut epub = Epub::new(Cursor::new(epub_bytes)).unwrap();
+    let book = epub.book().unwrap();
+    assert_eq!(book.chapters.len(), 3);
+    assert_eq!(book.chapters[0].title.as_deref(), Some("导读与核心要点"));
+
+    let ov_bytes = epub.read(&book.chapters[0].parts[0]).unwrap();
+    let ov_html = String::from_utf8(ov_bytes).unwrap();
+    let parsed = html_to_document(
+        &ov_html,
+        &ConvertOptions {
+            base_url: Some("epub://testkey/OEBPS/chapter_00.xhtml"),
+            title: Some("导读与核心要点"),
+        },
+    );
+
+    let headings: Vec<String> = parsed
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.kind {
+            BlockKind::Heading { level: 3, runs } => {
+                Some(runs.iter().map(|r| r.text.as_str()).collect::<String>())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(headings, vec!["核心概览", "核心要点", "章节导览"]);
+
+    let quoted_paras: Vec<String> = parsed
+        .blocks
+        .iter()
+        .filter(|b| b.quote_depth == 1)
+        .filter_map(|b| match &b.kind {
+            BlockKind::Paragraph { runs } => {
+                Some(runs.iter().map(|r| r.text.as_str()).collect::<String>())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        quoted_paras,
+        vec!["第一段简明导读。", "第二段补充核心成果。"]
+    );
+
+    let unordered_items: Vec<&[eddy_model::Run]> = parsed
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.kind {
+            BlockKind::ListItem {
+                ordered: false,
+                runs,
+                ..
+            } => Some(runs.as_slice()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(unordered_items.len(), 2);
+    assert!(unordered_items[0][0].style & style::BOLD != 0);
+    assert_eq!(unordered_items[0][0].text, "定制体素格式：");
+    assert!(unordered_items[1][0].style & style::BOLD != 0);
+    assert_eq!(unordered_items[1][0].text, "自适应采样：");
+    assert!(!ov_html.contains("**"));
+
+    let ordered_items: Vec<&[eddy_model::Run]> = parsed
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.kind {
+            BlockKind::ListItem {
+                ordered: true,
+                runs,
+                ..
+            } => Some(runs.as_slice()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ordered_items.len(), 2);
+    assert_eq!(
+        ordered_items[0][0].link.as_deref(),
+        Some("epub://testkey/OEBPS/chapter_01.xhtml")
+    );
+    let ch1_text: String = ordered_items[0].iter().map(|r| r.text.as_str()).collect();
+    assert!(ch1_text.contains("介绍 Smolder 的跨平台目标与光照挑战。"));
+    let ch2_text: String = ordered_items[1].iter().map(|r| r.text.as_str()).collect();
+    assert!(!ch2_text.contains("："));
+
+    // 2. Single-chapter English article omits Chapter Guide
+    let en_doc = ArticleDocument {
+        video_id: "short_en".into(),
+        title: "Compact Raymarching".into(),
+        subtitle: "Fast volumes on mobile GPUs".into(),
+        author: None,
+        source_url: None,
+        duration_ms: 480_000,
+        executive_summary: "A concise two-sentence summary. It runs in under 1ms.".into(),
+        key_takeaways: vec!["Memory: Fits inside tile memory.".into()],
+        sections: vec![ArticleSection {
+            index: 1,
+            title: "Architecture".into(),
+            start_ms: 0,
+            end_ms: 480_000,
+            brief: "Covers tile layout.".into(),
+            blocks: vec![ArticleBlock {
+                kind: "paragraph".into(),
+                text: "Body text.".into(),
+                ..Default::default()
+            }],
+        }],
+    };
+    let (en_bytes, en_count) = build_epub_bytes(&en_doc).unwrap();
+    assert_eq!(en_count, 1);
+    let mut en_epub = Epub::new(Cursor::new(en_bytes)).unwrap();
+    let en_book = en_epub.book().unwrap();
+    let en_html = String::from_utf8(en_epub.read(&en_book.chapters[0].parts[0]).unwrap()).unwrap();
+    assert!(en_html.contains("<h3>Overview</h3>"));
+    assert!(en_html.contains("<h3>Key Takeaways</h3>"));
+    assert!(!en_html.contains("Chapter Guide"));
+    assert!(en_html.contains("Duration 08:00"));
+}
+
+#[test]
+fn deserializes_legacy_checkpoints_without_brief_field() {
+    let legacy_plan = serde_json::json!({
+        "article_title": "Legacy Book",
+        "subtitle": "Sub",
+        "executive_summary": "Summary",
+        "key_takeaways": ["Point 1"],
+        "chapters": [{
+            "chapter_index": 1,
+            "title": "Ch 1",
+            "start_ms": 0,
+            "end_ms": 60000,
+            "summary_goal": "Goal",
+            "key_terms": [],
+            "selected_slides": []
+        }]
+    });
+    let plan: Stage1Plan = serde_json::from_value(legacy_plan).unwrap();
+    assert_eq!(plan.chapters[0].brief, "");
+
+    let legacy_sec = serde_json::json!({
+        "index": 1,
+        "title": "Ch 1",
+        "start_ms": 0,
+        "end_ms": 60000,
+        "blocks": []
+    });
+    let sec: ArticleSection = serde_json::from_value(legacy_sec).unwrap();
+    assert_eq!(sec.brief, "");
+}
+
+#[test]
+fn inspects_and_prepares_checkpoints_for_stage_retries() {
+    let tmp = tempfile::tempdir().unwrap();
+    let job_dir = tmp.path();
+
+    let cap_dir = job_dir.join("gemini_captures");
+    let ch_dir = job_dir.join("chapters");
+    std::fs::create_dir_all(&cap_dir).unwrap();
+    std::fs::create_dir_all(&ch_dir).unwrap();
+
+    let frame_path = cap_dir.join("hs001_00010000.jpg");
+    std::fs::write(&frame_path, vec![0xFFu8; 2048]).unwrap();
+    std::fs::write(job_dir.join("checkpoint_probe.json"), b"{}").unwrap();
+    std::fs::write(job_dir.join("checkpoint_transcript.json"), b"{}").unwrap();
+    std::fs::write(ch_dir.join("chapter_01.json"), b"{}").unwrap();
+
+    let plan_cp = serde_json::json!({
+        "plan": Stage1Plan {
+            article_title: "Smolder".into(),
+            subtitle: "Sub".into(),
+            executive_summary: "Old summary".into(),
+            key_takeaways: vec!["Old takeaway".into()],
+            chapters: vec![Stage1ChapterPlan {
+                chapter_index: 1,
+                title: "Intro".into(),
+                start_ms: 0,
+                end_ms: 60_000,
+                brief: String::new(),
+                summary_goal: "Explain intro".into(),
+                key_terms: vec![],
+                selected_slides: vec![Stage1SlideChoice {
+                    frame_id: "hs001".into(),
+                    timestamp_ms: 10_000,
+                    role: "slide".into(),
+                    draft_caption: "Slide 1".into(),
+                }],
+            }],
+        },
+        "frames": vec![CandidateFrame {
+            frame_id: "hs001".into(),
+            timestamp_ms: 10_000,
+            image_path: frame_path.to_string_lossy().into_owned(),
+            thumb_path: None,
+            dhash: 0,
+            sharpness: 50.0,
+        }]
+    });
+    std::fs::write(
+        job_dir.join("checkpoint_plan.json"),
+        serde_json::to_vec_pretty(&plan_cp).unwrap(),
+    )
+    .unwrap();
+
+    let status = inspect_job_checkpoints(job_dir);
+    assert!(status.has_transcript);
+    assert!(status.has_plan_and_frames);
+    assert_eq!(status.cached_chapters, 1);
+    assert!(status.cache_bytes >= 2048);
+
+    // 1. WriteChapters clears chapters/ and sets refresh_overview.flag, keeping transcript, plan, and frames.
+    prepare_job_dir_for_retry(job_dir, RetryFromStage::WriteChapters).unwrap();
+    assert!(!ch_dir.exists());
+    assert!(job_dir.join("checkpoint_transcript.json").is_file());
+    assert!(job_dir.join("checkpoint_plan.json").is_file());
+    assert!(frame_path.is_file());
+    assert!(job_dir.join("refresh_overview.flag").is_file());
+
+    // 2. If a referenced frame JPEG is missing on disk, inspect reports false and WriteChapters clears plan.
+    std::fs::remove_file(&frame_path).unwrap();
+    let missing = inspect_job_checkpoints(job_dir);
+    assert!(missing.has_transcript);
+    assert!(!missing.has_plan_and_frames);
+    prepare_job_dir_for_retry(job_dir, RetryFromStage::WriteChapters).unwrap();
+    assert!(!job_dir.join("checkpoint_plan.json").is_file());
+    assert!(!job_dir.join("refresh_overview.flag").is_file());
+
+    // 3. PlanVisuals keeps probe and transcript while wiping plan, frames, and chapters.
+    std::fs::create_dir_all(&cap_dir).unwrap();
+    std::fs::write(&frame_path, b"jpg").unwrap();
+    std::fs::write(job_dir.join("checkpoint_plan.json"), b"{}").unwrap();
+    prepare_job_dir_for_retry(job_dir, RetryFromStage::PlanVisuals).unwrap();
+    assert!(job_dir.join("checkpoint_probe.json").is_file());
+    assert!(job_dir.join("checkpoint_transcript.json").is_file());
+    assert!(!job_dir.join("checkpoint_plan.json").is_file());
+    assert!(!cap_dir.exists());
+
+    // 4. Full wipes the entire job directory.
+    prepare_job_dir_for_retry(job_dir, RetryFromStage::Full).unwrap();
+    assert!(!job_dir.exists());
+}
+
+#[tokio::test]
+async fn resynthesizes_saved_plan_overview_with_new_writer_model() {
+    let server = MockServer::start().await;
+    let updated_json = serde_json::json!({
+        "article_title": "Refined Whole Book Title",
+        "subtitle": "Crisp updated framing",
+        "executive_summary": "A concise two-sentence synthesis from the upgraded writer model.",
+        "key_takeaways": [
+            "Format: Custom 4x4x4 bricks cut memory usage.",
+            "Shadows: Async compute keeps shadows nearly free."
+        ],
+        "chapter_briefs": [
+            {"chapter_index": 1, "brief": "Explains the core architecture and goals."}
+        ]
+    });
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{
+                "message": { "content": updated_json.to_string() }
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let ep = StageEndpoint {
+        protocol: ProtocolKind::OpenAi,
+        url: format!("{}/v1", server.uri()),
+        model: "claude-opus-5-5".into(),
+        api_key: "sk-rewrite-test".into(),
+    };
+    let probe = VideoProbe {
+        video_id: "vid1".into(),
+        title: "Original Talk".into(),
+        duration_ms: 1_800_000,
+        ..Default::default()
+    };
+    let old_plan = Stage1Plan {
+        article_title: "Old Title (Part 1)".into(),
+        subtitle: "Old sub".into(),
+        executive_summary: "Very verbose old concatenated summary.".into(),
+        key_takeaways: vec!["Old point".into()],
+        chapters: vec![Stage1ChapterPlan {
+            chapter_index: 1,
+            title: "Chapter 1".into(),
+            start_ms: 0,
+            end_ms: 1_800_000,
+            brief: String::new(),
+            summary_goal: "Cover architecture deeply".into(),
+            key_terms: vec!["Smolder".into()],
+            selected_slides: vec![],
+        }],
+    };
+    let http = build_streaming_http_client(10, 20).unwrap();
+    let refreshed = resynthesize_plan_overview(&http, &ep, &probe, "English", &old_plan)
+        .await
+        .unwrap();
+    assert_eq!(refreshed.article_title, "Refined Whole Book Title");
+    assert_eq!(
+        refreshed.executive_summary,
+        "A concise two-sentence synthesis from the upgraded writer model."
+    );
+    assert_eq!(refreshed.key_takeaways.len(), 2);
+    assert_eq!(
+        refreshed.chapters[0].brief,
+        "Explains the core architecture and goals."
     );
 }

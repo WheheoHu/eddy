@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -6,10 +7,11 @@ use eddy_model::{Entity, fields, ids, now_ms};
 use eddy_store::VideoJobRecord;
 use eddy_sync::{CreateVideoJobRequest, RemoteVideoJob};
 use eddy_video::{
-    PipelinePhase, PipelineProgress, ProtocolKind, RuntimeVideoConfig, StageEndpoint,
-    ToolchainStatus, TranscriptPolicy, VideoError, VideoPipelineMode, VideoProbe, VideoSettings,
-    VideoStageRole, detect_toolchain, probe_video, redact_text, run_video_pipeline,
-    test_stage_endpoint,
+    JobCheckpointStatus, PipelinePhase, PipelineProgress, ProtocolKind, RetryFromStage,
+    RuntimeVideoConfig, StageEndpoint, ToolchainStatus, TranscriptPolicy, VideoError,
+    VideoPipelineMode, VideoProbe, VideoSettings, VideoStageRole, detect_toolchain, dir_size_bytes,
+    inspect_job_checkpoints, prepare_job_dir_for_retry, probe_video, redact_text,
+    run_video_pipeline, test_stage_endpoint,
 };
 
 use crate::engine::{Engine, Inner};
@@ -45,6 +47,9 @@ pub struct VideoJobInfo {
     pub result_item_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    pub can_rewrite_chapters: bool,
+    pub can_replan_visuals: bool,
+    pub cache_bytes: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -89,7 +94,19 @@ fn parse_transcript_policy(s: &str) -> TranscriptPolicy {
     }
 }
 
-fn record_to_info(r: VideoJobRecord, target: VideoJobTarget) -> VideoJobInfo {
+fn checkpoint_capabilities(status: &str, cp: JobCheckpointStatus) -> (bool, bool, u64) {
+    let active = matches!(status, "queued" | "running");
+    (
+        !active && cp.has_plan_and_frames,
+        !active && cp.has_transcript,
+        cp.cache_bytes,
+    )
+}
+
+fn record_to_info(r: VideoJobRecord, target: VideoJobTarget, jobs_dir: &Path) -> VideoJobInfo {
+    let cp = inspect_job_checkpoints(&jobs_dir.join(&r.id));
+    let (can_rewrite_chapters, can_replan_visuals, cache_bytes) =
+        checkpoint_capabilities(&r.status, cp);
     VideoJobInfo {
         id: r.id,
         target,
@@ -108,6 +125,9 @@ fn record_to_info(r: VideoJobRecord, target: VideoJobTarget) -> VideoJobInfo {
         result_item_id: r.result_item_id,
         created_at: r.created_at,
         updated_at: r.updated_at,
+        can_rewrite_chapters,
+        can_replan_visuals,
+        cache_bytes,
     }
 }
 
@@ -130,10 +150,16 @@ fn remote_to_info(r: RemoteVideoJob) -> VideoJobInfo {
         result_item_id: r.result_item_id,
         created_at: r.created_at,
         updated_at: r.updated_at,
+        can_rewrite_chapters: r.can_rewrite_chapters,
+        can_replan_visuals: r.can_replan_visuals,
+        cache_bytes: r.cache_bytes,
     }
 }
 
-pub fn record_to_remote(r: VideoJobRecord) -> RemoteVideoJob {
+pub fn record_to_remote(r: VideoJobRecord, jobs_dir: &Path) -> RemoteVideoJob {
+    let cp = inspect_job_checkpoints(&jobs_dir.join(&r.id));
+    let (can_rewrite_chapters, can_replan_visuals, cache_bytes) =
+        checkpoint_capabilities(&r.status, cp);
     RemoteVideoJob {
         id: r.id,
         source: r.source,
@@ -151,6 +177,9 @@ pub fn record_to_remote(r: VideoJobRecord) -> RemoteVideoJob {
         result_item_id: r.result_item_id,
         created_at: r.created_at,
         updated_at: r.updated_at,
+        can_rewrite_chapters,
+        can_replan_visuals,
+        cache_bytes,
     }
 }
 
@@ -440,7 +469,9 @@ impl Inner {
                             final_rec.updated_at = now_ms();
                             let _ = inner.store.upsert_video_job(&final_rec);
 
-                            let _ = std::fs::remove_dir_all(&job_dir);
+                            // Keep reusable checkpoints (transcript, visual plan, 1080p frames) on
+                            // disk so the user can rewrite chapters or re-plan visuals later with
+                            // another model; `run_video_pipeline` already removed heavy media files.
 
                             // In client mode connected to eddy-server, push the imported book ops + blob immediately.
                             if !inner.options.server_role && inner.hub_client().is_some() {
@@ -687,17 +718,19 @@ impl Engine {
         };
         self.inner.store.upsert_video_job(&rec)?;
         Inner::spawn_local_video_job(self.clone(), rec.id.clone(), cfg, on_server_change);
-        Ok(record_to_info(rec, VideoJobTarget::Local))
+        let jobs_dir = self.inner.video_jobs_dir();
+        Ok(record_to_info(rec, VideoJobTarget::Local, &jobs_dir))
     }
 
     /// Lists local jobs merged with remote `eddy-server` jobs (when connected).
     pub async fn video_jobs(&self) -> Result<Vec<VideoJobInfo>> {
+        let jobs_dir = self.inner.video_jobs_dir();
         let mut list: Vec<VideoJobInfo> = self
             .inner
             .store
             .video_jobs(50)?
             .into_iter()
-            .map(|r| record_to_info(r, VideoJobTarget::Local))
+            .map(|r| record_to_info(r, VideoJobTarget::Local, &jobs_dir))
             .collect();
 
         if !self.inner.options.server_role
@@ -722,19 +755,31 @@ impl Engine {
         Ok(self.inner.store.video_job(id)?)
     }
 
-    pub async fn retry_video_job(&self, id: &str, target: VideoJobTarget) -> Result<VideoJobInfo> {
+    pub fn video_jobs_dir(&self) -> PathBuf {
+        self.inner.video_jobs_dir()
+    }
+
+    pub async fn retry_video_job(
+        &self,
+        id: &str,
+        target: VideoJobTarget,
+        from_stage: RetryFromStage,
+    ) -> Result<VideoJobInfo> {
         if target == VideoJobTarget::Server {
             let client = self.inner.hub_client().ok_or(EngineError::NotConfigured)?;
-            let remote = client.retry_video_job(id).await?;
+            let remote = client
+                .retry_video_job(id, Some(from_stage.as_str()))
+                .await?;
             self.inner.notify_video_listener();
             return Ok(remote_to_info(remote));
         }
-        self.retry_local_video_job(id, None)
+        self.retry_local_video_job(id, from_stage, None)
     }
 
     pub fn retry_local_video_job(
         &self,
         id: &str,
+        from_stage: RetryFromStage,
         on_server_change: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> Result<VideoJobInfo> {
         let mut rec = self
@@ -742,22 +787,140 @@ impl Engine {
             .store
             .video_job(id)?
             .ok_or(EngineError::NotFound)?;
-        if rec.status == "running" {
-            return Ok(record_to_info(rec, VideoJobTarget::Local));
+        let jobs_dir = self.inner.video_jobs_dir();
+        if matches!(rec.status.as_str(), "running" | "queued") {
+            return Ok(record_to_info(rec, VideoJobTarget::Local, &jobs_dir));
         }
+        // When intentionally regenerating from a stage (not a simple Resume), inherit current
+        // VideoSettings target language if configured, while preserving the job's original
+        // language if Settings leaves it empty.
+        let lang_override: Option<String> =
+            if from_stage == RetryFromStage::Resume || self.inner.options.server_role {
+                Some(rec.target_language.clone())
+            } else {
+                let vs = self.video_settings().unwrap_or_default();
+                if !vs.target_language.trim().is_empty() {
+                    Some(vs.target_language)
+                } else {
+                    Some(rec.target_language.clone())
+                }
+            };
+        let pipeline_override = match from_stage {
+            RetryFromStage::PlanVisuals | RetryFromStage::Full
+                if !self.inner.options.server_role =>
+            {
+                None
+            }
+            _ => Some(parse_pipeline_mode(&rec.pipeline)),
+        };
+        let policy_override = match from_stage {
+            RetryFromStage::Full if !self.inner.options.server_role => None,
+            _ => Some(parse_transcript_policy(&rec.transcript_policy)),
+        };
         let cfg = self.inner.resolve_runtime_video_config(
-            Some(parse_pipeline_mode(&rec.pipeline)),
-            Some(parse_transcript_policy(&rec.transcript_policy)),
-            Some(&rec.target_language),
+            pipeline_override,
+            policy_override,
+            lang_override.as_deref(),
             None,
         )?;
+        let job_dir = jobs_dir.join(&rec.id);
+        prepare_job_dir_for_retry(&job_dir, from_stage)?;
+
+        rec.pipeline = pipeline_to_str(cfg.pipeline).into();
+        rec.transcript_policy = policy_to_str(cfg.transcript_policy).into();
+        rec.target_language = cfg.target_language.clone();
         rec.status = "queued".into();
         rec.error = None;
-        rec.detail = "Resuming from saved checkpoints…".into();
+        if from_stage != RetryFromStage::Resume {
+            rec.completed_chapters = 0;
+        }
+        rec.phase = match from_stage {
+            RetryFromStage::Resume => rec.phase,
+            RetryFromStage::WriteChapters => PipelinePhase::WritingChapters.as_str().into(),
+            RetryFromStage::PlanVisuals => PipelinePhase::PlanningVisuals.as_str().into(),
+            RetryFromStage::Full => PipelinePhase::Queued.as_str().into(),
+        };
+        rec.detail = match from_stage {
+            RetryFromStage::Resume => "Resuming from saved checkpoints…".into(),
+            RetryFromStage::WriteChapters => "Rewriting chapters with current writer model…".into(),
+            RetryFromStage::PlanVisuals => "Re-planning visuals from saved transcript…".into(),
+            RetryFromStage::Full => "Restarting conversion from scratch…".into(),
+        };
         rec.updated_at = now_ms();
         self.inner.store.upsert_video_job(&rec)?;
         Inner::spawn_local_video_job(self.clone(), rec.id.clone(), cfg, on_server_change);
-        Ok(record_to_info(rec, VideoJobTarget::Local))
+        self.inner.notify_video_listener();
+        Ok(record_to_info(rec, VideoJobTarget::Local, &jobs_dir))
+    }
+
+    /// Bytes currently held on disk by reusable Video-to-Book checkpoints for inactive jobs.
+    pub fn video_cache_usage(&self) -> Result<u64> {
+        let jobs_dir = self.inner.video_jobs_dir();
+        let Ok(entries) = std::fs::read_dir(&jobs_dir) else {
+            return Ok(0);
+        };
+        let active: HashSet<String> = self
+            .inner
+            .store
+            .video_jobs(200)?
+            .into_iter()
+            .filter(|j| matches!(j.status.as_str(), "queued" | "running"))
+            .map(|j| j.id)
+            .collect();
+        let mut total = 0u64;
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if active.contains(&name) {
+                continue;
+            }
+            let path = entry.path();
+            if path.is_dir() {
+                total = total.saturating_add(dir_size_bytes(&path));
+            } else if let Ok(meta) = entry.metadata() {
+                total = total.saturating_add(meta.len());
+            }
+        }
+        Ok(total)
+    }
+
+    /// Deletes cached Video-to-Book checkpoints (transcripts, plans, frames, chapter JSONs) for
+    /// all inactive jobs while keeping imported books and job history intact. Returns bytes freed.
+    pub fn clear_video_cache(&self) -> Result<u64> {
+        let jobs_dir = self.inner.video_jobs_dir();
+        let Ok(entries) = std::fs::read_dir(&jobs_dir) else {
+            return Ok(0);
+        };
+        let active: HashSet<String> = self
+            .inner
+            .store
+            .video_jobs(200)?
+            .into_iter()
+            .filter(|j| matches!(j.status.as_str(), "queued" | "running"))
+            .map(|j| j.id)
+            .collect();
+        let mut freed = 0u64;
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if active.contains(&name) {
+                continue;
+            }
+            let path = entry.path();
+            let size = if path.is_dir() {
+                dir_size_bytes(&path)
+            } else {
+                entry.metadata().map(|m| m.len()).unwrap_or(0)
+            };
+            let removed = if path.is_dir() {
+                std::fs::remove_dir_all(&path).is_ok()
+            } else {
+                std::fs::remove_file(&path).is_ok()
+            };
+            if removed {
+                freed = freed.saturating_add(size);
+            }
+        }
+        self.inner.notify_video_listener();
+        Ok(freed)
     }
 
     pub async fn cancel_video_job(&self, id: &str, target: VideoJobTarget) -> Result<VideoJobInfo> {
@@ -784,7 +947,8 @@ impl Engine {
         rec.updated_at = now_ms();
         self.inner.store.upsert_video_job(&rec)?;
         self.inner.notify_video_listener();
-        Ok(record_to_info(rec, VideoJobTarget::Local))
+        let jobs_dir = self.inner.video_jobs_dir();
+        Ok(record_to_info(rec, VideoJobTarget::Local, &jobs_dir))
     }
 
     pub async fn dismiss_video_job(&self, id: &str, target: VideoJobTarget) -> Result<()> {

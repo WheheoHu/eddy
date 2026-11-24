@@ -22,9 +22,10 @@ use crate::media::{
     try_fetch_subtitles,
 };
 use crate::models::{
-    ArticleBlock, ArticleDocument, ArticleSection, CandidateFrame, GeneratedBook, PipelinePhase,
-    PipelineProgress, Stage1ChapterPlan, Stage1Plan, Stage1SlideChoice, TranscriptBundle,
-    VideoProbe, format_timestamp_ms, parse_timestamp_to_ms,
+    ArticleBlock, ArticleDocument, ArticleSection, CandidateFrame, GeneratedBook,
+    JobCheckpointStatus, PipelinePhase, PipelineProgress, RetryFromStage, Stage1ChapterPlan,
+    Stage1Plan, Stage1SlideChoice, TranscriptBundle, VideoProbe, format_timestamp_ms,
+    parse_timestamp_to_ms,
 };
 use crate::settings::{RuntimeVideoConfig, StageEndpoint, VideoPipelineMode};
 use crate::toolchain::detect_toolchain;
@@ -47,19 +48,23 @@ Instructions:
    - EXCLUDE: pure speaker talking-head shots, decorative B-roll camera-angle repeats, crowd/stage wide shots, or blurry fade transitions.
    - PROGRESSIVE SLIDES RULE: When bullet points, Bento tiles, or diagram layers appear incrementally, pick the timestamp (`MM:SS` relative to `00:00` of this clip) when ALL items on that slide have appeared, ~1 second BEFORE it transitions away!
 3. Keep `draft_caption` in {target_language} concise and factual (including exact English product/technical terms, specs, or numbers visible on screen).
+4. Write a tight, reader-facing `executive_summary` (2-3 sentences max, ~80-130 English words or ~120-200 Chinese characters) stating the core thesis, problem solved, and key outcome. NEVER start with meta-narration like "This part of the presentation..." or "本部分演讲...".
+5. Write {takeaway_count_hint} concrete `key_takeaways` formatted as `"Short Topic: one concise sentence with exact specs or insights"` (use `：` in Chinese, `: ` in English; no Markdown `**` syntax).
+6. For each chapter, include a reader-facing 1-sentence `brief` in {target_language} summarizing what the chapter covers (distinct from `summary_goal`, which guides Stage 2).
 
 Return STRICT JSON matching this exact schema:
 {
   "article_title": "Refined publication-grade title in {target_language}",
   "subtitle": "One-sentence framing subtitle in {target_language}",
-  "executive_summary": "3-5 sentence synthesis of the core thesis and announcements in {target_language}",
-  "key_takeaways": ["Takeaway 1", "Takeaway 2", "Takeaway 3", "Takeaway 4"],
+  "executive_summary": "2-3 tight sentences summarizing thesis, problem, and core outcome in {target_language}",
+  "key_takeaways": ["Topic 1: Concise 1-sentence insight", "Topic 2: Concise 1-sentence insight"],
   "chapters": [
     {
       "chapter_index": 1,
       "title": "Chapter title in {target_language}",
       "start_time": "00:00",
       "end_time": "04:15",
+      "brief": "One reader-facing sentence in {target_language} summarizing what this chapter covers",
       "summary_goal": "Specific technical details, specs, and arguments Stage 2 must explain in depth",
       "key_terms": ["TermA", "TermB"],
       "slides": [
@@ -78,25 +83,52 @@ const LOCAL_FRAMES_STAGE1_SYSTEM: &str = r#"You are an expert technical editor p
 1. Segment the presentation into 4 to 9 coherent chapters (`start_time` and `end_time` in `MM:SS`), including slide-less Q&A chapters if present.
 2. Inspect the attached candidate frames (chronological order matching the Frame Catalog) and KEEP only informative slides, diagrams, code/UI demos, and charts; DROP pure speaker talking-head shots and blurry transitions.
 3. Assign each kept `frame_id` to the chapter where it is explained.
+4. Keep `executive_summary` strictly concise (2-3 sentences, ~80-130 English words or ~120-200 Chinese characters) stating the core thesis, problem solved, and key outcome.
+5. Provide 4 to 6 `key_takeaways` formatted as `"Short Topic: one concise concrete sentence"` (use `：` in Chinese, `: ` in English; no Markdown `**` syntax), and a reader-facing 1-sentence `brief` per chapter.
 
 Return STRICT JSON:
 {
   "article_title": "Refined publication-grade title",
   "subtitle": "One-sentence framing subtitle",
-  "executive_summary": "3-5 sentence synthesis",
-  "key_takeaways": ["Takeaway 1", "Takeaway 2"],
+  "executive_summary": "2-3 tight sentences summarizing thesis, problem, and core outcome",
+  "key_takeaways": ["Topic 1: Concise 1-sentence insight", "Topic 2: Concise 1-sentence insight"],
   "chapters": [
     {
       "chapter_index": 1,
       "title": "Chapter title",
       "start_time": "00:00",
       "end_time": "04:15",
+      "brief": "One reader-facing sentence summarizing what this chapter covers",
       "summary_goal": "What this chapter covers in depth",
       "key_terms": ["TermA"],
       "selected_slides": [
         {"frame_id": "f002", "role": "slide", "draft_caption": "Concise caption"}
       ]
     }
+  ]
+}
+"#;
+
+const OVERVIEW_SYNTHESIS_SYSTEM: &str = r#"You are an expert technical book editor synthesizing multi-part Stage 1 notes from one long presentation into a single, crisp book overview in {target_language}.
+
+Rules:
+1. `article_title`: One unified publication-grade title covering the ENTIRE presentation (strip any "Part 1", "第一部分", or clip-specific suffix).
+2. `subtitle`: One concise framing sentence for the whole talk.
+3. `executive_summary`: Strictly 2 to 3 tight sentences (~80-130 English words or ~120-200 Chinese characters) capturing the overall thesis, core technical challenge, and final outcome. NEVER write per-part recaps or phrases like "本部分演讲...", "第一部分介绍了...", or "Part 1 covers...".
+4. `key_takeaways`: 4 to 6 concrete, non-redundant takeaways evenly representing the ENTIRE presentation from beginning to end. Format each as `"Short Topic: one concise concrete sentence"` (use `：` in Chinese, `: ` in English; no Markdown `**` syntax). Preserve exact technical terms and numbers.
+5. `chapter_briefs`: One crisp, reader-facing sentence in {target_language} for EVERY chapter index in the outline, explaining what the reader will learn in that chapter (not imperative editor instructions).
+
+Return STRICT JSON:
+{
+  "article_title": "Unified book title",
+  "subtitle": "One-sentence framing subtitle",
+  "executive_summary": "2-3 concise sentences summarizing the whole presentation",
+  "key_takeaways": [
+    "Topic 1: Concise concrete insight",
+    "Topic 2: Concise concrete insight"
+  ],
+  "chapter_briefs": [
+    {"chapter_index": 1, "brief": "One crisp reader-facing sentence"}
   ]
 }
 "#;
@@ -126,10 +158,124 @@ Return STRICT JSON with this schema:
 }
 "#;
 
+const REFRESH_OVERVIEW_FLAG: &str = "refresh_overview.flag";
+
 #[derive(Serialize, Deserialize)]
 struct PlanCheckpoint {
     plan: Stage1Plan,
     frames: Vec<CandidateFrame>,
+}
+
+/// Recursively sums file sizes under `dir`. Missing or unreadable entries count as 0.
+pub fn dir_size_bytes(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut total = 0u64;
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if meta.is_dir() {
+            total = total.saturating_add(dir_size_bytes(&entry.path()));
+        } else if meta.is_file() {
+            total = total.saturating_add(meta.len());
+        }
+    }
+    total
+}
+
+fn plan_has_intact_frames(plan_file: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(plan_file) else {
+        return false;
+    };
+    let Ok(cp) = serde_json::from_slice::<PlanCheckpoint>(&bytes) else {
+        return false;
+    };
+    if cp.plan.chapters.is_empty() {
+        return false;
+    }
+    let referenced: HashSet<&str> = cp
+        .plan
+        .chapters
+        .iter()
+        .flat_map(|ch| ch.selected_slides.iter().map(|s| s.frame_id.as_str()))
+        .collect();
+    if referenced.is_empty() {
+        return true;
+    }
+    let frame_map: HashMap<&str, &str> = cp
+        .frames
+        .iter()
+        .map(|f| (f.frame_id.as_str(), f.image_path.as_str()))
+        .collect();
+    referenced
+        .into_iter()
+        .all(|fid| frame_map.get(fid).is_some_and(|p| Path::new(p).is_file()))
+}
+
+/// Inspects which reusable checkpoint artifacts exist on disk inside `job_dir`.
+pub fn inspect_job_checkpoints(job_dir: &Path) -> JobCheckpointStatus {
+    if !job_dir.is_dir() {
+        return JobCheckpointStatus::default();
+    }
+    let has_transcript = job_dir.join("checkpoint_transcript.json").is_file();
+    let has_plan_and_frames =
+        has_transcript && plan_has_intact_frames(&job_dir.join("checkpoint_plan.json"));
+    let cached_chapters = std::fs::read_dir(job_dir.join("chapters"))
+        .ok()
+        .map(|rd| {
+            rd.flatten()
+                .filter(|e| {
+                    let p = e.path();
+                    p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("json")
+                })
+                .count() as u32
+        })
+        .unwrap_or(0);
+    let cache_bytes = dir_size_bytes(job_dir);
+    JobCheckpointStatus {
+        has_transcript,
+        has_plan_and_frames,
+        cached_chapters,
+        cache_bytes,
+    }
+}
+
+/// Clears only the downstream checkpoints required to restart a job from `stage`, preserving
+/// upstream artifacts (ASR transcript, Stage 1 visual plan, captured 1080p frames) whenever safe.
+pub fn prepare_job_dir_for_retry(job_dir: &Path, stage: RetryFromStage) -> Result<(), VideoError> {
+    match stage {
+        RetryFromStage::Resume => Ok(()),
+        RetryFromStage::WriteChapters => {
+            let _ = std::fs::remove_dir_all(job_dir.join("chapters"));
+            let plan_file = job_dir.join("checkpoint_plan.json");
+            if plan_has_intact_frames(&plan_file) {
+                std::fs::create_dir_all(job_dir)?;
+                std::fs::write(job_dir.join(REFRESH_OVERVIEW_FLAG), b"1")?;
+            } else {
+                // Missing or incomplete frame files: fall back to re-running Stage 1 cleanly.
+                let _ = std::fs::remove_file(&plan_file);
+                let _ = std::fs::remove_file(job_dir.join(REFRESH_OVERVIEW_FLAG));
+            }
+            Ok(())
+        }
+        RetryFromStage::PlanVisuals => {
+            let _ = std::fs::remove_file(job_dir.join("checkpoint_plan.json"));
+            let _ = std::fs::remove_file(job_dir.join(REFRESH_OVERVIEW_FLAG));
+            let _ = std::fs::remove_dir_all(job_dir.join("gemini_captures"));
+            let _ = std::fs::remove_dir_all(job_dir.join("local_frames"));
+            let _ = std::fs::remove_dir_all(job_dir.join("proxies"));
+            let _ = std::fs::remove_dir_all(job_dir.join("chapters"));
+            Ok(())
+        }
+        RetryFromStage::Full => {
+            if job_dir.is_dir() {
+                std::fs::remove_dir_all(job_dir)?;
+            }
+            Ok(())
+        }
+    }
 }
 
 fn check_cancel(cancel: &AtomicBool) -> Result<(), VideoError> {
@@ -287,7 +433,7 @@ pub async fn run_video_pipeline(
 
     // --- Step 3: Ensure local video + Stage 1 Visual Plan & HD Frame Capture (checkpointed) ---
     let plan_file = job_dir.join("checkpoint_plan.json");
-    let (plan, frames): (Stage1Plan, Vec<CandidateFrame>) = if plan_file.is_file() {
+    let (mut plan, frames): (Stage1Plan, Vec<CandidateFrame>) = if plan_file.is_file() {
         let cp: PlanCheckpoint = serde_json::from_slice(&std::fs::read(&plan_file)?)
             .map_err(|e| VideoError::Format(e.to_string()))?;
         (cp.plan, cp.frames)
@@ -309,6 +455,11 @@ pub async fn run_video_pipeline(
 
         check_cancel(&cancel)?;
 
+        let synthesis_ep = if cfg.stage2.is_configured() {
+            &cfg.stage2
+        } else {
+            &cfg.stage1
+        };
         let (p, f) = match cfg.effective_pipeline() {
             VideoPipelineMode::GeminiTwoStage => {
                 run_gemini_stage1_and_capture(
@@ -317,6 +468,7 @@ pub async fn run_video_pipeline(
                     &local_video,
                     job_dir,
                     &cfg.stage1,
+                    synthesis_ep,
                     &cfg.target_language,
                     &report,
                 )
@@ -345,8 +497,59 @@ pub async fn run_video_pipeline(
             &plan_file,
             serde_json::to_vec_pretty(&cp).unwrap_or_default(),
         )?;
+        let _ = std::fs::remove_file(job_dir.join(REFRESH_OVERVIEW_FLAG));
         (p, f)
     };
+
+    check_cancel(&cancel)?;
+
+    // When regenerating from Stage 2 (`WriteChapters`), refresh the book overview & chapter
+    // briefs using the current writer model so switching models/languages upgrades the overview.
+    let refresh_flag = job_dir.join(REFRESH_OVERVIEW_FLAG);
+    if refresh_flag.is_file() {
+        let synthesis_ep = if cfg.stage2.is_configured() {
+            &cfg.stage2
+        } else {
+            &cfg.stage1
+        };
+        report(
+            PipelinePhase::WritingChapters,
+            0,
+            plan.chapters.len() as u32,
+            "Refreshing book overview with current writer model…",
+            Some(if plan.article_title.trim().is_empty() {
+                probe.title.clone()
+            } else {
+                plan.article_title.clone()
+            }),
+        );
+        let refresh_http = build_streaming_http_client(120, 600)?;
+        match resynthesize_plan_overview(
+            &refresh_http,
+            synthesis_ep,
+            &probe,
+            &cfg.target_language,
+            &plan,
+        )
+        .await
+        {
+            Ok(updated) => {
+                plan = updated;
+                let cp = PlanCheckpoint {
+                    plan: plan.clone(),
+                    frames: frames.clone(),
+                };
+                let _ = std::fs::write(
+                    &plan_file,
+                    serde_json::to_vec_pretty(&cp).unwrap_or_default(),
+                );
+            }
+            Err(err) => {
+                tracing::warn!("Book overview refresh failed, keeping saved plan overview: {err}");
+            }
+        }
+        let _ = std::fs::remove_file(&refresh_flag);
+    }
 
     check_cancel(&cancel)?;
 
@@ -404,8 +607,11 @@ pub async fn run_video_pipeline(
             check_cancel(&cancel_ref)?;
             if ch_file.is_file()
                 && let Ok(bytes) = std::fs::read(&ch_file)
-                && let Ok(existing) = serde_json::from_slice::<ArticleSection>(&bytes)
+                && let Ok(mut existing) = serde_json::from_slice::<ArticleSection>(&bytes)
             {
+                if existing.brief.trim().is_empty() && !ch_clone.brief.trim().is_empty() {
+                    existing.brief = ch_clone.brief.clone();
+                }
                 let finished = done_ref.fetch_add(1, Ordering::Relaxed) + 1;
                 if let Some(cb) = &on_prog {
                     cb(PipelineProgress {
@@ -483,7 +689,8 @@ pub async fn run_video_pipeline(
 
     let (epub_bytes, chapters_count) = build_epub_bytes(&article_doc)?;
 
-    // Clean temporary large media streams while keeping lightweight JSON checkpoints
+    // Clean temporary large media streams while keeping lightweight checkpoints and HD frames
+    // so the user can regenerate chapters/overview later without re-running ASR or capture.
     let _ = std::fs::remove_file(job_dir.join("video.mp4"));
     let _ = std::fs::remove_file(job_dir.join("audio_16k.mp3"));
     if let Ok(entries) = std::fs::read_dir(job_dir) {
@@ -495,6 +702,7 @@ pub async fn run_video_pipeline(
         }
     }
     let _ = std::fs::remove_dir_all(job_dir.join("proxies"));
+    let _ = std::fs::remove_dir_all(job_dir.join("local_frames").join("thumbs"));
 
     report(
         PipelinePhase::Completed,
@@ -512,12 +720,14 @@ pub async fn run_video_pipeline(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_gemini_stage1_and_capture<F>(
     ffmpeg: &str,
     probe: &VideoProbe,
     local_video: &Path,
     job_dir: &Path,
     stage1_ep: &StageEndpoint,
+    synthesis_ep: &StageEndpoint,
     target_language: &str,
     report: &F,
 ) -> Result<(Stage1Plan, Vec<CandidateFrame>), VideoError>
@@ -551,7 +761,8 @@ where
                 &format!("Presentation Title: {}", probe.title),
             )
             .replace("{clip_span_note}", &format!("00:00 to {dur_label}"))
-            .replace("{chapter_count_hint}", "5 to 10");
+            .replace("{chapter_count_hint}", "5 to 10")
+            .replace("{takeaway_count_hint}", "4 to 6");
 
         if let Ok(probe_http) = build_streaming_http_client(90, 240)
             && let Ok(out) = call_gemini_generate_content_with_retries(
@@ -587,6 +798,7 @@ where
                 local_video,
                 job_dir,
                 stage1_ep,
+                synthesis_ep,
                 target_language,
                 report,
             )
@@ -613,6 +825,7 @@ async fn run_chunked_inline_gemini_stage1<F>(
     local_video: &Path,
     job_dir: &Path,
     stage1_ep: &StageEndpoint,
+    synthesis_ep: &StageEndpoint,
     target_language: &str,
     report: &F,
 ) -> Result<Value, VideoError>
@@ -714,11 +927,13 @@ where
             )
         };
         let chap_hint = if num_chunks == 1 { "5 to 9" } else { "3 to 5" };
+        let takeaway_hint = if num_chunks == 1 { "4 to 6" } else { "2 to 3" };
         let prompt = GEMINI_STAGE1_PROMPT
             .replace("{target_language}", target_language)
             .replace("{clip_context}", &ctx)
             .replace("{clip_span_note}", &format!("00:00 to {clip_label}"))
-            .replace("{chapter_count_hint}", chap_hint);
+            .replace("{chapter_count_hint}", chap_hint)
+            .replace("{takeaway_count_hint}", takeaway_hint);
 
         let bytes = std::fs::read(&p_path)?;
         let out = call_gemini_generate_content(
@@ -763,32 +978,127 @@ where
         return Ok(parts.into_iter().next().unwrap().3);
     }
 
-    let mut merged_chapters = Vec::new();
-    let mut summaries = Vec::new();
-    let mut takeaways = Vec::new();
-    let first_title = parts[0].3["article_title"]
-        .as_str()
-        .unwrap_or(&probe.title)
-        .to_string();
-    let first_sub = parts[0].3["subtitle"].as_str().unwrap_or("").to_string();
+    let (part_metas, mut merged_chapters) = merge_chunk_chapters_and_meta(&parts, total_ms);
 
-    for (_, s_ms, e_ms, part_val) in parts {
-        let clip_dur = e_ms - s_ms;
-        if let Some(sum) = part_val["executive_summary"].as_str()
-            && !sum.trim().is_empty()
+    let synth_cache = proxies_dir.join("overview_synthesis.json");
+    let overview = if synth_cache.is_file()
+        && let Ok(bytes) = std::fs::read(&synth_cache)
+        && let Ok(cached) = serde_json::from_slice::<SynthesizedOverview>(&bytes)
+        && !cached.executive_summary.trim().is_empty()
+    {
+        cached
+    } else {
+        report(
+            PipelinePhase::PlanningVisuals,
+            0,
+            0,
+            "Synthesizing unified book overview…",
+            Some(probe.title.clone()),
+        );
+        match synthesize_chunked_overview(
+            http,
+            synthesis_ep,
+            probe,
+            target_language,
+            &part_metas,
+            &merged_chapters,
+        )
+        .await
         {
-            summaries.push(sum.trim().to_string());
-        }
-        if let Some(tks) = part_val["key_takeaways"].as_array() {
-            for tk in tks {
-                if let Some(s) = tk.as_str()
-                    && !s.trim().is_empty()
-                    && takeaways.len() < 8
-                {
-                    takeaways.push(Value::String(s.trim().to_string()));
-                }
+            Ok(ov) => {
+                let _ = std::fs::write(
+                    &synth_cache,
+                    serde_json::to_vec_pretty(&ov).unwrap_or_default(),
+                );
+                ov
+            }
+            Err(err) => {
+                tracing::warn!("Whole-book overview synthesis failed, using fallback merge: {err}");
+                build_fallback_overview(&probe.title, &part_metas)
             }
         }
+    };
+
+    for ch in &mut merged_chapters {
+        if let Some(cidx) = ch["chapter_index"].as_u64().map(|n| n as usize)
+            && let Some(brief) = overview.chapter_briefs.get(&cidx)
+            && !brief.trim().is_empty()
+        {
+            ch["brief"] = Value::String(brief.trim().to_string());
+        }
+    }
+
+    Ok(serde_json::json!({
+        "article_title": overview.article_title,
+        "subtitle": overview.subtitle,
+        "executive_summary": overview.executive_summary,
+        "key_takeaways": overview.key_takeaways,
+        "chapters": merged_chapters,
+    }))
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ChunkPartMeta {
+    pub part_index: usize,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub title: String,
+    pub subtitle: String,
+    pub executive_summary: String,
+    pub key_takeaways: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SynthesizedOverview {
+    pub article_title: String,
+    pub subtitle: String,
+    pub executive_summary: String,
+    pub key_takeaways: Vec<String>,
+    #[serde(default)]
+    pub chapter_briefs: HashMap<usize, String>,
+}
+
+pub(crate) fn merge_chunk_chapters_and_meta(
+    parts: &[(usize, u64, u64, Value)],
+    total_ms: u64,
+) -> (Vec<ChunkPartMeta>, Vec<Value>) {
+    let mut part_metas = Vec::with_capacity(parts.len());
+    let mut merged_chapters = Vec::new();
+
+    for &(idx, s_ms, e_ms, ref part_val) in parts {
+        let clip_dur = e_ms.saturating_sub(s_ms);
+        let key_takeaways = part_val["key_takeaways"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(str::trim))
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default();
+        part_metas.push(ChunkPartMeta {
+            part_index: idx,
+            start_ms: s_ms,
+            end_ms: e_ms,
+            title: part_val["article_title"]
+                .as_str()
+                .unwrap_or("")
+                .trim()
+                .to_string(),
+            subtitle: part_val["subtitle"]
+                .as_str()
+                .unwrap_or("")
+                .trim()
+                .to_string(),
+            executive_summary: part_val["executive_summary"]
+                .as_str()
+                .unwrap_or("")
+                .trim()
+                .to_string(),
+            key_takeaways,
+        });
+
         if let Some(ch_arr) = part_val["chapters"].as_array() {
             for ch in ch_arr {
                 let local_start = ch["start_time"]
@@ -835,13 +1145,300 @@ where
         }
     }
 
-    Ok(serde_json::json!({
-        "article_title": first_title,
-        "subtitle": first_sub,
-        "executive_summary": summaries.join(" "),
-        "key_takeaways": takeaways,
-        "chapters": merged_chapters,
-    }))
+    (part_metas, merged_chapters)
+}
+
+pub(crate) fn sample_takeaways_proportionally(
+    parts: &[ChunkPartMeta],
+    max_items: usize,
+) -> Vec<String> {
+    if max_items == 0 || parts.is_empty() {
+        return Vec::new();
+    }
+    let max_rounds = parts
+        .iter()
+        .map(|p| p.key_takeaways.len())
+        .max()
+        .unwrap_or(0);
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut picked = Vec::new();
+    for round in 0..max_rounds {
+        for part in parts {
+            if let Some(raw) = part.key_takeaways.get(round) {
+                let trimmed = raw.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let norm: String = trimmed
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .to_lowercase();
+                if seen.insert(norm) {
+                    picked.push(trimmed.to_string());
+                    if picked.len() >= max_items {
+                        return picked;
+                    }
+                }
+            }
+        }
+    }
+    picked
+}
+
+/// Truncates a per-part summary to at most `max_sentences` leading sentences (and `max_chars`
+/// characters) so a fallback summary stays readable instead of turning into a wall of text.
+fn condense_part_summary(text: &str, max_sentences: usize, max_chars: usize) -> String {
+    let clean = text.trim();
+    if clean.is_empty() {
+        return String::new();
+    }
+    let mut end_byte = clean.len();
+    let mut sentences = 0usize;
+    let mut char_count = 0usize;
+    for (byte_idx, ch) in clean.char_indices() {
+        char_count += 1;
+        let next_byte = byte_idx + ch.len_utf8();
+        let is_sentence_end = matches!(ch, '。' | '！' | '？')
+            || (matches!(ch, '.' | '!' | '?')
+                && clean[next_byte..]
+                    .chars()
+                    .next()
+                    .is_none_or(|n| n.is_whitespace()));
+        if is_sentence_end {
+            sentences += 1;
+            if sentences >= max_sentences || char_count >= max_chars {
+                end_byte = next_byte;
+                break;
+            }
+        }
+        if char_count >= max_chars {
+            end_byte = next_byte;
+            break;
+        }
+    }
+    let slice = clean[..end_byte].trim();
+    if end_byte < clean.len() && !slice.ends_with(['。', '！', '？', '.', '!', '?', '…']) {
+        format!("{slice}…")
+    } else {
+        slice.to_string()
+    }
+}
+
+pub(crate) fn build_fallback_overview(
+    probe_title: &str,
+    parts: &[ChunkPartMeta],
+) -> SynthesizedOverview {
+    let article_title = parts
+        .iter()
+        .find_map(|p| (!p.title.is_empty()).then(|| p.title.clone()))
+        .unwrap_or_else(|| probe_title.to_string());
+    let subtitle = parts
+        .iter()
+        .find_map(|p| (!p.subtitle.is_empty()).then(|| p.subtitle.clone()))
+        .unwrap_or_default();
+    let summary_paras: Vec<String> = parts
+        .iter()
+        .filter(|p| !p.executive_summary.is_empty())
+        .map(|p| condense_part_summary(&p.executive_summary, 2, 160))
+        .filter(|s| !s.is_empty())
+        .collect();
+    SynthesizedOverview {
+        article_title,
+        subtitle,
+        executive_summary: summary_paras.join("\n\n"),
+        key_takeaways: sample_takeaways_proportionally(parts, 6),
+        chapter_briefs: HashMap::new(),
+    }
+}
+
+pub(crate) async fn synthesize_chunked_overview(
+    http: &reqwest::Client,
+    synthesis_ep: &StageEndpoint,
+    probe: &VideoProbe,
+    target_language: &str,
+    parts: &[ChunkPartMeta],
+    merged_chapters: &[Value],
+) -> Result<SynthesizedOverview, VideoError> {
+    let mut part_lines = Vec::with_capacity(parts.len());
+    for (idx, p) in parts.iter().enumerate() {
+        let mut block = format!(
+            "Part {} of {} ({}–{}):\n",
+            idx + 1,
+            parts.len(),
+            format_timestamp_ms(p.start_ms),
+            format_timestamp_ms(p.end_ms)
+        );
+        if !p.title.is_empty() {
+            block.push_str(&format!("- Draft Title: {}\n", p.title));
+        }
+        if !p.subtitle.is_empty() {
+            block.push_str(&format!("- Draft Subtitle: {}\n", p.subtitle));
+        }
+        if !p.executive_summary.is_empty() {
+            block.push_str(&format!("- Draft Summary: {}\n", p.executive_summary));
+        }
+        if !p.key_takeaways.is_empty() {
+            block.push_str("- Candidate Takeaways:\n");
+            for tk in &p.key_takeaways {
+                block.push_str(&format!("  * {tk}\n"));
+            }
+        }
+        part_lines.push(block);
+    }
+
+    let mut chapter_lines = Vec::with_capacity(merged_chapters.len());
+    for ch in merged_chapters {
+        let idx = ch["chapter_index"].as_u64().unwrap_or(0);
+        let title = ch["title"].as_str().unwrap_or("");
+        let start = ch["start_ms"].as_u64().unwrap_or(0);
+        let end = ch["end_ms"].as_u64().unwrap_or(0);
+        let goal = ch["summary_goal"].as_str().unwrap_or("");
+        chapter_lines.push(format!(
+            "- Chapter {idx} ({}–{}): {title} — {goal}",
+            format_timestamp_ms(start),
+            format_timestamp_ms(end)
+        ));
+    }
+
+    let user_prompt = format!(
+        "Original Video Title: {}\nTotal Duration: {}\nTarget Language: {target_language}\n\nPer-Part Stage 1 Notes:\n{}\nFull Merged Chapter Outline:\n{}",
+        probe.title,
+        format_timestamp_ms(probe.duration_ms),
+        part_lines.join("\n"),
+        chapter_lines.join("\n")
+    );
+
+    let sys = OVERVIEW_SYNTHESIS_SYSTEM.replace("{target_language}", target_language);
+    let out = call_stage_model(
+        http,
+        synthesis_ep,
+        &sys,
+        &[UserPart::Text(user_prompt)],
+        0.2,
+        2048,
+        true,
+    )
+    .await?;
+    let parsed = extract_json_object(&out.text)?;
+
+    let executive_summary = parsed["executive_summary"]
+        .as_str()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if executive_summary.is_empty() {
+        return Err(VideoError::Format(
+            "Overview synthesis returned empty executive_summary.".into(),
+        ));
+    }
+
+    let fallback = build_fallback_overview(&probe.title, parts);
+    let article_title = parsed["article_title"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .unwrap_or(fallback.article_title);
+    let subtitle = parsed["subtitle"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .unwrap_or(fallback.subtitle);
+    let mut key_takeaways: Vec<String> = parsed["key_takeaways"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::trim))
+                .filter(|s| !s.is_empty())
+                .take(6)
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default();
+    if key_takeaways.is_empty() {
+        key_takeaways = fallback.key_takeaways;
+    }
+
+    let mut chapter_briefs = HashMap::new();
+    if let Some(arr) = parsed["chapter_briefs"].as_array() {
+        for item in arr {
+            if let Some(idx) = item["chapter_index"].as_u64().map(|n| n as usize)
+                && let Some(brief) = item["brief"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+            {
+                chapter_briefs.insert(idx, brief.to_string());
+            }
+        }
+    }
+
+    Ok(SynthesizedOverview {
+        article_title,
+        subtitle,
+        executive_summary,
+        key_takeaways,
+        chapter_briefs,
+    })
+}
+
+/// Refreshes a saved `Stage1Plan`'s book title, subtitle, executive summary, key takeaways,
+/// and per-chapter reader briefs using the current writer model without re-running Stage 1.
+pub(crate) async fn resynthesize_plan_overview(
+    http: &reqwest::Client,
+    synthesis_ep: &StageEndpoint,
+    probe: &VideoProbe,
+    target_language: &str,
+    plan: &Stage1Plan,
+) -> Result<Stage1Plan, VideoError> {
+    let part = ChunkPartMeta {
+        part_index: 0,
+        start_ms: 0,
+        end_ms: probe.duration_ms,
+        title: plan.article_title.clone(),
+        subtitle: plan.subtitle.clone(),
+        executive_summary: plan.executive_summary.clone(),
+        key_takeaways: plan.key_takeaways.clone(),
+    };
+    let chapter_vals: Vec<Value> = plan
+        .chapters
+        .iter()
+        .map(|ch| {
+            serde_json::json!({
+                "chapter_index": ch.chapter_index,
+                "title": ch.title,
+                "start_ms": ch.start_ms,
+                "end_ms": ch.end_ms,
+                "summary_goal": ch.summary_goal,
+            })
+        })
+        .collect();
+
+    let ov = synthesize_chunked_overview(
+        http,
+        synthesis_ep,
+        probe,
+        target_language,
+        &[part],
+        &chapter_vals,
+    )
+    .await?;
+
+    let mut updated = plan.clone();
+    updated.article_title = ov.article_title;
+    updated.subtitle = ov.subtitle;
+    updated.executive_summary = ov.executive_summary;
+    updated.key_takeaways = ov.key_takeaways;
+    for ch in &mut updated.chapters {
+        if let Some(brief) = ov.chapter_briefs.get(&ch.chapter_index)
+            && !brief.trim().is_empty()
+        {
+            ch.brief = brief.trim().to_string();
+        }
+    }
+    Ok(updated)
 }
 
 fn shift_clip_ts(ts_ms: u64, chunk_start_ms: u64, clip_dur_ms: u64, total_ms: u64) -> u64 {
@@ -945,6 +1542,7 @@ async fn materialize_gemini_plan(
                 .unwrap_or_else(|| format!("Chapter {}", c_idx + 1)),
             start_ms,
             end_ms,
+            brief: ch["brief"].as_str().unwrap_or("").trim().to_string(),
             summary_goal: ch["summary_goal"].as_str().unwrap_or("").to_string(),
             key_terms,
             selected_slides: chapter_slides.remove(&c_idx).unwrap_or_default(),
@@ -957,6 +1555,7 @@ async fn materialize_gemini_plan(
             title: probe.title.clone(),
             start_ms: 0,
             end_ms: probe.duration_ms.max(60_000),
+            brief: String::new(),
             summary_goal: "Complete presentation".into(),
             key_terms: Vec::new(),
             selected_slides: Vec::new(),
@@ -1103,6 +1702,7 @@ where
                     .unwrap_or_else(|| format!("Chapter {}", idx + 1)),
                 start_ms,
                 end_ms,
+                brief: ch["brief"].as_str().unwrap_or("").trim().to_string(),
                 summary_goal: ch["summary_goal"].as_str().unwrap_or("").to_string(),
                 key_terms: ch["key_terms"]
                     .as_array()
@@ -1263,6 +1863,7 @@ async fn write_single_chapter(
             .to_string(),
         start_ms: ch.start_ms,
         end_ms: ch.end_ms,
+        brief: ch.brief.clone(),
         blocks,
     })
 }

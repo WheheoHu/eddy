@@ -16,10 +16,14 @@ pub use epub_builder::build_epub_bytes;
 pub use media::{compute_video_id, parse_vtt_or_srt, parse_youtube_json3, probe_video};
 pub use models::{
     ArticleBlock, ArticleDocument, ArticleSection, CandidateFrame, ChapterHint, GeneratedBook,
-    PipelinePhase, PipelineProgress, Stage1ChapterPlan, Stage1Plan, Stage1SlideChoice,
-    TranscriptBundle, TranscriptSegment, VideoProbe, format_timestamp_ms, parse_timestamp_to_ms,
+    JobCheckpointStatus, PipelinePhase, PipelineProgress, RetryFromStage, Stage1ChapterPlan,
+    Stage1Plan, Stage1SlideChoice, TranscriptBundle, TranscriptSegment, VideoProbe,
+    format_timestamp_ms, parse_timestamp_to_ms,
 };
-pub use pipeline::{ProgressCallback, run_video_pipeline};
+pub use pipeline::{
+    ProgressCallback, dir_size_bytes, inspect_job_checkpoints, prepare_job_dir_for_retry,
+    run_video_pipeline,
+};
 pub use redact::{REDACTED, redact_text};
 pub use settings::{
     ProtocolKind, ResolvedProtocol, RuntimeVideoConfig, StageEndpoint, StageEndpointSettings,
