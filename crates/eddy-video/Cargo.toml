@@ -22,5 +22,8 @@ uuid = { workspace = true }
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
+eddy-doc = { workspace = true }
+eddy-epub = { path = "../eddy-epub" }
+eddy-model = { workspace = true }
 tempfile = { workspace = true }
 wiremock = { workspace = true }

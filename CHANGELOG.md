@@ -37,6 +37,7 @@ Sync protocol 3. Servers and devices on protocol 1 must be updated together; one
 
 ### Changed
 
+- Video-to-Book: long videos split across chunks now synthesize one concise whole-book overview instead of concatenating per-part summaries and dropping later takeaways. The opening overview chapter now separates the summary, bold-headed key takeaways, and a clickable chapter guide with timestamps.
 - `eddy-cli`: `--data DIR` is refused for the app's own data directory, and for a directory an app is running on. `doc ID` prints the text as Markdown (the block counts it used to print are `doc ID --format summary`); `series URL` is `series detect URL`; `gallery FOLDER COUNT` is `dev gallery-probe`; `text ID` lines start with the block's ID; the progress of fetching older articles goes to standard error with the rest. The other commands keep their old spellings and output.
 - Sync protocol 2: clients send their protocol version and servers report the oldest they accept; either side tells the other to update when they are too far apart (HTTP 426 from the server).
 - A change the server cannot use (unknown kind, wrong value, a clock far ahead) is refused on its own; the rest of the upload goes through.

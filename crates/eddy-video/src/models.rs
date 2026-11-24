@@ -142,6 +142,8 @@ pub struct Stage1ChapterPlan {
     pub title: String,
     pub start_ms: u64,
     pub end_ms: u64,
+    #[serde(default)]
+    pub brief: String,
     pub summary_goal: String,
     pub key_terms: Vec<String>,
     pub selected_slides: Vec<Stage1SlideChoice>,
@@ -180,6 +182,8 @@ pub struct ArticleSection {
     pub title: String,
     pub start_ms: u64,
     pub end_ms: u64,
+    #[serde(default)]
+    pub brief: String,
     pub blocks: Vec<ArticleBlock>,
 }
 
